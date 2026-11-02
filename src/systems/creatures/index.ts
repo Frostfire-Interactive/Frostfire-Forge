@@ -306,6 +306,7 @@ export const combat = new CreatureCombatSystem(registry, {
     toViewers(text.creatureId, packets, true);
   },
   onDied: (creature, killerId) => {
+    spawner.died(creature.id, Date.now());
     const template = templates.get(creature.templateId);
     listener.emit(Events.CREATURE_KILLED, {
       creature,
@@ -822,7 +823,7 @@ function sweepForeign(now: number, ctx: LinkContext): void {
   watchHandoffs(foreign(), ctx);
 }
 
-/** Corpses nobody can see still need to despawn so their spawn point respawns. */
+/** Corpses nobody can see still need to despawn. */
 function sweepUnobservedCorpses(now: number): void {
   for (const creature of registry.all()) {
     if (creature.remote) continue;
@@ -1264,8 +1265,10 @@ async function handleEditorAction(player: any, data: any): Promise<EditorResult>
       }
       const spawnId = Number(data?.spawnId) || 0;
       if (!spawnId) return fail(["Nothing selected."]);
-      const live = spawner.getLiveInstanceId(spawnId, layerManager.getPlayerLayer(player.id));
+      const layerId = layerManager.getPlayerLayer(player.id);
+      const live = spawner.getLiveInstanceId(spawnId, layerId);
       if (live !== undefined) spawner.despawn(live, now, { delayMs: 0 });
+      else spawner.hurry(spawnId, layerId, now);
       return done(spawnId);
     }
     case "goto": {

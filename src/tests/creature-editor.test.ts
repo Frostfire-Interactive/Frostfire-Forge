@@ -207,6 +207,32 @@ describe("path, pool and link group validation", () => {
   });
 });
 
+describe("sprite sheet listing", () => {
+  test("marks the entries that are animation templates", async () => {
+    const realFetch = globalThis.fetch;
+    const realUrl = process.env.ASSET_SERVER_URL;
+    const realInternalUrl = process.env.ASSET_SERVER_INTERNAL_URL;
+    process.env.ASSET_SERVER_URL = "http://assets.test";
+    delete process.env.ASSET_SERVER_INTERNAL_URL;
+    globalThis.fetch = (async () => Response.json({
+      spriteSheets: [
+        { name: "player_body_base", slot: "body", hasTemplate: true, hasImage: true },
+        { name: "player_body_default", slot: "body", hasTemplate: false, hasImage: true },
+        { name: "npc_body_base", slot: "body", hasTemplate: true, hasImage: false },
+      ],
+    })) as unknown as typeof fetch;
+    try {
+      const sheets = await editor.listSpriteSheets(true);
+      expect(sheets.body.map((sheet) => [sheet.name, sheet.template])).toEqual([["player_body_base", true], ["player_body_default", false]]);
+    } finally {
+      globalThis.fetch = realFetch;
+      if (realUrl === undefined) delete process.env.ASSET_SERVER_URL;
+      else process.env.ASSET_SERVER_URL = realUrl;
+      if (realInternalUrl !== undefined) process.env.ASSET_SERVER_INTERNAL_URL = realInternalUrl;
+    }
+  });
+});
+
 describe("debug radii", () => {
   test("aggro scales with level difference and uses the template overrides", () => {
     const t = template({ assist_radius: 10, call_for_help_radius: 15, leash_override: 40 });

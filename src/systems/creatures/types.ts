@@ -38,6 +38,8 @@ export interface CreatureTemplate {
   ranged: boolean;
   move_speed_walk: number;
   move_speed_run: number;
+  /** Off keeps it on its spot in and out of combat (training dummies). */
+  can_move: boolean;
   aggro_radius_override: number | null;
   assist_radius: number;
   call_for_help_radius: number;

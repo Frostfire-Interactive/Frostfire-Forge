@@ -1204,6 +1204,7 @@ const addCreatureTemplateColumns = async () => {
     { name: "sprite_feet", type: "VARCHAR(255) DEFAULT NULL" },
     { name: "sprite_legs", type: "VARCHAR(255) DEFAULT NULL" },
     { name: "sprite_weapon", type: "VARCHAR(255) DEFAULT NULL" },
+    { name: "can_move", type: "TINYINT(1) NOT NULL DEFAULT 1" },
   ];
   for (const col of columns) {
     const exists = (await query(
@@ -1255,6 +1256,7 @@ const createCreatureTables = async () => {
     ranged TINYINT(1) NOT NULL DEFAULT 0,
     move_speed_walk DECIMAL(6,2) NOT NULL DEFAULT 2.50,
     move_speed_run DECIMAL(6,2) NOT NULL DEFAULT 7.00,
+    can_move TINYINT(1) NOT NULL DEFAULT 1,
     aggro_radius_override DECIMAL(6,2) DEFAULT NULL,
     assist_radius DECIMAL(6,2) NOT NULL DEFAULT 10.00,
     call_for_help_radius DECIMAL(6,2) NOT NULL DEFAULT 15.00,

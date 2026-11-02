@@ -274,6 +274,12 @@ export class CreatureCombatSystem {
     this.tryOutOfCombatAbilities(creature, template, now);
 
     const spawn = this.world.spawn(creature.spawnId);
+    if (!template.can_move) {
+      stop(creature);
+      creature.state = AIState.IDLE;
+      if (spawn) creature.dir = spawn.direction;
+      return;
+    }
     tickCreature(creature, {
       now,
       dtMs,
@@ -378,7 +384,18 @@ export class CreatureCombatSystem {
       return;
     }
 
+    if (!template.can_move) return this.holdPosition(creature, template, victim, now);
     this.chase(creature, template, victim, now, dtMs, melee);
+  }
+
+  /** Out of reach and unable to chase: it keeps facing the victim, and drops one who stays past its leash range. */
+  private holdPosition(creature: CreatureInstance, template: CreatureTemplate, victim: PlayerUnit, now: number): void {
+    stop(creature);
+    creature.dir = directionFor(victim.x - creature.x, victim.y - creature.y, creature.dir);
+    const entry = creature.combat.threat.get(victim.id)!;
+    if (dist(creature.x, creature.y, victim.x, victim.y) <= leashRangePx(template)) entry.unreachableSince = null;
+    else entry.unreachableSince ??= now;
+    this.dropIfUnreachable(creature, victim.id, now);
   }
 
   private chase(creature: CreatureInstance, template: CreatureTemplate, victim: PlayerUnit, now: number, dtMs: number, melee: number): void {
@@ -423,7 +440,7 @@ export class CreatureCombatSystem {
   }
 
   private shouldFleeLowHealth(creature: CreatureInstance, template: CreatureTemplate): boolean {
-    if (template.flee_at_hp_pct <= 0 || creature.combat.fledThisCombat) return false;
+    if (template.flee_at_hp_pct <= 0 || creature.combat.fledThisCombat || !template.can_move) return false;
     if ((template.flags & CreatureFlags.NEVER_FLEE) !== 0) return false;
     return (creature.health / creature.maxHealth) * 100 <= template.flee_at_hp_pct;
   }
@@ -444,7 +461,7 @@ export class CreatureCombatSystem {
 
   private pickFleeDestination(creature: CreatureInstance, template: CreatureTemplate, speedMult: number): void {
     const grid = this.world.grid(creature.map);
-    if (!grid) return;
+    if (!grid || !template.can_move) return;
     const from = creature.combat.fleeFromId ? this.world.getPlayer(creature.combat.fleeFromId) : null;
     const r = this.world.rng;
     const baseAngle = from ? Math.atan2(creature.y - from.y, creature.x - from.x) : r() * Math.PI * 2;
@@ -505,7 +522,7 @@ export class CreatureCombatSystem {
     const template = this.world.template(creature.templateId);
     const grid = this.world.grid(creature.map);
     const home = this.resetPoint(creature);
-    if (!template || !grid || !setDestination(creature, grid, home, speedPxPerSec(template.move_speed_run), COMBAT_PATH_MAX_NODES)) {
+    if (!template || !grid || !template.can_move || !setDestination(creature, grid, home, speedPxPerSec(template.move_speed_run), COMBAT_PATH_MAX_NODES)) {
       this.finishEvade(creature, now, true);
       return;
     }

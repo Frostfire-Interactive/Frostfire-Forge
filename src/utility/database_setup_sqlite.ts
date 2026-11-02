@@ -1135,6 +1135,7 @@ const addCreatureTemplateColumns = async () => {
     { name: "sprite_feet", type: "TEXT DEFAULT NULL" },
     { name: "sprite_legs", type: "TEXT DEFAULT NULL" },
     { name: "sprite_weapon", type: "TEXT DEFAULT NULL" },
+    { name: "can_move", type: "INTEGER NOT NULL DEFAULT 1" },
   ]);
 };
 
@@ -1168,6 +1169,7 @@ const createCreatureTables = async () => {
     ranged INTEGER NOT NULL DEFAULT 0,
     move_speed_walk REAL NOT NULL DEFAULT 2.50,
     move_speed_run REAL NOT NULL DEFAULT 7.00,
+    can_move INTEGER NOT NULL DEFAULT 1,
     aggro_radius_override REAL DEFAULT NULL,
     assist_radius REAL NOT NULL DEFAULT 10.00,
     call_for_help_radius REAL NOT NULL DEFAULT 15.00,

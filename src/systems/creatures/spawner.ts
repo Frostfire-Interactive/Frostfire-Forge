@@ -48,7 +48,7 @@ const MAX_MOVED_WAIT_MS = 24 * 60 * 60_000;
 export interface SpawnerHooks {
   onSpawn?(instance: CreatureInstance): void;
   onDespawn?(instance: CreatureInstance): void;
-  /** A foreign creature (its spawn slot is on another node) left the world here: tell its home. */
+  /** A foreign creature (its spawn slot is on another node) died or left the world here: tell its home. */
   onForeignGone?(instance: CreatureInstance, home: string, opts: { respawn: boolean; delayMs: number | null }): void;
   /**
    * How many players of a layer stand in the block holding (x, y). Without it
@@ -164,6 +164,10 @@ export class CreatureSpawner {
    * `moving` holds from export until the move is sent (settleSlots); a restore removes the entry.
    */
   private outgoing = new Map<string, { to: string; until: number; instanceId: number | null; templateId: number | null; moving: boolean }>();
+  /** Dead creatures still in the world -> when their slot comes due. The slot was let go at the death (died). */
+  private corpses = new Map<number, number>();
+  /** Slots that were waiting when their layer went -> when they come due, so the layer coming back does not cut the wait. */
+  private waitingOnLayer = new Map<string, number>();
   private lastSweepAt = -Infinity;
 
   constructor(
@@ -178,9 +182,11 @@ export class CreatureSpawner {
     for (const instanceId of [...this.live.values()]) {
       this.despawn(instanceId, now, { respawn: false });
     }
+    for (const id of [...this.corpses.keys()]) this.despawn(id, now);
     this.pending.clear();
     this.elsewhere.clear();
     this.outgoing.clear();
+    this.waitingOnLayer.clear();
     // A reload starts every slot over. The holders find their creatures' slots gone at their next sweep.
     // Released one by one, so an away creature also leaves its pool and no pool is left counting it.
     for (const slot of this.awaySlots()) this.releaseAway(slot.instanceId, now, { respawn: false });
@@ -265,7 +271,10 @@ export class CreatureSpawner {
     for (const layerId of gone) this.dropLayer(layerId, now);
     for (const { map, layerId } of added) {
       for (const spawnId of this.perLayerSpawnsByMap.get(map) ?? []) {
-        if (!this.isKnown(slotKey(spawnId, layerId))) this.schedule(spawnId, layerId, now);
+        const key = slotKey(spawnId, layerId);
+        const dueAt = this.waitingOnLayer.get(key) ?? now;
+        this.waitingOnLayer.delete(key);
+        if (!this.isKnown(key)) this.schedule(spawnId, layerId, Math.max(now, dueAt));
       }
     }
   }
@@ -308,8 +317,16 @@ export class CreatureSpawner {
       if (instanceId !== undefined) this.despawn(instanceId, now, { respawn: false });
     }
     this.liveByLayer.delete(layerId);
+    for (const id of [...this.corpses.keys()]) {
+      if (this.registry.get(id)?.layerId === layerId) this.despawn(id, now);
+    }
+    for (const [key, dueAt] of [...this.waitingOnLayer]) {
+      if (dueAt <= now) this.waitingOnLayer.delete(key);
+    }
     for (const [key, slot] of [...this.pending]) {
-      if (slot.layerId === layerId) this.pending.delete(key);
+      if (slot.layerId !== layerId) continue;
+      this.pending.delete(key);
+      if (slot.dueAt > now) this.waitingOnLayer.set(key, slot.dueAt);
     }
     for (const [key, slot] of [...this.elsewhere]) {
       if (slot.layerId === layerId) this.elsewhere.delete(key);
@@ -426,6 +443,13 @@ export class CreatureSpawner {
   despawn(instanceId: number, now: number, opts: { respawn?: boolean; delayMs?: number } = {}): void {
     const instance = this.registry.remove(instanceId);
     if (!instance) return;
+    if (this.corpses.delete(instanceId)) {
+      this.leavePool(instance.poolId, instance.layerId, instanceId);
+      this.hooks.onDespawn?.(instance);
+      // Its slot was let go at the death and has its time: only an asked-for delay changes that.
+      if (opts.delayMs !== undefined) this.hurry(instance.spawnId, instance.layerId, now + opts.delayMs);
+      return;
+    }
     if (this.awayIds.has(instanceId)) {
       // The slot is away: this is its mirror here. The slot stays taken until the holder reports (releaseAway).
       this.hooks.onDespawn?.(instance);
@@ -457,6 +481,39 @@ export class CreatureSpawner {
     const spawn = this.data.spawns.get(instance.spawnId);
     if (!spawn || !this.slotShouldExist(spawn, instance.layerId)) return;
     this.schedule(spawn.id, instance.layerId, now + (opts.delayMs ?? rollRespawnMs(spawn, this.respawnMultiplier, this.r)));
+  }
+
+  /**
+   * A creature died. Its respawn time runs from now, not from when the corpse goes: the slot is let go at once, and
+   * the corpse stays on its own timer, as its loot may outlast the respawn. It keeps its pool place until it goes or
+   * the slot comes due, so another spawn point of the pool does not replace it sooner than it did.
+   */
+  died(instanceId: number, now: number): void {
+    const instance = this.registry.get(instanceId);
+    if (!instance) return;
+    const home = this.foreign.get(instanceId);
+    if (home !== undefined) {
+      // Not this node's slot: its home rolls the time.
+      this.foreign.delete(instanceId);
+      this.corpses.set(instanceId, now);
+      this.hooks.onForeignGone?.(instance, home, { respawn: true, delayMs: null });
+      return;
+    }
+    const key = slotKey(instance.spawnId, instance.layerId);
+    if (this.live.get(key) !== instanceId) return;
+    this.live.delete(key);
+    this.emptySince.delete(key);
+    if (instance.layerId !== null) this.liveByLayer.get(instance.layerId)?.delete(key);
+    const spawn = this.data.spawns.get(instance.spawnId);
+    const dueAt = now + (spawn ? rollRespawnMs(spawn, this.respawnMultiplier, this.r) : 0);
+    this.corpses.set(instanceId, dueAt);
+    if (spawn && this.slotShouldExist(spawn, instance.layerId)) this.schedule(spawn.id, instance.layerId, dueAt);
+  }
+
+  /** Bring a waiting slot's time forward (the editor's respawn of a spawn point whose creature is dead). */
+  hurry(spawnId: number, layerId: string | null, dueAt: number): void {
+    const slot = this.pending.get(slotKey(spawnId, layerId));
+    if (slot && dueAt < slot.dueAt) slot.dueAt = dueAt;
   }
 
   /** The live creature `instanceId` was handed to `holder`: its slot stays taken, and is not spawned again. */
@@ -862,6 +919,7 @@ export class CreatureSpawner {
     if (!spawn || !this.slotShouldExist(spawn, layerId)) return null;
 
     const pool = spawn.pool_id !== null ? this.data.pools.get(spawn.pool_id) : undefined;
+    if (pool) this.freeCorpsePlaces(pool.id, layerId, now);
     if (pool && this.activeInPool(pool.id, layerId) >= pool.max_active) {
       this.schedule(spawnId, layerId, now + POOL_RETRY_MS);
       return null;
@@ -939,6 +997,14 @@ export class CreatureSpawner {
     }
     this.hooks.onSpawn?.(instance);
     return instance;
+  }
+
+  /** A corpse whose slot has come due holds no pool place any more, or it would hold back its own respawn. */
+  private freeCorpsePlaces(poolId: number, layerId: string | null, now: number): void {
+    for (const id of [...(this.poolMembers.get(poolKey(poolId, layerId)) ?? [])]) {
+      const dueAt = this.corpses.get(id);
+      if (dueAt !== undefined && dueAt <= now) this.leavePool(poolId, layerId, id);
+    }
   }
 
   private isRareAlive(pool: CreatureSpawnPool, layerId: string | null): boolean {

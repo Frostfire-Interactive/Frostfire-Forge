@@ -52,6 +52,8 @@ export interface SpriteSheetOption {
   name: string;
   /** Preview image URL, or null when the sheet is template-only. */
   image: string | null;
+  /** The asset server has an animation template under this name. */
+  template?: boolean;
 }
 
 /**
@@ -77,7 +79,7 @@ export async function listSpriteSheets(force = false): Promise<Record<string, Sp
   try {
     const response = await serverFetch(`${assetServerUrl}/sprite-sheets`);
     if (!response.ok) throw new Error(`status ${response.status}`);
-    const body = (await response.json()) as { spriteSheets?: Array<{ name: string; slot?: string; icon?: string | null; hasImage?: boolean }> };
+    const body = (await response.json()) as { spriteSheets?: Array<{ name: string; slot?: string; icon?: string | null; hasTemplate?: boolean; hasImage?: boolean }> };
     // Equipment sheets are named after the item that wears them, so the item's
     // own icon is the right preview. A sheet image is a strip of frames and is
     // unreadable as a thumbnail, so it is never used.
@@ -92,6 +94,7 @@ export async function listSpriteSheets(force = false): Promise<Record<string, Sp
       (bySlot[slot] ??= []).push({
         name: sheet.name,
         image: itemIcon ?? iconPath(sheet.icon ?? null),
+        template: sheet.hasTemplate === true,
       });
     }
     for (const sheets of Object.values(bySlot)) sheets.sort((a, b) => a.name.localeCompare(b.name));

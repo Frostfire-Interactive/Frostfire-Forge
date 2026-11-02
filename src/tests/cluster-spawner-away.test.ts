@@ -296,6 +296,33 @@ describe("foreign creatures on their holder", () => {
     expect(holder.spawner.foreignCreatures()).toEqual([]);
   });
 
+  test("a foreign creature's home hears of its death at once, and not again when the corpse goes", () => {
+    const home = setup();
+    const id = home.spawner.getLiveInstanceId(1)!;
+    const instance = home.registry.get(id)!;
+    const holder = setup({ spawns: [] });
+    holder.spawner.adopt({ ...instance }, "a");
+
+    holder.spawner.died(id, 5_000);
+    expect(holder.events).toContain(`gone:${id}:a:true:null`);
+    expect(holder.spawner.foreignCreatures()).toEqual([]);
+    expect(holder.registry.get(id)).toBeDefined();
+
+    holder.spawner.despawn(id, 300_000);
+    expect(holder.registry.get(id)).toBeUndefined();
+    expect(holder.events).toContain(`despawn:${id}`);
+    expect(holder.events.filter((e) => e.startsWith("gone:"))).toHaveLength(1);
+  });
+
+  test("a corpse stays behind when its block moves: the slot goes with the time it has left", () => {
+    const { registry, spawner } = setup();
+    const id = spawner.getLiveInstanceId(1)!;
+    spawner.died(id, 2_000);
+    expect(spawner.exportSlots(() => true, "b", "a", 5_000)).toEqual([{ kind: "waiting", spawnId: 1, layerId: null, inMs: 7_000 }]);
+    expect(spawner.foreignCreatures()).toEqual([]);
+    expect(registry.get(id)).toBeDefined();
+  });
+
   test("a foreign creature whose spawn point the holder also has does not take that slot", () => {
     const home = setup();
     const instance = home.registry.get(home.spawner.getLiveInstanceId(1)!)!;

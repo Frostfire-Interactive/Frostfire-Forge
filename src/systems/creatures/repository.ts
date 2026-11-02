@@ -74,6 +74,7 @@ export function normalizeTemplate(row: any): CreatureTemplate {
     ranged: bool(row.ranged),
     move_speed_walk: Math.max(0, num(row.move_speed_walk, 2.5)),
     move_speed_run: Math.max(0, num(row.move_speed_run, 7)),
+    can_move: row.can_move === undefined ? true : bool(row.can_move),
     aggro_radius_override: nullableNum(row.aggro_radius_override),
     assist_radius: Math.max(0, num(row.assist_radius, 10)),
     call_for_help_radius: Math.max(0, num(row.call_for_help_radius, 15)),
@@ -179,7 +180,7 @@ export function normalizeLinkGroup(row: any): CreatureLinkGroup {
 /** Column lists kept in one place so insert and update stay in step. */
 const TEMPLATE_COLUMNS = [
   "name", "subname", "level_min", "level_max", "rank", "creature_type", "stance", "health_base", "health_per_level",
-  "armor", "resist_json", "damage_min", "damage_max", "attack_speed_ms", "ranged", "move_speed_walk", "move_speed_run",
+  "armor", "resist_json", "damage_min", "damage_max", "attack_speed_ms", "ranged", "move_speed_walk", "move_speed_run", "can_move",
   "aggro_radius_override", "assist_radius", "call_for_help_radius", "flee_at_hp_pct", "flee_duration_ms",
   "leash_override", "regen_ooc", "xp_mult", "loot_table_id", "gold_min", "gold_max", "sprite_type", "sprite", "sprite_head", "sprite_helmet", "sprite_shoulderguards", "sprite_neck", "sprite_hands", "sprite_chest", "sprite_feet", "sprite_legs", "sprite_weapon", "scale", "flags",
 ] as const;
@@ -204,7 +205,7 @@ function templateValues(t: CreatureTemplate): any[] {
   return [
     t.name, t.subname, t.level_min, t.level_max, t.rank, t.creature_type, t.stance, t.health_base, t.health_per_level,
     t.armor, JSON.stringify(t.resist || {}), t.damage_min, t.damage_max, t.attack_speed_ms, t.ranged ? 1 : 0,
-    t.move_speed_walk, t.move_speed_run, t.aggro_radius_override, t.assist_radius, t.call_for_help_radius,
+    t.move_speed_walk, t.move_speed_run, t.can_move ? 1 : 0, t.aggro_radius_override, t.assist_radius, t.call_for_help_radius,
     t.flee_at_hp_pct, t.flee_duration_ms, t.leash_override, t.regen_ooc ? 1 : 0, t.xp_mult, t.loot_table_id,
     t.gold_min, t.gold_max, t.sprite_type, t.sprite, t.sprite_head, t.sprite_helmet, t.sprite_shoulderguards, t.sprite_neck, t.sprite_hands, t.sprite_chest, t.sprite_feet, t.sprite_legs, t.sprite_weapon, t.scale, t.flags,
   ];

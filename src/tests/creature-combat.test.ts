@@ -570,6 +570,99 @@ describe("creature combat engine", () => {
   });
 });
 
+describe("creatures that cannot move", () => {
+  test("stay where they are out of combat, where one that can move walks home", () => {
+    const home = tile(10, 10);
+    const displaced = { homeX: home.x, homeY: home.y, state: "wander", dir: "left" };
+
+    const walker = setup();
+    const moved = makeCreature(1, home.x + 64, home.y, displaced);
+    walker.registry.add(moved);
+    run(walker.system, moved, 0, 3000);
+    expect(moved.x).toBeLessThan(home.x + 64);
+
+    const { registry, system } = setup({ can_move: 0 });
+    const c = makeCreature(1, home.x + 64, home.y, displaced);
+    registry.add(c);
+    run(system, c, 0, 3000);
+    expect(c.x).toBe(home.x + 64);
+    expect(c.move).toBeNull();
+    expect(c.state).toBe("idle");
+    expect(c.dir).toBe("down");
+  });
+
+  test("hold position and face a victim out of reach, and the fight goes on", () => {
+    const { registry, system, addPlayer } = setup({ can_move: 0, stance: "neutral" });
+    const c = makeCreature(1, tile(10, 10).x, tile(10, 10).y);
+    const startX = c.x;
+    registry.add(c);
+    addPlayer("p", { x: c.x + yards(30), y: c.y });
+    system.damageCreature(c, "p", 5, 0);
+    run(system, c, 100, 8000);
+    expect(c.x).toBe(startX);
+    expect(c.move).toBeNull();
+    expect(c.dir).toBe("right");
+    expect(c.state).toBe("combat");
+    expect(system.isInCombatWith("p")).toBe(true);
+  });
+
+  test("drop a player who stays past the leash range, and reset on the spot", () => {
+    const { registry, system, addPlayer } = setup({ can_move: 0, stance: "neutral", leash_override: 10 });
+    const c = makeCreature(1, tile(10, 10).x, tile(10, 10).y, { health: 40 });
+    const startX = c.x;
+    registry.add(c);
+    const p = addPlayer("p", { x: c.x + 30, y: c.y });
+    system.damageCreature(c, "p", 5, 0);
+    run(system, c, 100, 1000);
+    expect(c.state).toBe("combat");
+
+    p.x = c.x + yards(20);
+    run(system, c, 1100, 7000);
+    expect(c.state).toBe("idle");
+    expect(system.isInCombatWith("p")).toBe(false);
+    expect(c.health).toBe(100);
+    expect(c.x).toBe(startX);
+  });
+
+  test("keep a player who comes back inside the leash range in time", () => {
+    const { registry, system, addPlayer } = setup({ can_move: 0, stance: "neutral", leash_override: 10 });
+    const c = makeCreature(1, tile(10, 10).x, tile(10, 10).y);
+    registry.add(c);
+    const p = addPlayer("p", { x: c.x + yards(20), y: c.y });
+    system.damageCreature(c, "p", 5, 0);
+    run(system, c, 100, 3000);
+    p.x = c.x + 30;
+    run(system, c, 3100, 9000);
+    expect(c.state).toBe("combat");
+    expect(system.isInCombatWith("p")).toBe(true);
+  });
+
+  test("never flee at low health", () => {
+    const { registry, system, addPlayer } = setup({ can_move: 0, stance: "neutral", flee_at_hp_pct: 50 });
+    const c = makeCreature(1, tile(10, 10).x, tile(10, 10).y);
+    registry.add(c);
+    addPlayer("p", { x: c.x + 10, y: c.y });
+    system.damageCreature(c, "p", 60, 0);
+    run(system, c, 100, 1000);
+    expect(c.state).toBe("combat");
+  });
+
+  test("passive ones stand still when hit, then calm down", () => {
+    const { registry, system, addPlayer } = setup({ can_move: 0, stance: "passive" });
+    const c = makeCreature(1, tile(10, 10).x, tile(10, 10).y);
+    const startX = c.x;
+    registry.add(c);
+    addPlayer("p", { x: c.x - 20, y: c.y });
+    system.damageCreature(c, "p", 5, 0);
+    run(system, c, 100, 3000);
+    expect(c.x).toBe(startX);
+    expect(c.move).toBeNull();
+    run(system, c, 3100, 5000);
+    expect(c.state).toBe("idle");
+    expect(c.combat.threat.isEmpty()).toBe(true);
+  });
+});
+
 describe("social aggro and tapping", () => {
   test("same-type creatures within the assist radius join; other types and far ones don't", () => {
     const { registry, system, addPlayer } = setup({ stance: "neutral", assist_radius: 10, creature_type: "humanoid" }, undefined, {

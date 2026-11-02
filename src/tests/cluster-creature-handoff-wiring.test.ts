@@ -259,6 +259,22 @@ test("a creature coming home takes its away slot back and the mirror's place", (
   }
 });
 
+test("a kill starts its slot's respawn time at the death, while the corpse stays", () => {
+  const empty = () => ({ templates: new Map([[1, wolf]]), spawns: new Map(), pools: new Map(), patrolPaths: new Map() });
+  try {
+    const spawn = normalizeSpawn({ id: 1, template_id: 1, map: "main", x: 100, y: 200, respawn_min_s: 10, respawn_max_s: 10, layer_policy: "shared" });
+    creatures.spawner.load({ ...empty(), spawns: new Map([[1, spawn]]) }, Date.now());
+    const id = creatures.spawner.getLiveInstanceId(1)!;
+    const before = Date.now();
+    creatures.combat.die(creatures.getCreature(id)!, null, before);
+    expect(creatures.spawner.getPendingAt(1)).toBeGreaterThanOrEqual(before + 10_000);
+    expect(creatures.spawner.getPendingAt(1)).toBeLessThanOrEqual(Date.now() + 10_000);
+    expect(creatures.getCreature(id)).toBeDefined();
+  } finally {
+    creatures.spawner.load(empty(), Date.now());
+  }
+});
+
 test("a record that cannot be a living creature of a known template is refused, and the mirror stays", () => {
   try {
     const base = overWire(live(880103));

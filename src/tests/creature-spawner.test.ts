@@ -63,6 +63,12 @@ describe("creature normalizers", () => {
     expect(t.aggro_radius_override).toBeNull();
   });
 
+  test("creatures can move unless told otherwise", () => {
+    expect(normalizeTemplate({ id: 1, name: "Boar" }).can_move).toBe(true);
+    expect(normalizeTemplate({ id: 1, name: "Boar", can_move: 1 }).can_move).toBe(true);
+    expect(normalizeTemplate({ id: 1, name: "Dummy", can_move: 0 }).can_move).toBe(false);
+  });
+
   test("spawn strips .json from map and orders respawn window", () => {
     const s = normalizeSpawn({ id: 1, template_id: 1, map: "main.json", respawn_min_s: 60, respawn_max_s: 30 });
     expect(s.map).toBe("main");
@@ -192,6 +198,112 @@ describe("creature spawner", () => {
   });
 });
 
+describe("respawn time runs from the death", () => {
+  const kill = (registry: any, spawner: any, id: number, now: number) => {
+    registry.get(id).state = AIState.DEAD;
+    spawner.died(id, now);
+  };
+
+  test("the next one spawns inside the window while the corpse still lies there", () => {
+    const { registry, spawner } = setup();
+    const corpse = spawner.getLiveInstanceId(1)!;
+    kill(registry, spawner, corpse, 2000);
+    expect(spawner.getPendingAt(1)).toBe(12_000);
+
+    spawner.tick(11_999);
+    expect(spawner.getLiveInstanceId(1)).toBeUndefined();
+    spawner.tick(12_000);
+    const next = spawner.getLiveInstanceId(1)!;
+    expect(next).toBeDefined();
+    expect(next).not.toBe(corpse);
+    expect(registry.get(corpse)).toBeDefined();
+
+    // The corpse's own timer ends later: it goes, and nothing else changes.
+    spawner.despawn(corpse, 300_000);
+    expect(registry.get(corpse)).toBeUndefined();
+    expect(spawner.getLiveInstanceId(1)).toBe(next);
+    expect(spawner.getPendingAt(1)).toBeUndefined();
+  });
+
+  test("a corpse gone before the roll ends leaves the time as it was", () => {
+    const { registry, spawner } = setup();
+    const corpse = spawner.getLiveInstanceId(1)!;
+    kill(registry, spawner, corpse, 2000);
+    spawner.despawn(corpse, 5000);
+    expect(spawner.getPendingAt(1)).toBe(12_000);
+  });
+
+  test("a slot is rolled once per death", () => {
+    const { registry, spawner } = setup();
+    const corpse = spawner.getLiveInstanceId(1)!;
+    kill(registry, spawner, corpse, 2000);
+    spawner.died(corpse, 3000);
+    expect(spawner.getPendingAt(1)).toBe(12_000);
+  });
+
+  test("its own corpse does not hold back a pooled slot", () => {
+    const pool = normalizeSpawnPool({ id: 9, max_active: 1 });
+    const { registry, spawner } = setup({ spawns: [spawn({ id: 1, pool_id: 9 })], pools: [pool] });
+    const corpse = spawner.getLiveInstanceId(1)!;
+    kill(registry, spawner, corpse, 2000);
+    spawner.tick(12_000);
+    expect(spawner.getLiveInstanceId(1)).toBeDefined();
+    expect(spawner.getLiveInstanceId(1)).not.toBe(corpse);
+    expect(spawner.activeInPool(9)).toBe(1);
+    spawner.despawn(corpse, 300_000);
+    expect(spawner.activeInPool(9)).toBe(1);
+  });
+
+  test("another slot of the pool waits while the corpse holds its place", () => {
+    const pool = normalizeSpawnPool({ id: 9, max_active: 1 });
+    const { registry, spawner } = setup({
+      spawns: [spawn({ id: 1, pool_id: 9, respawn_min_s: 60, respawn_max_s: 60 }), spawn({ id: 2, pool_id: 9, x: 500 })],
+      pools: [pool],
+    });
+    kill(registry, spawner, spawner.getLiveInstanceId(1)!, 2000);
+    expect(spawner.activeInPool(9)).toBe(1);
+    // Spawn point 2 looks again at 31 s, before spawn point 1's time at 62 s.
+    spawner.tick(1000 + POOL_RETRY_MS);
+    expect(spawner.getLiveInstanceId(2)).toBeUndefined();
+    spawner.tick(62_000);
+    expect(spawner.getLiveInstanceId(1)).toBeDefined();
+    expect(spawner.activeInPool(9)).toBe(1);
+  });
+
+  test("the editor's respawn of a corpse comes due at once", () => {
+    const { registry, spawner } = setup();
+    const corpse = spawner.getLiveInstanceId(1)!;
+    kill(registry, spawner, corpse, 2000);
+    spawner.despawn(corpse, 3000, { delayMs: 0 });
+    expect(registry.get(corpse)).toBeUndefined();
+    expect(spawner.getPendingAt(1)).toBe(3000);
+  });
+
+  test("the editor's respawn of a spawn point comes due at once", () => {
+    const { registry, spawner } = setup();
+    kill(registry, spawner, spawner.getLiveInstanceId(1)!, 2000);
+    spawner.hurry(1, null, 3000);
+    expect(spawner.getPendingAt(1)).toBe(3000);
+  });
+
+  test("a reload removes corpses too", () => {
+    const { registry, spawner, data } = setupWithData();
+    const corpse = spawner.getLiveInstanceId(1)!;
+    kill(registry, spawner, corpse, 2000);
+    spawner.load(data, 3000);
+    expect(registry.get(corpse)).toBeUndefined();
+    expect(registry.size).toBe(1);
+  });
+
+  function setupWithData() {
+    const registry = new CreatureRegistry(64);
+    const spawner = new CreatureSpawner(registry, {}, () => 0, 1);
+    const data = { templates: new Map([[1, template()]]), spawns: new Map([[1, spawn()]]), pools: new Map() };
+    spawner.load(data, 1000);
+    return { registry, spawner, data };
+  }
+});
+
 describe("creature registry", () => {
   test("radius query respects cells and moves", () => {
     const registry = new CreatureRegistry(64);
@@ -285,6 +397,54 @@ describe("per-layer spawning", () => {
     spawner.setLayers(new Map([["main", []]]), 2500);
     spawner.despawn(id, 2600);
     expect(spawner.getPendingAt(1, "main:layer_1")).toBeUndefined();
+  });
+
+  test("a killed creature's time survives its layer going and coming back", () => {
+    const { registry, spawner } = layered();
+    spawner.setLayers(new Map([["main", ["main:layer_1"]]]), 2000);
+    spawner.tick(2000);
+    const corpse = spawner.getLiveInstanceId(1, "main:layer_1")!;
+    registry.get(corpse)!.state = AIState.DEAD;
+    spawner.died(corpse, 2000);
+
+    // The last player leaves: the layer and its corpse go.
+    spawner.setLayers(new Map([["main", []]]), 3000);
+    expect(registry.get(corpse)).toBeUndefined();
+    expect(spawner.getPendingAt(1, "main:layer_1")).toBeUndefined();
+
+    // Back before the time is up: the slot waits out the rest.
+    spawner.setLayers(new Map([["main", ["main:layer_1"]]]), 4000);
+    expect(spawner.getPendingAt(1, "main:layer_1")).toBe(12_000);
+    spawner.tick(11_999);
+    expect(spawner.getLiveInstanceId(1, "main:layer_1")).toBeUndefined();
+    spawner.tick(12_000);
+    expect(spawner.getLiveInstanceId(1, "main:layer_1")).toBeDefined();
+  });
+
+  test("a layer back after the time is up spawns at once, and a reload forgets the time", () => {
+    const { registry, spawner } = layered();
+    const killOn = (at: number) => {
+      spawner.setLayers(new Map([["main", ["main:layer_1"]]]), at);
+      spawner.tick(at);
+      const corpse = spawner.getLiveInstanceId(1, "main:layer_1")!;
+      registry.get(corpse)!.state = AIState.DEAD;
+      spawner.died(corpse, at);
+      spawner.setLayers(new Map([["main", []]]), at + 1000);
+    };
+    killOn(2000);
+    spawner.setLayers(new Map([["main", ["main:layer_1"]]]), 50_000);
+    expect(spawner.getPendingAt(1, "main:layer_1")).toBe(50_000);
+    spawner.tick(50_000);
+
+    spawner.setLayers(new Map([["main", []]]), 60_000);
+    killOn(70_000);
+    spawner.load({
+      templates: new Map([[1, template()]]),
+      spawns: new Map([[1, spawn({ id: 1, layer_policy: "per_layer" })]]),
+      pools: new Map(),
+    }, 72_000);
+    spawner.setLayers(new Map([["main", ["main:layer_1"]]]), 73_000);
+    expect(spawner.getPendingAt(1, "main:layer_1")).toBe(73_000);
   });
 });
 
