@@ -794,7 +794,7 @@ test("a player who leaves while a warp's handoff runs is counted off the map the
   const names = [
     "playerCache", "packetManager", "console", "effectManager", "dots", "getStunsForPlayer", "getSlowsForPlayer",
     "saveSicknessOnDisconnect", "loot", "cleanupPlayerState", "releaseDraggedBy", "listener", "Events",
-    "removeFromAuthenticationQueues", "worlds", "log", "player", "clusterEnabled", "isOnline", "deliverToPlayer", "forgetPlayer",
+    "removeFromAuthenticationQueues", "worlds", "log", "player", "clusterEnabled", "isOnline", "tellContactsOffline", "forgetPlayer",
   ];
   const source = sourceCut('listener.on("onDisconnect", ', /\r?\n}\);\r?\n/).replace('listener.on("onDisconnect", ', "");
   const make = withNames(names, `return ${source}\n};`);
@@ -826,7 +826,7 @@ test("a player who leaves while a warp's handoff runs is counted off the map the
       player: { clearSessionId: async () => {} },
       clusterEnabled: () => false,
       isOnline: async () => false,
-      deliverToPlayer: async () => {},
+      tellContactsOffline: async () => {},
       forgetPlayer: async () => {},
     });
     await handler({ id: playerData.id, reason: "player_left" });

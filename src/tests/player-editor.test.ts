@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { databaseModule } from "./setup";
 import { DEFAULT_RANKS } from "../systems/guildranks";
 
@@ -158,6 +158,8 @@ const defs =await import("../systems/quests/definitions");
 const editor = await import("../systems/playereditor");
 const { default: permissions } = await import("../systems/permissions");
 const { default: player } = await import("../systems/player");
+const deliver = await import("../cluster/deliver");
+const cluster = await import("../cluster/index");
 
 const quests = [quest(1, "Rats in the Cellar"), quest(2, "Aftermath")];
 defs.setCachedQuestsSync(quests);
@@ -479,7 +481,8 @@ describe("guild", () => {
     expect(joined.snapshot?.guild).toEqual({ id: 7, name: "Frostguard", leader: "ally", members: ["ally", "hero"], rank: "Initiate" });
     expect(heroRow("accounts").guild_id).toBe(7);
     expect(hero.live).toMatchObject({ guild_id: 7, guild_name: "Frostguard", guild: ["ally", "hero"] });
-    expect(ally.sent).toEqual([{
+    expect(ally.sent[0]).toEqual({ type: "UPDATE_ONLINE_STATUS", data: { online: true, username: "hero" } });
+    expect(ally.sent.slice(1)).toEqual([{
       type: "UPDATE_GUILD",
       data: {
         members: ["ally", "hero"],
@@ -663,5 +666,232 @@ describe("search", () => {
     const slotted = await find({ kind: "items", query: "", slot: "helmet" });
     expect(slotted.kind === "items" && slotted.items.map((i) => i.name)).toEqual(["Iron Helmet", "Leather Cap"]);
     expect(await find({ kind: "items", query: "", slot: "username" })).toMatchObject({ slot: null, items: [] });
+  });
+
+  test("a player of another node is online too", async () => {
+    const roster = spyOn(cluster, "peerRoster").mockResolvedValue([{ nodeId: "b", report: null, answer: { rows: [{ username: "ally", userid: 4204 }], status: null } }] as any);
+    try {
+      const listed = await find({ kind: "players", query: "" });
+      expect(listed.kind === "players" && listed.players).toContainEqual({ username: "ally", userid: 4204, online: true });
+      const typed = await find({ kind: "players", query: "ally" });
+      expect(typed.kind === "players" && typed.players).toEqual([{ username: "ally", userid: 4204, online: true }]);
+    } finally {
+      roster.mockRestore();
+    }
+  });
+});
+
+describe("a player on another node", () => {
+  const GRANT = { permissions: ["admin.kick"] };
+  const asked = (type: string, data: Row, ms: number) => ["hero", "cells-editor", { admin: { username: "boss", id: "9001" }, type, data }, ms];
+  const load = () => editor.handleEditorPacket(ADMIN, "PLAYER_EDITOR_LOAD", { target: "hero" });
+  const heroPermissions = () => tables.permissions.find((row) => row.username === "hero")?.permissions;
+  let spies: Array<{ mockRestore(): void }> = [];
+  function answers(answer: Row) {
+    const ask = spyOn(deliver, "askPlayer").mockResolvedValue(answer as any);
+    spies.push(ask);
+    return ask;
+  }
+  function theirNode() {
+    const run = spyOn(deliver, "runOnPlayer").mockResolvedValue(true);
+    spies.push(run, spyOn(deliver, "isOnline").mockResolvedValue(true));
+    return run;
+  }
+  afterEach(() => {
+    for (const spy of spies) spy.mockRestore();
+    spies = [];
+  });
+
+  test("a change runs on their node, and what it answers is the answer", async () => {
+    const answer = { kind: "result", ok: true, errors: [], action: "permissions.set", snapshot: null };
+    const ask = answers({ status: "answered", value: answer });
+    queries.length = 0;
+    expect(await act("permissions.set", GRANT)).toEqual(answer as any);
+    expect(ask.mock.calls as unknown[]).toEqual([asked("PLAYER_EDITOR_ACTION", { target: "hero", action: "permissions.set", ...GRANT }, 45_000)]);
+    expect(writes()).toEqual([]);
+  });
+
+  test("a look at them gets the snapshot of their node and the options of this one", async () => {
+    const snapshot = { username: "hero", guild: null };
+    const ask = answers({ status: "answered", value: snapshot });
+    const result = await load();
+    if (result.kind !== "data") throw new Error("A load answers with data");
+    expect(result.data.snapshot).toEqual(snapshot as any);
+    expect(result.data.options).toBeDefined();
+    expect(ask.mock.calls as unknown[]).toEqual([asked("PLAYER_EDITOR_LOAD", { target: "hero" }, 8_000)]);
+  });
+
+  test("their node finding nothing for a look is a refusal", async () => {
+    answers({ status: "answered", value: null });
+    expect(await load()).toMatchObject({ kind: "result", ok: false, errors: ["Player not found."] });
+  });
+
+  test("no node holding them is an offline edit", async () => {
+    answers({ status: "gone" });
+    expect((await act("permissions.set", GRANT)).ok).toBe(true);
+    expect(heroPermissions()).toBe("admin.kick");
+    expect(await load()).toMatchObject({ kind: "data", data: { snapshot: { permissions: ["admin.kick"] } } });
+  });
+
+  test("a node that could not be reached changes nothing, and is not taken for offline", async () => {
+    answers({ status: "unreached" });
+    await expectRefused("permissions.set", GRANT, /online on a server node that could not be reached\. Nothing was changed/);
+    expect(await load()).toMatchObject({ kind: "result", ok: false });
+  });
+
+  test("a node that did not answer in time may have made the change, and the admin is told", async () => {
+    answers({ status: "unsure" });
+    await expectRefused("permissions.set", GRANT, /did not answer in time\. Reload before trying again/);
+  });
+
+  test("a look that was not answered in time changed nothing, and is not said to have", async () => {
+    answers({ status: "unsure" });
+    const result = await load();
+    if (result.kind !== "result") throw new Error("An unanswered look answers with a result");
+    expect(result.errors).toEqual(["The server node of hero did not answer in time."]);
+  });
+
+  describe("a read that fails", () => {
+    const failing = () => Promise.reject(new Error("Connection has failed"));
+    const NOT_READ = /could not be read/;
+
+    test("before the permission check is known, the admin is answered and not shut out", async () => {
+      spies.push(spyOn(permissions, "get").mockImplementation(failing));
+      const result = await expectRefused("permissions.set", GRANT, NOT_READ);
+      expect(result.denied).toBeUndefined();
+    });
+
+    test("in a search, the admin is answered", async () => {
+      spies.push(spyOn(permissions, "get").mockImplementation(failing));
+      expect(await editor.handleEditorPacket(ADMIN, "PLAYER_EDITOR_SEARCH", { query: "he" })).toMatchObject({ kind: "result", ok: false, action: "search", errors: [expect.stringMatching(NOT_READ)] });
+    });
+
+    test("of the player a change is for, the admin is answered and nothing is changed", async () => {
+      spies.push(spyOn(player, "findAccount").mockImplementation(failing));
+      await expectRefused("permissions.set", GRANT, NOT_READ);
+    });
+
+    test("of the player being looked at, the admin is answered", async () => {
+      answers({ status: "gone" });
+      spies.push(spyOn(player, "getStats").mockImplementation(failing));
+      expect(await load()).toMatchObject({ kind: "result", ok: false, action: "load", errors: [expect.stringMatching(NOT_READ)] });
+    });
+
+    test("after a change, the change is still reported as made", async () => {
+      answers({ status: "gone" });
+      spies.push(spyOn(player, "getStats").mockImplementation(failing));
+      const result = await act("permissions.set", GRANT);
+      expect(result).toMatchObject({ ok: true, errors: [], snapshot: null });
+      expect(heroPermissions()).toBe("admin.kick");
+    });
+
+    test("slowly, after a change, the admin is not kept waiting for it", async () => {
+      answers({ status: "gone" });
+      spies.push(spyOn(player, "getStats").mockImplementation(() => new Promise(() => {})));
+      const started = Date.now();
+      expect(await act("permissions.set", GRANT)).toMatchObject({ ok: true, errors: [], snapshot: null });
+      expect(Date.now() - started).toBeLessThan(3_000);
+    });
+
+    test("after a refusal, the reason is still what the admin is told", async () => {
+      answers({ status: "gone" });
+      spies.push(spyOn(player, "getStats").mockImplementation(failing));
+      const result = await act("currency.set", { copper: -1 });
+      expect(result).toMatchObject({ ok: false, snapshot: null });
+      expect(result.errors.join(" | ")).not.toMatch(NOT_READ);
+    });
+  });
+
+  test("a player who is changing node is not changed, but can be looked at", async () => {
+    login("hero", "7001", { handoff: true });
+    const ask = answers({ status: "gone" });
+    await expectRefused("permissions.set", GRANT, /hero is changing server node; try again/);
+    expect(await load()).toMatchObject({ kind: "data" });
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  test("a player on this node is changed here", async () => {
+    const { live } = login("hero", "7001");
+    const ask = answers({ status: "gone" });
+    expect((await act("permissions.set", GRANT)).ok).toBe(true);
+    expect(live.permissions).toEqual(["admin.kick"]);
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  test("the node that runs a change checks the admin again, by their account", async () => {
+    const { live } = login("hero", "7001");
+    const change = { type: "PLAYER_EDITOR_ACTION", data: { target: "hero", action: "permissions.set", ...GRANT } };
+    queries.length = 0;
+    expect(await editor.ownerNodeEdit({ ...change, admin: { username: "mod", id: "9002" } })).toMatchObject({ kind: "result", ok: false, denied: true });
+    expect(await editor.ownerNodeEdit(change)).toMatchObject({ kind: "result", ok: false, denied: true });
+    expect(writes()).toEqual([]);
+
+    expect(await editor.ownerNodeEdit({ ...change, admin: { username: "boss", id: "9001" } })).toMatchObject({ kind: "result", ok: true });
+    expect(live.permissions).toEqual(["admin.kick"]);
+  });
+
+  test("a look through their node gives the snapshot alone, to an admin who may have it", async () => {
+    const look = { type: "PLAYER_EDITOR_LOAD", data: { target: "HERO" } };
+    expect(await editor.ownerNodeEdit({ ...look, admin: { username: "mod", id: "9002" } })).toBeNull();
+    expect(await editor.ownerNodeEdit({ ...look, admin: { username: "boss", id: "9001" } })).toMatchObject({ username: "hero" });
+  });
+
+  test("a guild's member on another node gets the guild through that node", async () => {
+    const run = theirNode();
+    login("hero", "7001");
+    expect((await act("guild.join", { guild: "Frostguard" })).ok).toBe(true);
+    await Bun.sleep(0);
+    const [call] = run.mock.calls.filter(([member, action]) => member === "ally" && action === "guild-update") as any[];
+    expect(call[2]).toMatchObject({ guildId: 7, guildName: "Frostguard", members: ["ally", "hero"], packet: { guild_name: "Frostguard" } });
+  });
+
+  test("an offline member of a guild is sent nothing", async () => {
+    const run = theirNode();
+    spyOn(deliver, "isOnline").mockResolvedValue(false);
+    login("hero", "7001");
+    await act("guild.join", { guild: "Frostguard" });
+    await Bun.sleep(0);
+    expect(run.mock.calls.filter(([, action]) => action === "guild-update")).toEqual([]);
+  });
+
+  test("members on another node hear that the guild is gone", async () => {
+    await act("guild.join", { guild: "Frostguard" });
+    const run = theirNode();
+    expect((await act("guild.disband", {}, "ally")).ok).toBe(true);
+    expect(run.mock.calls as unknown[]).toContainEqual(["hero", "guild-cleared", { message: "The guild has been disbanded" }]);
+  });
+
+  test("a member told through their node that they have no guild loses it, and hears why", () => {
+    const hero = login("hero", "7001", { guild_id: 7, guild: ["ally", "hero"], guild_name: "Frostguard" });
+    editor.clearLiveGuild(hero.live, "The guild has been disbanded");
+    expect(hero.live).toMatchObject({ guild_id: null, guild: [], guild_name: null });
+    expect(hero.sent).toEqual([
+      { type: "UPDATE_GUILD", data: { members: [] } },
+      { type: "NOTIFY", data: { message: "The guild has been disbanded" } },
+    ]);
+    expect(bridged).toEqual(["announce"]);
+  });
+
+  test("party members on another node get the new list through that node", async () => {
+    const members = ["ally", "mod", "hero"];
+    tables.parties.push({ id: 50, leader: "ally", members: members.join(", ") });
+    for (const row of tables.accounts) if (members.includes(row.username)) row.party_id = 50;
+    login("hero", "7003", { party_id: 50, party: members });
+    const run = theirNode();
+
+    expect((await act("party.leave")).ok).toBe(true);
+    expect(run.mock.calls as unknown[]).toContainEqual(["ally", "party-update", { members: ["ally", "mod"], notice: undefined }]);
+    expect(run.mock.calls as unknown[]).toContainEqual(["mod", "party-update", { members: ["ally", "mod"], notice: undefined }]);
+  });
+
+  test("a party that ends is cleared for those on another node", async () => {
+    const members = ["ally", "hero"];
+    tables.parties.push({ id: 50, leader: "ally", members: members.join(", ") });
+    for (const row of tables.accounts) if (members.includes(row.username)) row.party_id = 50;
+    login("hero", "7003", { party_id: 50, party: members });
+    const run = theirNode();
+
+    expect((await act("party.leave")).ok).toBe(true);
+    expect(run.mock.calls.filter(([member, action]) => member === "ally" && action === "party-cleared").length).toBe(1);
   });
 });

@@ -196,7 +196,7 @@ describe("INVITATION_RESPONSE", () => {
   const body = rest.slice(0, rest.search(/\r?\n {6}\}\r?\n/));
   const names = [
     "type", "data", "currentPlayer", "wt", "log", "playerCache", "sendPacket", "packetManager", "invitations", "isOnline",
-    "clusterEnabled", "subscriptionLocked", "friends", "deliverToPlayer", "listener", "Events",
+    "clusterEnabled", "subscriptionLocked", "friends", "deliverToPlayer", "sendFriends", "greetContacts", "listener", "Events",
   ];
   const answerCase: (given: Record<string, any>) => Promise<void> = new Function(
     `"use strict";\n${transpiler.transformSync(`function make({ ${names.join(", ")} }: any) { return (async () => { switch (type) {${body}\n}\n} })(); }`)}\nreturn make;`,
@@ -213,6 +213,13 @@ describe("INVITATION_RESPONSE", () => {
   const sentTo = (username: string) => sent.filter(([to]) => to === username).map(([, packet]) => packet);
   const connect = (id: string, username: string) => (online[id] = { id, username, wt: { username } });
   const find = (username: string) => Object.values(online).find((p) => p.username.toLowerCase() === username.toLowerCase());
+  const deliverToPlayer = async (username: string, packet: Packet) => {
+    const live = find(username);
+    if (live) sent.push([live.username, packet]);
+    else if (cluster && username.toLowerCase() === "hero") sent.push(["hero@b", packet]);
+    else return false;
+    return true;
+  };
 
   beforeEach(() => {
     online = {};
@@ -237,13 +244,9 @@ describe("INVITATION_RESPONSE", () => {
     clusterEnabled: () => cluster,
     subscriptionLocked: () => locked,
     friends: { add: async (_name: string, friend: string) => [friend] },
-    deliverToPlayer: async (username: string, packet: Packet) => {
-      const live = find(username);
-      if (live) sent.push([live.username, packet]);
-      else if (cluster && username.toLowerCase() === "hero") sent.push(["hero@b", packet]);
-      else return false;
-      return true;
-    },
+    deliverToPlayer,
+    sendFriends: (username: string, friends: string[]) => deliverToPlayer(username, { type: "UPDATE_FRIENDS", data: { friends } }),
+    greetContacts: async () => {},
     listener: { emit: () => {} },
     Events: { FRIEND_ADDED: "onFriendAdded" },
   });

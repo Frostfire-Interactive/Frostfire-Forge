@@ -501,7 +501,7 @@ function cut(source: string, from: string, until: RegExp): string {
 const caseNames = [
   "type", "data", "response", "inviterName", "currentPlayer", "wt", "parties", "player", "playerCache", "sendPacket", "packetManager",
   "listener", "Events", "syncPartyLayers", "sendAnimationTo", "queueSpawnPlayerPacket", "getAnimationNameForDirection",
-  "getPlayerSpriteSheetData", "getMountSpriteUrl", "spellEffects", "queueSpawnForReceivers", "runOnPlayer", "deliverToPlayer", "clusterEnabled",
+  "getPlayerSpriteSheetData", "getMountSpriteUrl", "spellEffects", "queueSpawnForReceivers", "runOnPlayer", "deliverToPlayer", "greetContacts", "clusterEnabled",
 ];
 
 /** One of the receiver's player actions (registerPlayerAction at module level), as a function of the names it uses. */
@@ -566,6 +566,7 @@ const given = () => ({
   getMountSpriteUrl: () => null,
   spellEffects: { getEffectsPayload: () => [] },
   queueSpawnForReceivers: () => {},
+  greetContacts: async () => {},
   // As cluster/deliver.ts on one node: the receiver's action runs at once on the member, when they are online.
   runOnPlayer: async (username: string, action: string, args: any) => {
     const live = Object.values(online).find((each) => each.username.toLowerCase() === username.toLowerCase());

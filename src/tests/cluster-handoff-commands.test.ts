@@ -24,17 +24,17 @@ test("a player on another node is no longer refused", () => {
 test("each remote branch runs its action only for a name", () => {
   const summon = caseBody(commands, "SUMMON");
   expect(summon).toContain('isNaN(Number(identifier)) &&');
-  expect(summon).toContain('runOnPlayer(identifier, "cells-summon", {');
+  expect(summon).toContain('tryOnPlayer(identifier, "cells-summon", {');
   expect(summon).toContain('why: "summon"');
   expect(summon).toContain('p === "admin.summonadmins" || p === "admin.*"');
   const teleport = caseBody(commands, "TELEPORT");
   expect(teleport).toContain('isNaN(Number(identifier)) &&');
-  expect(teleport).toContain('runOnPlayer(identifier, "cells-teleport-to", {');
+  expect(teleport).toContain('tryOnPlayer(identifier, "cells-teleport-to", {');
   // The admin's own held permission goes with it, read as /summon reads it (security review M4).
   expect(teleport).toContain('admins: currentPlayer.permissions.some((p: string) => p === "admin.summonadmins" || p === "admin.*"),');
   const revive = caseBody(commands, "REVIVE");
   expect(revive).toContain('isNaN(Number(reviveIdentifier))');
-  expect(revive).toContain('runOnPlayer(reviveIdentifier, "cells-revive", { by: currentPlayer.username })');
+  expect(revive).toContain('tryOnPlayer(reviveIdentifier, "cells-revive", { by: currentPlayer.username })');
 });
 
 test("AUTH refuses a node ticket that was spent elsewhere, after the account check and before the queue", () => {

@@ -258,14 +258,16 @@ test("an admin's write to a player marked on another node waits for the mark", a
 // the command module cannot be imported here, it starts the server.
 const GIVE_NAMES = [
   "commandName", "currentPlayer", "wt", "args", "sendPacket", "packetManager", "playerCache", "player", "assetCache",
-  "inventory", "getIconUrl", "settleStoreAttached", "settleForAdmin", "settlingNotice",
+  "inventory", "getIconUrl", "settleStoreAttached", "settleForAdmin", "settlingNotice", "tryOnPlayer", "notSent",
 ];
 async function giveCommand(): Promise<(names: Record<string, unknown>) => Promise<void>> {
   const text = await source("../socket/handlers/commands.ts");
   const start = text.indexOf('\n          case "GIVE": {');
   const end = text.indexOf('\n          case "', start + 1);
   const block = text.slice(start, end);
-  const body = new Bun.Transpiler({ loader: "ts" }).transformSync(`async function run({ ${GIVE_NAMES.join(", ")} }: any) { switch (commandName) {${block}\n} }`);
+  const helperAt = text.indexOf("async function giveItem(");
+  const helper = text.slice(helperAt, text.indexOf("\n}\n", helperAt) + 3);
+  const body = new Bun.Transpiler({ loader: "ts" }).transformSync(`async function run({ ${GIVE_NAMES.join(", ")} }: any) {\n${helper}\nswitch (commandName) {${block}\n} }`);
   return new Function(`"use strict";\n${body}\nreturn run;`)();
 }
 
@@ -290,6 +292,8 @@ async function give(itemName = "Iron Ore") {
     settleStoreAttached,
     settleForAdmin,
     settlingNotice,
+    tryOnPlayer: async () => "offline",
+    notSent: () => "",
   });
   return { told, added };
 }

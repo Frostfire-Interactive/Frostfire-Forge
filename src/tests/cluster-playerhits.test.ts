@@ -48,6 +48,14 @@ test("refusalOf protects a dead, hidden, guest or no-PvP target, and lets a heal
   expect(refusalOf(target(), hit(), true)).toBeNull();
 });
 
+test("refusalOf keeps harm off a player held in a cutscene, and lets a heal through", () => {
+  const cutscene = { phase: "running", lock: true, clockEndsAt: Date.now() + 60_000 };
+  expect(refusalOf(target({ cutscene }), hit(), true)).toBe("immune");
+  expect(refusalOf(target({ cutscene }), hit({ harmful: false, damage: -10 }), true)).toBeNull();
+  expect(refusalOf(target({ cutscene: { ...cutscene, lock: false } }), hit(), true)).toBeNull();
+  expect(refusalOf(target({ cutscene: { ...cutscene, clockEndsAt: Date.now() - 1 } }), hit(), true)).toBeNull();
+});
+
 test("refusalOf answers dead for a target at 0 health whose isDead is not set yet (a death in progress)", () => {
   expect(refusalOf(target({ stats: { health: 0 } }), hit(), true)).toBe("dead");
   expect(refusalOf(target({ stats: { health: -4 } }), hit({ harmful: false, damage: -3 }), true)).toBe("dead");

@@ -7,15 +7,19 @@ import log from "../modules/logger";
 // tried every REVIVE_MS and swapped in when one connects. This is the cluster store's approach (cluster/redisstore.ts),
 // and the shared cache client's (the asset and row cache, SharedRedis below): one implementation, RedisSlot.
 //
-// Nothing queues while Redis is away: a call fails at once, so a login is not held behind a queue that may never drain.
-// connectionTimeout stays for the first connection only: for a refused connection Bun's connect() neither resolves nor
-// rejects, so it does not bound an attempt. Each attempt has its own deadline here instead.
+// With CLIENT_OPTIONS nothing queues while Redis is away: a call fails at once, so a login is not held behind a queue
+// that may never drain. connectionTimeout stays for the first connection only: for a refused connection Bun's connect()
+// neither resolves nor rejects, so it does not bound an attempt. Each attempt has its own deadline here instead.
 
 export const CONNECT_WAIT_MS = 5_000;
 /** How often a lost connection is tried again with a fresh client (ms). */
 export const REVIVE_MS = 3_000;
 /** How long one revival attempt waits for its fresh client to connect before it is closed and dropped (ms). */
 export const ATTEMPT_MS = 5_000;
+/** How long a cache call waits for its answer before Redis is asked whether it answers at all (ms). */
+export const CACHE_CALL_MS = 3_000;
+/** How long that question waits for its own answer (ms). */
+export const CACHE_PROBE_MS = 2_000;
 export const CLIENT_OPTIONS: RedisOptions = {
   autoReconnect: true,
   maxRetries: 0xffff_ffff, // the most Bun accepts
@@ -212,10 +216,16 @@ export class RedisSlot {
  * in place of Bun's `redis` singleton, which gives up for good after a long outage. It connects on first use. A call
  * made while the first connection is made waits for it (CONNECT_WAIT_MS at most), then goes to the client, or fails
  * like any call to a lost connection.
+ *
+ * Bun's client has no deadline of its own: against a Redis that froze, a call never ends, and whatever awaits it (an
+ * admin's edit, say) goes on when Redis wakes. So a call left unanswered for callMs asks Redis whether it answers at all,
+ * and fails if it does not. A flat deadline would not do: the connection answers in order and some values are tens of
+ * MB, so on a slow link a healthy Redis can keep a call waiting for longer than a frozen one should.
  */
 export class SharedRedis {
   private readonly slot: RedisSlot;
   private started: Promise<void> | null = null;
+  private asking: Promise<boolean> | null = null;
 
   constructor(
     url: string | undefined = process.env.REDIS_URL,
@@ -223,6 +233,8 @@ export class SharedRedis {
     private readonly make: () => RedisClient = () => new RedisClient(url, SHARED_OPTIONS),
     private readonly attemptMs = ATTEMPT_MS,
     reviveMs = REVIVE_MS,
+    private readonly callMs = CACHE_CALL_MS,
+    private readonly probeMs = CACHE_PROBE_MS,
   ) {
     this.slot = new RedisSlot({ name: "Redis cache", make, reviveMs, attemptMs });
   }
@@ -248,16 +260,68 @@ export class SharedRedis {
     return this.slot.client!;
   }
 
-  async get(key: string): Promise<string | null> {
-    return (await this.redis()).get(key);
+  // `run`, for as long as Redis answers. A call that gave up may still be carried out when Redis wakes: the commands
+  // already on the wire are, and nothing can take them back.
+  private async call<T>(run: (client: RedisClient) => Promise<T>): Promise<T> {
+    const started = Date.now();
+    const running = this.redis().then(run);
+    const ended = running.then(() => true, () => true); // also: a rejection after the call gave up has no one waiting
+    for (;;) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const overdue = await Promise.race([
+        ended.then(() => false),
+        new Promise<boolean>((resolve) => {
+          timer = setTimeout(() => resolve(true), this.callMs);
+          (timer as { unref?: () => unknown }).unref?.();
+        }),
+      ]);
+      clearTimeout(timer);
+      if (!overdue) return running;
+      if (await Promise.race([ended, this.answers()])) continue;
+      this.stalled();
+      throw new Error(`Redis did not answer within ${Date.now() - started} ms`);
+    }
   }
 
-  async set(key: string, value: string): Promise<unknown> {
-    return (await this.redis()).set(key, value);
+  // One question at a time, shared by every call waiting. On a connection of its own: the one in use answers in order.
+  private answers(): Promise<boolean> {
+    this.asking ??= this.ask().finally(() => { this.asking = null; });
+    return this.asking;
   }
 
-  async send(command: string, args: string[]): Promise<any> {
-    return (await this.redis()).send(command, args);
+  private async ask(): Promise<boolean> {
+    let probe: RedisClient | null = null;
+    try {
+      probe = this.make();
+      const connected = probe.connect();
+      await within(connected.then(() => probe!.send("PING", [])), this.probeMs);
+      return true;
+    } catch {
+      return false;
+    } finally {
+      try { probe?.close(); } catch {}
+    }
+  }
+
+  // A connection that stopped answering never says so, and may never speak again (a host gone without a goodbye). It
+  // counts as lost, so a fresh client takes its place once one connects.
+  private stalled(): void {
+    const client = this.slot.client;
+    if (!client || !this.slot.isUp()) return;
+    log.error("Redis cache did not answer: the connection counts as lost");
+    this.slot.revive(client);
+  }
+
+  get(key: string): Promise<string | null> {
+    return this.call((client) => client.get(key));
+  }
+
+  set(key: string, value: string): Promise<unknown> {
+    return this.call((client) => client.set(key, value));
+  }
+
+  send(command: string, args: string[]): Promise<any> {
+    return this.call((client) => client.send(command, args));
   }
 
   /** False while the connection is lost. */

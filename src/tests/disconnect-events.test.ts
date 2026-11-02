@@ -295,7 +295,7 @@ describe("a connection that ends", () => {
 
 // ----------------------------------------------------------------- guild join
 
-const inviteNames = ["type", "response", "inviterName", "currentPlayer", "wt", "guilds", "sendPacket", "deliverToPlayer", "packetManager", "playerCache", "broadcastPlayerUpdate", "player", "listener", "Events", "GuildPermission", "pushGuild"];
+const inviteNames = ["type", "response", "inviterName", "currentPlayer", "wt", "guilds", "sendPacket", "deliverToPlayer", "packetManager", "playerCache", "broadcastPlayerUpdate", "greetContacts", "player", "listener", "Events", "GuildPermission", "pushGuild"];
 const guildInvite = withNames(
   inviteNames,
   `return (async () => { switch (type) {${cut(receiver, '\n          case "INVITE_GUILD": {', /\r?\n {10}}\r?\n/)}\n          }\n} })();`,
@@ -332,6 +332,7 @@ function answerInvite(invited: any, inviter: any, response: string): Promise<voi
     packetManager: { notify: (data: Row) => [{ type: "NOTIFY", data }], updateGuild: (data: Row) => [{ type: "UPDATE_GUILD", data }] },
     playerCache,
     broadcastPlayerUpdate: () => {},
+    greetContacts: async () => {},
     player: { getSessionIdByUsername: async (username: string) => Object.values(online).find((live) => live.username === username)?.id },
     listener,
     Events,

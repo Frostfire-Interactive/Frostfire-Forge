@@ -205,7 +205,7 @@ describe("the disconnect", () => {
   const listenerNames = [
     "playerCache", "packetManager", "effectManager", "dots", "getStunsForPlayer", "getSlowsForPlayer", "saveSicknessOnDisconnect",
     "loot", "cleanupPlayerState", "releaseDraggedBy", "listener", "Events", "removeFromAuthenticationQueues", "worlds", "log", "player",
-    "console", "forgetPlayer", "fencedSaves", "clusterEnabled", "isOnline", "deliverToPlayer", "takeAchievementProgress", "settleFencedLeave",
+    "console", "forgetPlayer", "fencedSaves", "clusterEnabled", "isOnline", "tellContactsOffline", "takeAchievementProgress", "settleFencedLeave",
   ];
   const make = withNames(
     listenerNames,
@@ -241,7 +241,7 @@ describe("the disconnect", () => {
       fencedSaves,
       clusterEnabled: () => false,
       isOnline: async () => false,
-      deliverToPlayer: async () => {},
+      tellContactsOffline: async () => {},
       takeAchievementProgress,
       settleFencedLeave,
       ...over,

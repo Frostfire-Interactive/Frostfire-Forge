@@ -34,6 +34,8 @@ import { ensureFootprintsSchema } from "../systems/footprints";
 import { changedOf, clearChanged, ensureAchievementSchema, forgetRows, markChanged } from "../systems/achievements/store.ts";
 import { ensureBuyPriceColumn, ensureHomeItemIcon, ensureSoulboundColumn, ensureSpriteSheetColumn } from "../systems/items.ts";
 import { ensureMountEditorPermission } from "../systems/mounteditor.ts";
+import { ensureCutsceneEditorPermission, ensureCutsceneSchema } from "../systems/cutscenes.ts";
+import * as cutscenePlayer from "../systems/cutsceneplayer.ts";
 import worlds from "../systems/worlds.ts";
 import playerCache from "../services/playermanager.ts";
 import { loadTables, forgetPlayer } from "../services/datacache.ts";
@@ -51,8 +53,10 @@ import { pluginHandlers, warpInterceptors, packetInterceptors } from "./receiver
 import { startWebTransportServer, TransportConnection, frameLimitFor } from "./transport.ts";
 import { checkTicket, nodeTicket, type TicketFields } from "./ticket.ts";
 import { clusterEnabled, nodeId, nodeLinkBindHost, nodeLinkBindWarning, nodeLinkHost, nodeLinkPort, regionId } from "../cluster/config.ts";
-import { broadcastWorld, deliverToPlayer, isOnline } from "../cluster/deliver.ts";
-import { clusterBlocks, clusterNodes, clusterStore, startCluster, stopCluster } from "../cluster/index.ts";
+import { broadcastWorld, isOnline } from "../cluster/deliver.ts";
+import { clusterBlocks, clusterNodes, clusterStore, forgetServerOrders, onPlayersLost, peersOnline, startCluster, stopCluster } from "../cluster/index.ts";
+import { SettledCount } from "../cluster/census.ts";
+import { contactsLost, tellContactsOffline } from "./contacts.ts";
 import { dotCredit } from "../cluster/dotcredit.ts";
 import { forwardTable } from "../cluster/forwarding.ts";
 import { ghosts } from "../cluster/ghosts.ts";
@@ -83,7 +87,7 @@ import spellEffects, { getStunsForPlayer, getSlowsForPlayer } from "../systems/s
 import { forgetSickness, saveOnDisconnect as saveSicknessOnDisconnect } from "../systems/resurrection.ts";
 import effectManager from "../services/effectmanager";
 import { GatewayClient, resolveUseSSL } from "../modules/gateway-client.ts";
-import { isWhitelistEnabled, loadRealmWhitelist, onWhitelistSwitch } from "../services/whitelist.ts";
+import { isWhitelistEnabled, loadRealmWhitelist, onWhitelistSwitch, whitelistRealm } from "../services/whitelist.ts";
 import { ensureSubscriptionSchema, refreshSubscriptions, subscriptionsReady, refusal as subscriptionRefusal } from "../systems/subscriptions.ts";
 import loot from "../systems/loot";
 import creatures from "../systems/creatures";
@@ -227,12 +231,16 @@ await ensureBuyPriceColumn();
 await ensureSpriteSheetColumn();
 // The mount editor's permission, so it can be granted from the list of permissions.
 await ensureMountEditorPermission();
+// The cutscenes and who has seen them (the cutscene editor, /cse), the same way, and the editor's permission: before the
+// table caches are read, so a running server does not depend on someone running the setup again.
+await ensureCutsceneSchema();
+await ensureCutsceneEditorPermission();
 // The home item's icon, when it has none: before the items are read.
 await ensureHomeItemIcon();
 await loadTables();
 await refreshSubscriptions();
 
-const realmId = process.env.SERVER_ID || "default";
+const realmId = whitelistRealm();
 
 // Turned on later (/whitelist on, the control panel), the usernames are loaded then.
 if (isWhitelistEnabled()) {
@@ -481,13 +489,39 @@ function onTransportOpen(connection: TransportConnection) {
 
   setTimeout(() => {
     broadcastConnectionCount();
+    // Joining a cluster: told at once, as the others hear only when the count settles. One arriving from another node
+    // already has it.
+    if (clusterEnabled() && !connection.data.ticketSpent) sendPacket(connection, [connectionCountPacket(onlineCount())]);
   }, timeout);
 }
 
 let lastConnectionCountBroadcast = 0;
 let connectionCountDirty = false;
+const settledOnline = new SettledCount();
+
+/** Everyone connected to the game: this node's connections and, in a cluster, the players on the region's other nodes. */
+function onlineCount(): number {
+  return connections.size + peersOnline();
+}
+
+function connectionCountPacket(count: number) {
+  return packet.encode(JSON.stringify({
+    type: "CONNECTION_COUNT",
+    data: count,
+  }));
+}
+
+function publishConnectionCount(count: number) {
+  // Loss-tolerant status fan-out: a datagram, not a reliable frame - at 1000+
+  // connections the per-second broadcast to every player would otherwise
+  // contend for each connection's ordered stream queue.
+  topicBus.publishBestEffort("CONNECTION_COUNT", connectionCountPacket(count));
+}
 
 function broadcastConnectionCount() {
+  // A cluster's count goes out from the timer below, once it has settled.
+  if (clusterEnabled()) return;
+
   const now = Date.now();
   if (now - lastConnectionCountBroadcast < 500) {
     connectionCountDirty = true;
@@ -496,25 +530,16 @@ function broadcastConnectionCount() {
 
   lastConnectionCountBroadcast = now;
   connectionCountDirty = false;
-
-  // In cluster mode this is the count of this node's connections only. The
-  // region-wide count is the gateway's: it sums the online nodes' connection
-  // counts per region (collapseRegions), and that is what the realm list shows.
-  // Loss-tolerant status fan-out: a datagram, not a reliable frame - at 1000+
-  // connections the per-second broadcast to every player would otherwise
-  // contend for each connection's ordered stream queue.
-  topicBus.publishBestEffort(
-    "CONNECTION_COUNT",
-    packet.encode(JSON.stringify({
-      type: "CONNECTION_COUNT",
-      data: connections.size,
-    }))
-  );
+  publishConnectionCount(onlineCount());
 }
 
 setInterval(() => {
-  if (!connectionCountDirty) return;
-  broadcastConnectionCount();
+  if (clusterEnabled()) {
+    const count = settledOnline.next(onlineCount(), Date.now());
+    if (count !== null) publishConnectionCount(count);
+    return;
+  }
+  if (connectionCountDirty) broadcastConnectionCount();
 }, 1000);
 
 // Low-cost reliable-stream queue health sampling: surfaces connections whose
@@ -755,6 +780,10 @@ function handoffState(p: any): {
   walkIdleMs: number;
   /** The player's pose revision (socket/posedgram.ts): the new node counts on from it, so it never sends a lower one. */
   poseRev: number;
+  /** The cutscene the player is watching, or null: the new node takes the session over. */
+  cutscene: cutscenePlayer.CarriedScene | null;
+  /** The chain of cutscenes moving the player to the new node, or null: its next scene begins there. */
+  cutsceneChain: cutscenePlayer.CarriedChain | null;
 } {
   const id = String(p.id);
   const now = performance.now();
@@ -782,6 +811,8 @@ function handoffState(p: any): {
     walk: walkOf(p),
     walkIdleMs: walkIdleMsOf(p, now),
     poseRev: Number.isSafeInteger(p.poseRev) && p.poseRev > 0 ? p.poseRev : 0,
+    cutscene: cutscenePlayer.carriedScene(p),
+    cutsceneChain: cutscenePlayer.carriedChain(p),
   };
 }
 
@@ -831,6 +862,8 @@ function releaseHandedOff(p: any): void {
     ["forget its sickness", () => forgetSickness(p)],
     // It travels in the snapshot (consumableReadyIn): a hand-back here must not find the old one.
     ["drop its consumable cooldown", () => setConsumableReadyIn(p.username, 0)],
+    // It travels in the snapshot too: this node's clock must not end the scene the next node goes on with.
+    ["drop its cutscene", () => cutscenePlayer.clear(p)],
     ["close its creature editor", () => creatures.closeEditorFor(id)],
     ["forget its creatures", () => creatures.sync.forget(id)],
     ["forget its gathering nodes", () => gathering.sync.forget(id)],
@@ -1068,6 +1101,7 @@ if (linkTransport) {
 await warmStreamDataWithin();
 // A link port in use makes startCluster throw: the node does not start without its links.
 // The link hello is signed with a key derived from CLUSTER_LINK_SECRET (startCluster reads it), not the gateway secret.
+onPlayersLost((peer, restarted) => void contactsLost(peer, restarted));
 const cluster = await startCluster(
   undefined,
   {
@@ -1167,7 +1201,13 @@ try {
 
 // In a cluster only the first node of the region clears the shared guests and parties (cluster/startclear.ts, clearguard.ts).
 listener.on(Events.AWAKE, async () => {
-  await clearShared(() => player.clear());
+  await clearShared(async () => {
+    await player.clear();
+    await forgetServerOrders();
+  });
+  // The handler modules import the receiver, so they load after it. Loading this one also starts following server orders.
+  const { catchUpServerOrders } = await import("./handlers/commands.ts");
+  await catchUpServerOrders();
 });
 
 
@@ -1212,6 +1252,7 @@ await creatures.init();
 await gathering.init();
 await fishing.init();
 await achievements.init();
+await cutscenePlayer.init();
 startAutoPartyLayerSync(sendAnimationTo);
 startAutoLayerCondensation(sendAnimationTo);
 
@@ -1253,6 +1294,7 @@ try {
       // and the move counts as in flight for the handoff's wait.
       return await guardedTeleport(clusterEnabled(), playerObj, () => teleportPlayerWrapper(playerObj, mapName, x, y));
     },
+    playCutscene: (playerObj: any, name: string): Promise<boolean> => cutscenePlayer.play(playerObj, name),
     registerSpell: async (spell: SpellData) => {
       if (!spell || !spell.name) {
         log.warn("Plugin tried to register a spell without a name -- skipping");
@@ -1650,11 +1692,7 @@ listener.on("onDisconnect", async (data) => {
 
     // In a cluster, a newer login on another node displaced this session: the player is still online there.
     const onlineElsewhere = clusterEnabled() && !!left && (await isOnline(left));
-    if (!onlineElsewhere && playerData.friends && Array.isArray(playerData.friends) && playerData.friends.length > 0) {
-      // Friends on any node (cluster/deliver.ts); a friend who is not online is skipped.
-      const offline = packetManager.updateOnlineStatus({ online: false, username: playerData.username });
-      await Promise.all(playerData.friends.map((friendUsername: string) => deliverToPlayer(friendUsername, [offline[0]])));
-    }
+    if (!onlineElsewhere) await tellContactsOffline(playerData);
 
     await player.clearSessionId(playerData.id);
   } catch (e) {
@@ -1772,8 +1810,7 @@ listener.on(Events.SAVE, async () => {
       ]);
       return { success: true, playerId };
     } catch (e) {
-      playerCache.remove(playerId);
-      forgetNpcStream(playerId);
+      // The player stays: their connection is open, and the next save writes what this one could not.
       log.error(`Failed to save player ${playerId}: ${e as string}`);
       return { success: false, playerId, error: e };
     }
@@ -1790,7 +1827,7 @@ listener.on(Events.SAVE, async () => {
 
 export const events = {
   GetOnlineCount() {
-    return connections.size;
+    return onlineCount();
   },
   GetOnlineData() {
     return connections;

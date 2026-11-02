@@ -27,10 +27,18 @@ import questLog, { rowsOf } from "./quests/log";
 import questDefinitions from "./quests/definitions";
 import { markersFor } from "./quests/markers";
 import { STALE_AFTER_SETTLE, settleForAdmin, settleStoreAttached, settlingNotice } from "../cluster/tradesettle";
+import { heldNote, isHeld } from "./cutsceneheld";
+import { greetFrom, sendFriends } from "../socket/contacts";
+import { peerRoster } from "../cluster/index";
+import { askPlayer, deliverToPlayer, isOnline, runOnPlayer, type PlayerAnswer } from "../cluster/deliver";
 
 /** Admins of the server itself: the rule the particle editor's packets use. */
 export const EDITOR_PERMISSIONS = ["server.admin", "server.*"];
 export const DENIED = "You don't have permission to use the player editor.";
+/** What an admin is told when the data a request needs cannot be read, as when Redis is out. */
+export const NOT_READ = "The server's data could not be read right now, so nothing was changed. Try again shortly.";
+/** Longest an answer waits for the fresh state it carries. */
+const FRESH_MS = 2_000;
 
 /** Results per search: the editor finds a known player or item, it does not browse. */
 export const SEARCH_LIMIT = 50;
@@ -45,6 +53,9 @@ const COLLECTABLE_TYPES = ["mount"];
 /** Usernames are letters, digits and underscores; nothing else is looked up. */
 const USERNAME = /^[a-zA-Z0-9_]{1,64}$/;
 const DEAD = "The player is dead: revive them before changing this.";
+/** How long the node a player is on gets to answer: a snapshot is quick, an action may wait for a trade to settle (at most 40 s). */
+const OWNER_LOAD_MS = 8_000;
+const OWNER_ACTION_MS = 45_000;
 
 /**
  * What only the socket layer can do for an online player (area-of-interest
@@ -413,6 +424,10 @@ export async function search(data: any): Promise<EditorSearch> {
   for (const p of Object.values(playerCache.list() as Record<string, any>)) {
     if (p?.username) online.set(lower(p.username), Number(p.userid) || 0);
   }
+  // The other nodes' players, as those nodes list them for a control panel.
+  for (const { answer } of await peerRoster()) {
+    for (const row of (answer?.rows ?? []) as ControlPanelPlayer[]) online.set(row.username, row.userid ?? 0);
+  }
   let players: Array<{ username: string; userid: number; online: boolean }>;
   if (!query) {
     players = [...online].map(([username, userid]) => ({ username, userid, online: true }));
@@ -774,13 +789,6 @@ async function unlearnSpell({ username, data }: ActionContext): Promise<string[]
 
 // ----------------------------------------------------------------- friends
 
-function pushFriends(username: string, list: string[]): void {
-  const live = findOnline(username);
-  if (!live) return;
-  live.friends = list;
-  send(live.wt, packetManager.updateFriends({ friends: list }));
-}
-
 async function addFriend({ username, data }: ActionContext): Promise<string[]> {
   const other = await resolveTarget(data?.username);
   if (!other) return ["That player does not exist."];
@@ -788,13 +796,9 @@ async function addFriend({ username, data }: ActionContext): Promise<string[]> {
   if ((await friends.list(username)).includes(other.username)) return [`${other.username} is already their friend.`];
 
   // Friendship is mutual everywhere else: each list gets the other name.
-  pushFriends(username, await friends.add(username, other.username));
-  pushFriends(other.username, await friends.add(other.username, username));
-  const [mine, theirs] = [findOnline(username), findOnline(other.username)];
-  if (mine && theirs) {
-    send(mine.wt, packetManager.updateOnlineStatus({ online: true, username: theirs.username }));
-    send(theirs.wt, packetManager.updateOnlineStatus({ online: true, username: mine.username }));
-  }
+  await sendFriends(username, await friends.add(username, other.username));
+  await sendFriends(other.username, await friends.add(other.username, username));
+  await greetFrom(username, [other.username]);
   listener.emit(Events.FRIEND_ADDED, { type: "add", playerUsername: username, friendUsername: other.username });
   return [];
 }
@@ -808,19 +812,32 @@ async function removeFriend({ username, data }: ActionContext): Promise<string[]
   // The friends system only removes names that still have an account.
   const mine = await friends.list(username);
   if (mine.includes(friend)) return [`Could not remove ${friend}: that account no longer exists.`];
-  pushFriends(username, mine);
-  pushFriends(friend, await friends.remove(friend, username));
+  await sendFriends(username, mine);
+  await sendFriends(friend, await friends.remove(friend, username));
   listener.emit(Events.FRIEND_REMOVED, { type: "remove", playerUsername: username, friendUsername: friend });
   return [];
 }
 
 // ------------------------------------------------------------------- guild
 
+/** A member on another node, when they are online, gets the same through that node. */
+async function pushGuildToOtherNode(member: string, members: string[], guildId: number, guildName: string): Promise<void> {
+  try {
+    if (!(await isOnline(member))) return;
+    await runOnPlayer(member, "guild-update", { guildId, members, guildName, packet: await guilds.packetFor(guildId, member) });
+  } catch (error) {
+    log.error(`The guild could not be sent to ${member}: ${error}`);
+  }
+}
+
 /** Tell a guild's online members who is in it now. */
 function pushGuildMembers(members: string[], guildId: number, guildName: string): void {
   for (const member of members) {
     const live = findOnline(member);
-    if (!live) continue;
+    if (!live) {
+      void pushGuildToOtherNode(member, members, guildId, guildName);
+      continue;
+    }
     live.guild_id = guildId;
     live.guild = members;
     live.guild_name = guildName;
@@ -830,15 +847,20 @@ function pushGuildMembers(members: string[], guildId: number, guildName: string)
   }
 }
 
-function clearGuild(username: string, message: string): void {
-  const live = findOnline(username);
-  if (!live) return;
+/** The player on this node holds no guild now, and is told why. Runs as the action "guild-cleared" for another node's. */
+export function clearLiveGuild(live: any, message: string): void {
   live.guild_id = null;
   live.guild = [];
   live.guild_name = null;
   send(live.wt, packetManager.updateGuild({ members: [] }));
   send(live.wt, packetManager.notify({ message }));
   bridge?.announce(live);
+}
+
+function clearGuild(username: string, message: string): void {
+  const live = findOnline(username);
+  if (live) clearLiveGuild(live, message);
+  else void runOnPlayer(username, "guild-cleared", { message }).catch((error) => log.error(`${username} could not be told of their guild: ${error}`));
 }
 
 async function joinGuild({ username, data }: ActionContext): Promise<string[]> {
@@ -851,6 +873,7 @@ async function joinGuild({ username, data }: ActionContext): Promise<string[]> {
   const members = await guilds.add(username, guild.id);
   if (members.length === 0) return ["Could not add the player to that guild; it may be full."];
   pushGuildMembers(members, guild.id, guild.name);
+  await greetFrom(username, members);
   const live = findOnline(username);
   if (live) {
     send(live.wt, packetManager.notify({ message: `You have joined "${guild.name}"` }));
@@ -901,7 +924,12 @@ async function disbandGuild({ username }: ActionContext): Promise<string[]> {
 function pushParty(usernames: string[], partyId: number | null, members: string[], message?: string): void {
   for (const member of usernames) {
     const live = findOnline(member);
-    if (!live) continue;
+    if (!live) {
+      // A member on another node gets the same through that node.
+      const told = partyId === null ? runOnPlayer(member, "party-cleared", { message }) : runOnPlayer(member, "party-update", { members, notice: message });
+      void told.catch((error) => log.error(`The party could not be sent to ${member}: ${error}`));
+      continue;
+    }
     live.party_id = partyId;
     live.party = members;
     send(live.wt, packetManager.updateParty({ members }));
@@ -923,6 +951,7 @@ async function joinParty({ username, data }: ActionContext): Promise<string[]> {
   const partyId = await parties.getPartyId(username);
   const leader = (partyId && (await parties.getPartyLeader(partyId))) || other.username;
   pushParty(members, partyId, members);
+  await greetFrom(username, members);
   await bridge?.syncPartyLayers(leader, members);
   listener.emit(Events.PARTY_CHANGED, { type: "join", username, members });
   return [];
@@ -1106,6 +1135,7 @@ async function setLocation({ username, data }: ActionContext): Promise<string[]>
     return [];
   }
   if (!bridge) return ["Online players cannot be moved right now."];
+  if (isHeld(live)) return [heldNote(live, "")];
   await bridge.relocate(live, normMap(map.name), x, y, direction);
   return [];
 }
@@ -1167,62 +1197,128 @@ export async function handleEditorPacket(admin: any, type: string, data: any): P
   const fail = (errors: string[], snapshot: PlayerEditorSnapshot | null = null): EditorResult =>
     ({ kind: "result", ok: false, errors, action, snapshot });
 
-  if (!(await canUseEditor(admin))) {
-    log.warn(`[PLAYER_EDITOR] ${admin?.username} was refused ${action}`);
-    return { kind: "result", ok: false, errors: [DENIED], action, snapshot: null, denied: true };
-  }
+  try {
+    if (!(await canUseEditor(admin))) {
+      log.warn(`[PLAYER_EDITOR] ${admin?.username} was refused ${action}`);
+      return { kind: "result", ok: false, errors: [DENIED], action, snapshot: null, denied: true };
+    }
 
-  if (type === "PLAYER_EDITOR_SEARCH") return { kind: "search", data: await search(data) };
-  if (type !== "PLAYER_EDITOR_LOAD" && type !== "PLAYER_EDITOR_ACTION") {
-    return fail([`Unknown player editor action: ${type}`]);
-  }
+    if (type === "PLAYER_EDITOR_SEARCH") return { kind: "search", data: await search(data) };
+    if (type !== "PLAYER_EDITOR_LOAD" && type !== "PLAYER_EDITOR_ACTION") {
+      return fail([`Unknown player editor action: ${type}`]);
+    }
 
-  const target = await resolveTarget(data?.target);
-  if (!target) return fail(["Player not found."]);
+    const target = await resolveTarget(data?.target);
+    if (!target) return fail(["Player not found."]);
 
-  if (type === "PLAYER_EDITOR_LOAD") {
-    const snapshot = await buildSnapshot(target.username);
-    if (!snapshot) return fail(["Player not found."]);
-    return { kind: "data", data: { options: await buildOptions(admin), snapshot } };
-  }
+    const live = findOnline(target.username);
+    // A change now could miss what the handoff carries to the next node.
+    if (live?.handoff && type === "PLAYER_EDITOR_ACTION") return fail([`${target.username} is changing server node; try again.`]);
 
-  const handler = Object.hasOwn(ACTIONS, action) ? ACTIONS[action] : null;
-  if (!handler) return fail([`Unknown player editor action: ${action}`]);
-
-  return oneAtATime<EditorResult>(target.username, async () => {
-    // Bags and coins a lost trade may still change are not edited until it settles (cluster/tradesettle.ts): the
-    // handlers read before they write, and would count from rows the swap replaces. The admin is told while it waits.
-    // Guard (test "the player editor waits for the target's mark before it runs an action").
-    if (settleStoreAttached()) {
-      let waited = false;
-      const refused = await settleForAdmin(target.username, (leftMs) => {
-        waited = true;
-        send(admin?.wt, packetManager.notify({ message: settlingNotice(target.username, leftMs) }));
-      });
-      if (refused) return { kind: "result", ok: false, errors: [refused], action, snapshot: await buildSnapshot(target.username) };
-      // A balance or a stack set to a number was chosen from the snapshot the admin was shown, which may predate the
-      // swap: written now it would put back what the swap moved. Refused with the bags and coins as they are now.
-      // Guard (test "after a wait the player editor refuses a balance or stack set from the old snapshot").
-      if (waited && SET_AFTER_SNAPSHOT.has(action)) {
-        return { kind: "result", ok: false, errors: [STALE_AFTER_SETTLE], action, snapshot: await buildSnapshot(target.username) };
+    // A player has one live copy: one online elsewhere is read and changed on that node. No node holding them, they are offline.
+    let snapshot: PlayerEditorSnapshot | null = null;
+    if (!live) {
+      const there = await askOwnerNode(admin, type, target.username, data);
+      if (there.status === "unreached") return fail([`${target.username} is online on a server node that could not be reached. Nothing was changed.`]);
+      if (there.status === "unsure") {
+        return fail([type === "PLAYER_EDITOR_LOAD"
+          ? `The server node of ${target.username} did not answer in time.`
+          : `The server node of ${target.username} did not answer in time. Reload before trying again: a change may still have gone through.`]);
+      }
+      if (there.status === "answered") {
+        if (type === "PLAYER_EDITOR_ACTION") return there.value as EditorResult;
+        snapshot = there.value as PlayerEditorSnapshot | null;
+        if (!snapshot) return fail(["Player not found."]);
       }
     }
-    let errors: string[];
-    try {
-      errors = await handler({ admin, username: target.username, data });
-    } catch (error) {
-      log.error(`[PLAYER_EDITOR] ${action} on ${target.username} failed: ${error}`);
-      errors = ["The change failed on the server."];
+
+    if (type === "PLAYER_EDITOR_LOAD") {
+      snapshot ??= await buildSnapshot(target.username);
+      if (!snapshot) return fail(["Player not found."]);
+      return { kind: "data", data: { options: await buildOptions(admin), snapshot } };
     }
-    if (errors.length === 0) {
-      const details = { ...data };
-      delete details.target;
-      delete details.action;
-      log.info(`[PLAYER_EDITOR] ${admin.username} (${admin.id}) applied ${action} to ${target.username}: ${JSON.stringify(details).slice(0, 300)}`);
-    }
-    // The fresh state either way: after a refusal the editor still shows what the server has.
-    return { kind: "result", ok: errors.length === 0, errors, action, snapshot: await buildSnapshot(target.username) };
-  });
+
+    const handler = Object.hasOwn(ACTIONS, action) ? ACTIONS[action] : null;
+    if (!handler) return fail([`Unknown player editor action: ${action}`]);
+
+    return await oneAtATime<EditorResult>(target.username, async () => {
+      // Bags and coins a lost trade may still change are not edited until it settles (cluster/tradesettle.ts): the
+      // handlers read before they write, and would count from rows the swap replaces. The admin is told while it waits.
+      // Guard (test "the player editor waits for the target's mark before it runs an action").
+      if (settleStoreAttached()) {
+        let waited = false;
+        const refused = await settleForAdmin(target.username, (leftMs) => {
+          waited = true;
+          const notice = packetManager.notify({ message: settlingNotice(target.username, leftMs) });
+          // Sent here by the admin's node (askOwnerNode), so their connection is not on this one.
+          if (admin?.wt) send(admin.wt, notice);
+          else void deliverToPlayer(admin.username, notice);
+        });
+        if (refused) return { kind: "result", ok: false, errors: [refused], action, snapshot: await snapshotAfter(target.username) };
+        // A balance or a stack set to a number was chosen from the snapshot the admin was shown, which may predate the
+        // swap: written now it would put back what the swap moved. Refused with the bags and coins as they are now.
+        // Guard (test "after a wait the player editor refuses a balance or stack set from the old snapshot").
+        if (waited && SET_AFTER_SNAPSHOT.has(action)) {
+          return { kind: "result", ok: false, errors: [STALE_AFTER_SETTLE], action, snapshot: await snapshotAfter(target.username) };
+        }
+      }
+      let errors: string[];
+      try {
+        errors = await handler({ admin, username: target.username, data });
+      } catch (error) {
+        log.error(`[PLAYER_EDITOR] ${action} on ${target.username} failed: ${error}`);
+        errors = ["The change failed on the server."];
+      }
+      if (errors.length === 0) {
+        const details = { ...data };
+        delete details.target;
+        delete details.action;
+        log.info(`[PLAYER_EDITOR] ${admin.username} (${admin.id}) applied ${action} to ${target.username}: ${JSON.stringify(details).slice(0, 300)}`);
+      }
+      // The fresh state either way: after a refusal the editor still shows what the server has.
+      return { kind: "result", ok: errors.length === 0, errors, action, snapshot: await snapshotAfter(target.username) };
+    });
+  } catch (error) {
+    // Everything that writes answers for itself above, so nothing has changed by here. Never a denial: a permission
+    // that could not be read is not one the admin lacks, and a denial closes the editor.
+    log.error(`[PLAYER_EDITOR] ${action} by ${admin?.username} failed: ${error}`);
+    return fail([NOT_READ]);
+  }
+}
+
+/**
+ * The state to send with an answer, or null. A read that fails or runs late takes nothing from the answer: the admin
+ * is waiting on it (their tool gives up after 15 s), and the tool keeps what it shows until it reads again.
+ */
+export function freshOrNull<T>(read: () => Promise<T>, what: string): Promise<T | null> {
+  return Promise.race([
+    read().catch((error) => {
+      log.error(`${what} could not be read: ${error}`);
+      return null;
+    }),
+    Bun.sleep(FRESH_MS).then(() => null),
+  ]);
+}
+
+function snapshotAfter(username: string): Promise<PlayerEditorSnapshot | null> {
+  return freshOrNull(() => buildSnapshot(username), `[PLAYER_EDITOR] ${username} after an action`);
+}
+
+/** The node holding the player runs the packet (ownerNodeEdit). The admin is sent as the fields the handlers read. */
+function askOwnerNode(admin: any, type: string, username: string, data: any): Promise<PlayerAnswer<EditorResult | PlayerEditorSnapshot | null>> {
+  return askPlayer(username, "cells-editor", { admin: { username: admin.username, id: admin.id }, type, data: { ...data, target: username } },
+    type === "PLAYER_EDITOR_LOAD" ? OWNER_LOAD_MS : OWNER_ACTION_MS);
+}
+
+/**
+ * Runs as the action "cells-editor": a packet of the player editor for a player on this node, from the node of the
+ * admin who sent it. The admin is checked again here, by their account. A load gives the snapshot alone, for the
+ * asking node to add the options to.
+ */
+export async function ownerNodeEdit(args: any): Promise<EditorResult | PlayerEditorSnapshot | null> {
+  const admin = { username: typeof args?.admin?.username === "string" ? args.admin.username : "", id: args?.admin?.id };
+  if (args?.type !== "PLAYER_EDITOR_LOAD") return handleEditorPacket(admin, "PLAYER_EDITOR_ACTION", args?.data);
+  return (await canUseEditor(admin)) ? buildSnapshot(lower(args?.data?.target)) : null;
 }
 
 /**

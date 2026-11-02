@@ -17,6 +17,8 @@ export interface PresenceOptions {
   quiet?(username: string): boolean;
   /** How long to hold the directory release of a removed player (ms). 0 or less: at once. */
   holdReleaseMs?(value: any): number;
+  /** A held release was made: the player's client never reached the new node, and they are gone. */
+  onLost?(value: any): void;
   /**
    * Runs after each claim, before the claim counts as done: the owner epoch is taken here (ownerepoch.ts). Answers
    * the epoch the directory entry holds now, which a lift raises; null keeps the claimed one.
@@ -81,9 +83,10 @@ export function trackPresence(
       }));
   });
 
-  const release = (claim: Promise<number | null>, username: string) => {
+  const release = (claim: Promise<number | null>, username: string, released?: () => void) => {
     claim
       .then((epoch) => (epoch === null ? false : whenUp(`Directory release for ${username}`, () => directory.release(username, epoch))))
+      .then((made) => { if (made) released?.(); })
       .catch((error) => {
         if (error instanceof StoppedWaiting) log.debug(`Directory release for ${username} was not made: ${error.message}`);
         else log.error(`Directory release for ${username} failed: ${error}`);
@@ -104,7 +107,7 @@ export function trackPresence(
     }
     const timer = setTimeout(() => {
       held.delete(timer);
-      release(claim, username);
+      release(claim, username, () => options.onLost?.(value));
     }, holdMs);
     (timer as any).unref?.();
     held.add(timer);

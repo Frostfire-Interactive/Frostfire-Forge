@@ -1,5 +1,6 @@
 import assetCache from "../../services/assetCache";
 import currencySystem from "../../systems/currency";
+import * as cutscenePlayer from "../../systems/cutsceneplayer";
 import homes, { isInnkeeper } from "../../systems/homes";
 import inventory from "../../systems/inventory";
 import log from "../../modules/logger";
@@ -64,6 +65,9 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         } catch {
           // Talk credit is best-effort.
         }
+        // A cutscene tied to this NPC plays instead of the talk. One that plays once has been seen the next time:
+        // the talk goes on as it always did.
+        if (await cutscenePlayer.onNpcInteract(currentPlayer, npcId)) break;
         const offers = await questLogApi.offersFor(currentPlayer.username, npcId);
         // Locked quests (level-gated, prerequisite-locked) are hidden from
         // the player, so they must not count toward the skip-the-menu

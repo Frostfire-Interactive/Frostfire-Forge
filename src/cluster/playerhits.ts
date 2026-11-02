@@ -1,6 +1,7 @@
 import log from "../modules/logger";
 import layerManager from "../services/layermanager";
 import playerCache from "../services/playermanager";
+import { isHeld } from "../systems/cutsceneheld";
 import { spellHasHostileEffects } from "../systems/spelleffects";
 import { onApplyEffect, sendEffect, type EffectResult } from "./effects";
 import { bareMap, mirrorOwner, mirrorPlayers } from "./mirrors";
@@ -51,6 +52,8 @@ export function refusalOf(target: any, hit: PlayerHit, harmAllowed: boolean): Hi
   if (target.isDead || target.isGhost || target.stats.health <= 0) return "dead";
   // An admin in GM stealth is out of the game for everyone else, and guests cannot be attacked.
   if (target.isStealth || target.isGuest) return "immune";
+  // A player held in a cutscene is out of harm's way; a heal or a buff still lands.
+  if (harmful && isHeld(target)) return "immune";
   if (harmful && !harmAllowed) return "nopvp";
   return null;
 }

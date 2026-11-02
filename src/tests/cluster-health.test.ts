@@ -284,6 +284,8 @@ test("a delivery held past the hold is dropped and logged", async () => {
     expect(await a.deliverToPlayer("hero", [encode("hi")])).toBe(false);
     expect(await a.isOnline("hero")).toBe(false);
     expect(await a.runOnPlayer("hero", "note", "x")).toBe(false);
+    expect(await a.tryOnPlayer("hero", "note", "x")).toBe("unreached");
+    expect(await a.whetherOnline("hero")).toBeNull();
     store.down = false;
     await wait(20);
     expect(hero.sent).toEqual([]);

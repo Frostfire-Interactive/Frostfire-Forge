@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { databaseModule } from "./setup";
 import { receiverSource } from "./receiver-source";
 
@@ -57,10 +57,12 @@ mock.module("../services/assetCache", () => ({
 }));
 
 const { default: playerCache } = await import("../services/playermanager");
+const { default: player } = await import("../systems/player");
 const { clearCaches, dropRows, loadTables } = await import("../services/datacache");
 const { packetManager } = await import("../socket/packet_manager");
 const { oneAtATime } = await import("../systems/playereditor");
 const panel = await import("../systems/controlpanel");
+const cluster = await import("../cluster/index");
 type PanelRun = import("../systems/controlpanel").PanelRun;
 
 // ------------------------------------------------------------------ fixtures
@@ -508,11 +510,231 @@ describe("the live view", () => {
     expect(after.peak.online).toBe(before.online + 1);
   });
 
+  describe("in a cluster", () => {
+    const row = (username: string, extra: Record<string, unknown> = {}) => ({
+      id: username, username, level: 1, map: "overworld", isAdmin: false, isStealth: false, isGuest: false, dead: 0, onlineFor: null, ...extra,
+    });
+    const report = (nodeId: string, players: number) => ({ nodeId, at: 0, players, creatures: 9, blocks: 1, lagMs: 40, memoryMb: 300 });
+    const answered = (nodeId: string, rows: unknown[], status: unknown = null) => ({ nodeId, report: report(nodeId, rows.length), answer: { rows, status } });
+    let spies: Array<{ mockRestore(): void }> = [];
+    function peers(roster: any[]) {
+      spies = [spyOn(cluster, "clusterSelf").mockReturnValue("a"), spyOn(cluster, "peerRoster").mockResolvedValue(roster)];
+    }
+    afterEach(() => {
+      for (const spy of spies) spy.mockRestore();
+      spies = [];
+    });
+
+    test("every node's players are listed in one table, each with its node", async () => {
+      peers([answered("b", [row("cp_zoe"), row("cp_ann")])]);
+      const data = await panel.buildData(boss, false);
+      expect(mine(data.players).map((p) => [p.username, p.node])).toEqual([
+        ["cp_ann", "b"], ["cp_boss", "a"], ["cp_hero", "a"], ["cp_mod", "a"], ["cp_sneak", "a"], ["cp_zoe", "b"],
+      ]);
+      expect(data.status.online).toBe(data.players.length);
+    });
+
+    test("a stealthed player on another node is hidden by the same rule", async () => {
+      peers([answered("b", [row("cp_ghost", { isStealth: true, isAdmin: true })])]);
+      expect(mine(await panel.everyoneOnline(hero)).map((p) => p.username)).not.toContain("cp_ghost");
+      expect(mine(await panel.everyoneOnline(boss)).map((p) => p.username)).toContain("cp_ghost");
+    });
+
+    test("a player being handed over is listed once, as this node's", async () => {
+      peers([answered("b", [row("cp_hero", { level: 99 })])]);
+      const listed = mine(await panel.everyoneOnline(boss)).filter((p) => p.username === "cp_hero");
+      expect(listed.length).toBe(1);
+      expect(listed[0]).toMatchObject({ node: "a", level: 3 });
+    });
+
+    test("a node that does not answer is counted and shown from its load report", async () => {
+      peers([{ nodeId: "b", report: report("b", 6), answer: null }]);
+      const data = await panel.buildData(boss, false);
+      expect(data.status.online).toBe(data.players.length + 6);
+      expect(data.status.nodes?.[1]).toEqual({ id: "b", online: 6, uptime: null, memoryMb: 300, eventLoopLagMs: 40, awake: 9, answered: false });
+    });
+
+    test("the status adds the nodes up: memory and creatures summed, the worst lag, the oldest uptime", async () => {
+      const own = (await panel.buildData(boss, false)).status;
+      peers([answered("b", [row("cp_zoe")], { uptime: 999_999, memoryMb: 1_000, eventLoopLagMs: 77, creatures: { creatures: 8, awake: 2 } })]);
+      const { status } = await panel.buildData(boss, false);
+      expect(status.uptime).toBe(999_999);
+      expect(status.memoryMb).toBeGreaterThanOrEqual(1_000 + own.memoryMb - 5);
+      expect(status.eventLoopLagMs).toBe(77);
+      expect(status.creatures).toMatchObject({ creatures: 20, awake: 7 });
+      expect(status.nodes?.map((node) => [node.id, node.online, node.answered])).toEqual([["a", own.online, true], ["b", 1, true]]);
+    });
+
+    test("a world counts the players of every node, hidden ones and all, and a player being handed over once", async () => {
+      peers([answered("b", [row("cp_zoe"), row("cp_hero"), row("cp_ghost", { isStealth: true, isAdmin: true }), row("cp_deep", { map: "cave.json" })])]);
+      const here = (map: string) => panel.onlinePlayers({ isAdmin: true }).filter((p) => p.map === map).length;
+      const worlds = (await panel.buildData(hero, false)).world.worlds;
+      expect(worlds.map((world) => [world.name, world.players])).toEqual([["overworld", here("overworld") + 2], ["cave", here("cave") + 1]]);
+    });
+
+    test("a world's count does not add a shared count that already holds every node", async () => {
+      peers([answered("b", [row("cp_zoe")])]);
+      const here = panel.onlinePlayers({ isAdmin: true }).filter((p) => p.map === "overworld").length;
+      const shared = spyOn(bridge, "worlds").mockResolvedValue([{ name: "overworld", weather: "clear", showing: "clear", conditions: null, players: here + 1 }]);
+      spies.push(shared);
+      expect((await panel.buildData(hero, false)).world.worlds[0].players).toBe(here + 1);
+    });
+
+    test("a world with nobody on it counts none, whatever a dead node left in the shared count", async () => {
+      peers([answered("b", [])]);
+      const stale = spyOn(bridge, "worlds").mockResolvedValue([{ name: "desert", weather: "clear", showing: "clear", conditions: null, players: 40 }]);
+      spies.push(stale);
+      expect((await panel.buildData(hero, false)).world.worlds[0].players).toBe(0);
+    });
+
+    test("a node that does not answer leaves a world on the shared count", async () => {
+      peers([{ nodeId: "b", report: report("b", 7), answer: null }]);
+      const worlds = (await panel.buildData(hero, false)).world.worlds;
+      expect(worlds.map((world) => [world.name, world.players])).toEqual([["overworld", 3], ["cave", 0]]);
+    });
+
+    test("with no cluster the status has no list of nodes", async () => {
+      expect((await panel.buildData(boss, false)).status.nodes).toBeUndefined();
+    });
+
+    test("a search shows a player of another node as online", async () => {
+      peers([answered("b", [row("cp_exile", { userid: 8105 })])]);
+      const result = await panel.handlePanelPacket(boss, "CONTROL_PANEL_QUERY", { kind: "players", query: "cp_e" }, receiver(boss));
+      expect(result).toMatchObject({ kind: "results", data: { players: [{ username: "cp_exile", userid: 8105, online: true }] } });
+    });
+
+    test("a node's panel answers with every player, and keeps what admins did elsewhere", async () => {
+      const serve = spyOn(cluster, "servePanelFrom");
+      panel.setControlPanelBridge(bridge);
+      const source = serve.mock.calls.at(-1)?.[0];
+      serve.mockRestore();
+      if (!source) throw new Error("The panel gives the cluster a source");
+      const answer = source.answer();
+      expect((answer.rows as any[]).map((p) => p.username)).toContain("cp_sneak");
+      expect(answer.status).toMatchObject({ eventLoopLagMs: 2 });
+      source.activity({ at: 1, by: "cp_elsewhere", action: "player.kick", summary: "Kicked someone" });
+      const { activity } = await panel.buildData(boss, true);
+      expect(activity?.some((entry) => entry.by === "cp_elsewhere")).toBe(true);
+    });
+  });
+
   test("searching accounts finds players who are offline", async () => {
     const result = await panel.handlePanelPacket(boss, "CONTROL_PANEL_QUERY", { kind: "players", query: "cp_e" }, receiver(boss));
     expect(result).toEqual({ kind: "results", data: { kind: "players", query: "cp_e", players: [{ username: "cp_exile", userid: 8105, online: false }], truncated: 0 } });
     const items = await panel.handlePanelPacket(boss, "CONTROL_PANEL_QUERY", { kind: "items", query: "iron" }, receiver(boss));
     expect(items).toMatchObject({ kind: "results", data: { kind: "items", items: [{ name: "Iron Helmet" }] } });
+  });
+});
+
+describe("a command that answers from another node", () => {
+  const PANEL_REPLY_MS = 60;
+  const start = source.indexOf("export async function runForControlPanel(");
+  const body = new Bun.Transpiler({ loader: "ts" }).transformSync(source.slice(start, source.indexOf("hearDeliveries(panelHears);", start)).replace("export ", ""));
+  const NAMES = ["panelCommands", "panelReplies", "packetReceiver", "clusterEnabled", "PANEL_REPLY_MS", "PANEL_REPLY_POLL_MS"];
+
+  /** The receiver's own function, with a command that does what `command` does. */
+  function runner(command: (replies: string[]) => void | Promise<void>, clusterOn = true) {
+    const panelReplies = new Map<any, string[]>();
+    const make = new Function(`{ ${NAMES.join(", ")} }`, `${body}\nreturn runForControlPanel;`);
+    const run = make({
+      panelCommands: new Map(),
+      panelReplies,
+      packetReceiver: async (_ws: unknown, wt: unknown) => command(panelReplies.get(wt)!),
+      clusterEnabled: () => clusterOn,
+      PANEL_REPLY_MS,
+      PANEL_REPLY_POLL_MS: 1,
+    });
+    return { run, panelReplies };
+  }
+  const kick = { command: "KICK", args: ["cp_far"] };
+
+  test("carrying out a command waits for a word only when the panel has none of its own", async () => {
+    const options: unknown[] = [];
+    const running = (actor: any) => async (asked: PanelRun, given?: unknown) => {
+      options.push(given);
+      return receiver(actor)(asked);
+    };
+    await panel.handlePanelPacket(boss, "CONTROL_PANEL_ACTION", { action: "player.kick", requestId: "wait-1", target: "cp_hero", confirm: true }, running(boss));
+    await panel.handlePanelPacket(boss, "CONTROL_PANEL_ACTION", { action: "server.restart", requestId: "wait-2", confirm: true }, running(boss));
+    expect(options).toEqual([{ awaitReply: true }, { awaitReply: false }]);
+  });
+
+  test("what the other node says after the command ended is the reply", async () => {
+    const { run, panelReplies } = runner((replies) => { setTimeout(() => replies.push("Killed Cp_far"), 5); });
+    expect(await run({}, kick, { awaitReply: true })).toEqual(["Killed Cp_far"]);
+    expect(panelReplies.size).toBe(0);
+  });
+
+  test("a word that never comes ends the wait, and gives no reply", async () => {
+    const started = Date.now();
+    expect(await runner(() => {}).run({}, kick, { awaitReply: true })).toEqual([]);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(PANEL_REPLY_MS - 5);
+  });
+
+  test("nothing is waited for without a cluster, or after a command that has answered", async () => {
+    for (const [command, clusterOn] of [[() => {}, false], [(replies: string[]) => { replies.push("Done"); }, true]] as const) {
+      const started = Date.now();
+      await runner(command, clusterOn).run({}, kick, { awaitReply: true });
+      expect(Date.now() - started).toBeLessThan(PANEL_REPLY_MS - 5);
+    }
+  });
+});
+
+describe("a read that fails", () => {
+  const NOT_READ = /could not be read/;
+  let spies: Array<{ mockRestore(): void }> = [];
+  const worldsFail = () => spies.push(spyOn(bridge, "worlds").mockImplementation(() => Promise.reject(new Error("Connection has failed"))));
+  const accountsFail = () => spies.push(spyOn(player, "findAccount").mockImplementation(() => Promise.reject(new Error("Connection has failed"))));
+  afterEach(() => {
+    for (const spy of spies) spy.mockRestore();
+    spies = [];
+  });
+
+  test("a load is answered, with no request id for the panel to wait on", async () => {
+    worldsFail();
+    expect(await panel.handlePanelPacket(boss, "CONTROL_PANEL_LOAD", { full: true }, receiver(boss))).toMatchObject({
+      kind: "result",
+      data: { ok: false, action: "load", requestId: null, errors: [expect.stringMatching(NOT_READ)] },
+    });
+  });
+
+  test("a list is answered", async () => {
+    accountsFail();
+    expect(await panel.handlePanelPacket(boss, "CONTROL_PANEL_QUERY", { kind: "permissions", target: "cp_hero" }, receiver(boss))).toMatchObject({
+      kind: "result",
+      data: { ok: false, action: "query", errors: [expect.stringMatching(NOT_READ)] },
+    });
+  });
+
+  test("an account an action needs that cannot be read runs nothing, and the admin is told", async () => {
+    accountsFail();
+    const result = await act(boss, "player.admin", { target: "cp_hero", admin: true, confirm: true });
+    expect(result).toMatchObject({ ok: false });
+    expect(result.errors.join(" ")).toMatch(NOT_READ);
+    expect(ran).toEqual([]);
+  });
+
+  test("a command that ran is still reported, when the fresh figures cannot be read", async () => {
+    worldsFail();
+    const result = await act(boss, "player.kick", { target: "cp_hero", confirm: true });
+    expect(result).toMatchObject({ ok: true, replies: ["KICK done"] });
+    expect(result.data).toBeUndefined();
+    expect(commands()).toEqual(["KICK cp_hero"]);
+  });
+
+  test("a command that ran is not held back by fresh figures that are slow to come", async () => {
+    spies.push(spyOn(bridge, "worlds").mockImplementation(() => new Promise(() => {})));
+    const started = Date.now();
+    const result = await act(boss, "player.kick", { target: "cp_hero", confirm: true });
+    expect(result).toMatchObject({ ok: true, replies: ["KICK done"] });
+    expect(result.data).toBeUndefined();
+    expect(Date.now() - started).toBeLessThan(3_000);
+  });
+
+  test("what already stands as asked is still said, when the fresh figures cannot be read", async () => {
+    boss.isNoclip = true;
+    worldsFail();
+    expect(await act(boss, "self.noclip", { enabled: true })).toMatchObject({ ok: true, replies: ["Noclip is already on."] });
   });
 });
 

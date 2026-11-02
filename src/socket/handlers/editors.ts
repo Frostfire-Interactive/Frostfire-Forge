@@ -1,5 +1,7 @@
 import * as classEditor from "../../systems/classeditor";
 import * as controlPanel from "../../systems/controlpanel";
+import * as cutsceneEditor from "../../systems/cutscenes";
+import * as cutscenePlayer from "../../systems/cutsceneplayer";
 import * as itemEditor from "../../systems/itemeditor";
 import * as lootEditor from "../../systems/looteditor";
 import * as mailboxEditor from "../../systems/mailboxeditor";
@@ -30,13 +32,12 @@ import { mayEditTileSounds, readTileSoundChanges, saveTileSounds } from "../../s
 import { packetManager } from "../packet_manager";
 import { saveMapChunks, saveMapProperties, applyChunksWithRebase } from "../../modules/assetloader";
 import { serverFetch } from "../../modules/https_servers.ts";
-import { updatePlayerAOI, shouldUpdateAOI, broadcastToAOI } from "../aoi";
-import { activeEditorsByMap, bumpStateRevision, despawnBatchQueue, editorEditHistory, filterPlayersByMap, mailboxEditorWorld, mapPropertiesCache, maps, resyncNpcChunks, runForControlPanel, sendMailboxes, sendPacket, spawnBatchQueue, stateRevision, teleportPlayerWrapper, transitionPlayerToMap } from "../receiver";
+import { activeEditorsByMap, despawnBatchQueue, editorEditHistory, filterPlayersByMap, mailboxEditorWorld, mapPropertiesCache, maps, placePlayer, runForControlPanel, sendMailboxes, sendPacket, spawnBatchQueue, transitionPlayerToMap } from "../receiver";
 import type { PacketContext } from "./context";
 
 // Packet handlers moved from receiver.ts's packetReceiver switch (phase 6, Task 1). The case bodies are unchanged.
 
-export const handles: ReadonlySet<string> = new Set(["EDITOR_TILE_EDIT", "EDITOR_LAYER_LOCK", "EDITOR_OPEN", "EDITOR_CLOSE", "CREATURE_EDITOR_LIST", "CREATURE_EDITOR_CLOSE", "CREATURE_EDITOR_SAVE_TEMPLATE", "CREATURE_EDITOR_DELETE_TEMPLATE", "CREATURE_EDITOR_SAVE_ABILITY", "CREATURE_EDITOR_DELETE_ABILITY", "CREATURE_EDITOR_SAVE_ABILITIES", "CREATURE_EDITOR_SAVE_SPAWN", "CREATURE_EDITOR_DELETE_SPAWN", "CREATURE_EDITOR_SAVE_PATH", "CREATURE_EDITOR_DELETE_PATH", "CREATURE_EDITOR_SAVE_LINKGROUP", "CREATURE_EDITOR_DELETE_LINKGROUP", "CREATURE_EDITOR_SAVE_POOL", "CREATURE_EDITOR_DELETE_POOL", "CREATURE_EDITOR_ACTION", "ITEM_EDITOR_LIST", "ITEM_EDITOR_SEARCH", "ITEM_EDITOR_SAVE", "ITEM_EDITOR_DELETE", "MOUNT_EDITOR_LIST", "MOUNT_EDITOR_SAVE", "MOUNT_EDITOR_DELETE", "SPELL_EDITOR_LIST", "SPELL_EDITOR_SEARCH", "SPELL_EDITOR_SAVE", "SPELL_EDITOR_DELETE", "SPELL_EDITOR_LEARN", "WEATHER_EDITOR_LIST", "WEATHER_EDITOR_SAVE", "WEATHER_EDITOR_DELETE", "CLASS_EDITOR_LIST", "CLASS_EDITOR_SAVE", "CLASS_EDITOR_DELETE", "LOOT_EDITOR_CREATE_TABLE", "LOOT_EDITOR_DELETE_TABLE", "LOOT_EDITOR_ADD_ITEM", "LOOT_EDITOR_REMOVE_ITEM", "LOOT_EDITOR_UPDATE_ITEM", "PLAYER_EDITOR_LOAD", "PLAYER_EDITOR_SEARCH", "PLAYER_EDITOR_ACTION", "CONTROL_PANEL_LOAD", "CONTROL_PANEL_QUERY", "CONTROL_PANEL_ACTION", "CREATURE_DEBUG_SUBSCRIBE", "CLUSTER_DEBUG", "TOGGLE_QUEST_EDITOR", "QUEST_EDITOR_DATA", "QUEST_EDITOR_SEARCH", "QUEST_EDITOR_SAVE", "QUEST_EDITOR_DELETE", "QUEST_EDITOR_CLOSE", "CREATE_MAP", "SAVE_TILE_SOUNDS", "SAVE_TILE_FOOTPRINTS", "SAVE_MAP", "SAVE_PARTICLE", "DELETE_PARTICLE", "RENAME_PARTICLE", "LIST_PARTICLES", "TEST_PARTICLE", "FISHING_EDITOR_LIST", "FISHING_EDITOR_SAVE", "MAILBOX_EDITOR_LIST", "MAILBOX_EDITOR_SAVE", "MAILBOX_EDITOR_DELETE", "ACHIEVEMENT_EDITOR_LIST", "ACHIEVEMENT_EDITOR_SAVE", "ACHIEVEMENT_EDITOR_DELETE", "GATHERING_EDITOR_LIST", "GATHERING_EDITOR_SAVE", "GATHERING_EDITOR_DELETE", "GATHERING_EDITOR_PREVIEW", "LIST_LOOT_TABLES"]);
+export const handles: ReadonlySet<string> = new Set(["EDITOR_TILE_EDIT", "EDITOR_LAYER_LOCK", "EDITOR_OPEN", "EDITOR_CLOSE", "CREATURE_EDITOR_LIST", "CREATURE_EDITOR_CLOSE", "CREATURE_EDITOR_SAVE_TEMPLATE", "CREATURE_EDITOR_DELETE_TEMPLATE", "CREATURE_EDITOR_SAVE_ABILITY", "CREATURE_EDITOR_DELETE_ABILITY", "CREATURE_EDITOR_SAVE_ABILITIES", "CREATURE_EDITOR_SAVE_SPAWN", "CREATURE_EDITOR_DELETE_SPAWN", "CREATURE_EDITOR_SAVE_PATH", "CREATURE_EDITOR_DELETE_PATH", "CREATURE_EDITOR_SAVE_LINKGROUP", "CREATURE_EDITOR_DELETE_LINKGROUP", "CREATURE_EDITOR_SAVE_POOL", "CREATURE_EDITOR_DELETE_POOL", "CREATURE_EDITOR_ACTION", "ITEM_EDITOR_LIST", "ITEM_EDITOR_SEARCH", "ITEM_EDITOR_SAVE", "ITEM_EDITOR_DELETE", "MOUNT_EDITOR_LIST", "MOUNT_EDITOR_SAVE", "MOUNT_EDITOR_DELETE", "CUTSCENE_EDITOR_LIST", "CUTSCENE_EDITOR_SAVE", "CUTSCENE_EDITOR_DELETE", "CUTSCENE_EDITOR_RESOLVE", "CUTSCENE_EDITOR_PLAY", "CUTSCENE_EDITOR_GOTO", "SPELL_EDITOR_LIST", "SPELL_EDITOR_SEARCH", "SPELL_EDITOR_SAVE", "SPELL_EDITOR_DELETE", "SPELL_EDITOR_LEARN", "WEATHER_EDITOR_LIST", "WEATHER_EDITOR_SAVE", "WEATHER_EDITOR_DELETE", "CLASS_EDITOR_LIST", "CLASS_EDITOR_SAVE", "CLASS_EDITOR_DELETE", "LOOT_EDITOR_CREATE_TABLE", "LOOT_EDITOR_DELETE_TABLE", "LOOT_EDITOR_ADD_ITEM", "LOOT_EDITOR_REMOVE_ITEM", "LOOT_EDITOR_UPDATE_ITEM", "PLAYER_EDITOR_LOAD", "PLAYER_EDITOR_SEARCH", "PLAYER_EDITOR_ACTION", "CONTROL_PANEL_LOAD", "CONTROL_PANEL_QUERY", "CONTROL_PANEL_ACTION", "CREATURE_DEBUG_SUBSCRIBE", "CLUSTER_DEBUG", "TOGGLE_QUEST_EDITOR", "QUEST_EDITOR_DATA", "QUEST_EDITOR_SEARCH", "QUEST_EDITOR_SAVE", "QUEST_EDITOR_DELETE", "QUEST_EDITOR_CLOSE", "CREATE_MAP", "SAVE_TILE_SOUNDS", "SAVE_TILE_FOOTPRINTS", "SAVE_MAP", "SAVE_PARTICLE", "DELETE_PARTICLE", "RENAME_PARTICLE", "LIST_PARTICLES", "TEST_PARTICLE", "FISHING_EDITOR_LIST", "FISHING_EDITOR_SAVE", "MAILBOX_EDITOR_LIST", "MAILBOX_EDITOR_SAVE", "MAILBOX_EDITOR_DELETE", "ACHIEVEMENT_EDITOR_LIST", "ACHIEVEMENT_EDITOR_SAVE", "ACHIEVEMENT_EDITOR_DELETE", "GATHERING_EDITOR_LIST", "GATHERING_EDITOR_SAVE", "GATHERING_EDITOR_DELETE", "GATHERING_EDITOR_PREVIEW", "LIST_LOOT_TABLES"]);
 
 export async function handle(ctx: PacketContext): Promise<unknown> {
   const { currentPlayer, data, type, wt } = ctx;
@@ -162,32 +163,8 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           break;
         }
         if (result.kind === "goto" && result.goto) {
-          const destMap = String(result.goto.map).replace(".json", "");
-          const currentMap = String(currentPlayer.location?.map ?? "").replace(".json", "");
-          if (destMap === currentMap) {
-            // Already on that map: move there like an admin teleport, without
-            // reloading the map (a reload wipes everything the client shows).
-            const direction = currentPlayer.location.position?.direction || "down";
-            currentPlayer.location.position = {
-              ...currentPlayer.location.position,
-              x: Math.round(Number(result.goto.x)),
-              y: Math.round(Number(result.goto.y)),
-              direction,
-            };
-            bumpStateRevision();
-            if (shouldUpdateAOI(currentPlayer)) {
-              await updatePlayerAOI(currentPlayer, spawnBatchQueue, despawnBatchQueue);
-            }
-            broadcastToAOI(currentPlayer, packetManager.moveXY({
-              i: wt.data.id,
-              d: { x: currentPlayer.location.position.x, y: currentPlayer.location.position.y, dr: direction },
-              r: stateRevision(),
-              s: currentPlayer.isStealth ? 1 : 0,
-            }), true);
-            await resyncNpcChunks(currentPlayer, wt);
-          } else {
-            await teleportPlayerWrapper(currentPlayer, result.goto.map, result.goto.x, result.goto.y);
-          }
+          // Another map is a teleport; the map they are on is a jump like an admin teleport, without reloading it (placePlayer).
+          await placePlayer(currentPlayer, result.goto.map, result.goto.x, result.goto.y);
           sendPacket(wt, packetManager.creatureEditorResult({ ok: true, errors: [], action: type }));
           break;
         }
@@ -256,6 +233,64 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
             if (mountEditor.canUseEditor(other)) sendPacket(other.wt, updated);
           }
         }
+        break;
+      }
+
+      case "CUTSCENE_EDITOR_LIST":
+      case "CUTSCENE_EDITOR_SAVE":
+      case "CUTSCENE_EDITOR_DELETE":
+      case "CUTSCENE_EDITOR_RESOLVE": {
+        if (!currentPlayer) return;
+        // The handler checks permission first, on every one of these, not just on /cutsceneeditor.
+        const result = await cutsceneEditor.handleEditorPacket(currentPlayer, type, data);
+        if (result.kind === "data") {
+          sendPacket(wt, packetManager.cutsceneEditorData(result.data));
+          break;
+        }
+        if (result.kind === "resolved") {
+          sendPacket(wt, packetManager.cutsceneEditorResolved({ doc: result.doc }));
+          break;
+        }
+        if (result.denied) sendPacket(wt, packetManager.notify({ message: cutsceneEditor.DENIED }));
+        sendPacket(wt, packetManager.cutsceneEditorResult({ ok: result.ok, errors: result.errors, fields: result.fields, name: result.name, action: type, doc: result.doc }));
+        if (result.changed) {
+          // Scenes are cached per process (and shared by the nodes of a cluster through the cache); tell every other editor to reload.
+          const updated = packetManager.cutsceneEditorUpdated({ by: currentPlayer.username });
+          for (const other of Object.values(playerCache.list()) as any[]) {
+            if (!other?.wt || other.id === currentPlayer.id) continue;
+            if (cutsceneEditor.canUseEditor(other)) sendPacket(other.wt, updated);
+          }
+        }
+        break;
+      }
+
+      case "CUTSCENE_EDITOR_PLAY":
+      case "CUTSCENE_EDITOR_GOTO": {
+        if (!currentPlayer) return;
+        if (!cutsceneEditor.canUseEditor(currentPlayer)) {
+          sendPacket(wt, packetManager.notify({ message: cutsceneEditor.DENIED }));
+          break;
+        }
+        if (type === "CUTSCENE_EDITOR_PLAY") {
+          // The saved scene, played as a player would see it: held, from the server's packet, with its end.
+          const played = await cutscenePlayer.begin(currentPlayer, String((data as any)?.name ?? ""), { force: true });
+          if (!played.ok) sendPacket(wt, packetManager.notify({ message: `The cutscene could not be played: ${played.reason}` }));
+          break;
+        }
+        // Go to a place, to lay a scene out there. Not while a scene holds them, and only to a map there is.
+        const goto = data as { map?: unknown; x?: unknown; y?: unknown } | null;
+        const gotoMap = String(goto?.map ?? "").replace(".json", "");
+        const gotoX = Number(goto?.x);
+        const gotoY = Number(goto?.y);
+        if (cutscenePlayer.inScene(currentPlayer)) {
+          sendPacket(wt, packetManager.notify({ message: "Stop the cutscene first (/cutscene stop)" }));
+          break;
+        }
+        if (!gotoMap || !mapPropertiesCache.some((m: any) => m.name === `${gotoMap}.json`) || !Number.isFinite(gotoX) || !Number.isFinite(gotoY)) {
+          sendPacket(wt, packetManager.notify({ message: "There is no such place to go to" }));
+          break;
+        }
+        await placePlayer(currentPlayer, gotoMap, gotoX, gotoY);
         break;
       }
 
@@ -379,7 +414,7 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         if (!currentPlayer) return;
         // The handler checks who is asking first, on every one of these. An
         // action is one of the admin commands: it is run by this receiver.
-        const result = await controlPanel.handlePanelPacket(currentPlayer, type, data, (run) => runForControlPanel(wt, run));
+        const result = await controlPanel.handlePanelPacket(currentPlayer, type, data, (run, options) => runForControlPanel(wt, run, options));
         if (result.kind === "data") {
           sendPacket(wt, packetManager.controlPanelData(result.data));
           break;

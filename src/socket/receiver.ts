@@ -274,16 +274,20 @@ registerPlayerAction("displaced-login", (p) => {
   // drain: the notice may sit in the outbox behind a write in flight; a plain close would drop it (the close is still bounded).
   p.wt.close(1000, "Logged in from another location", { drain: true });
 });
+/** A player on this node was changed or read in the player editor of an admin on another node. */
+registerPlayerAction("cells-editor", (p, args) => trackPacket(String(p.id), () => playerEditor.ownerNodeEdit(args)));
+/** The player editor took the player out of their guild, from another node. */
+registerPlayerAction("guild-cleared", (p, { message }) => playerEditor.clearLiveGuild(p, message));
 
 // Cells phase 6: an admin's REVIVE, SUMMON or TELEPORT of a player on this node, sent from the admin's node (Task 15).
 // Each runs counted in flight, so a handoff that starts meanwhile waits for it, and none starts on a player whose
 // handoff is under way: what it changed could miss the snapshot. Every field the link brought is checked before it
 // is used (socket/arrival.ts); an action with a bad one is logged and dropped, and nobody is moved.
 
-const busyNote = (name: string) => packetManager.notify({ message: `${shownName(name)} is changing server node; try again` });
+export const busyNote = (name: string) => packetManager.notify({ message: `${shownName(name)} is changing server node; try again` });
 
 /** A remote admin action that never throws back to the delivery: what fails is logged here. */
-function guardedAction(name: string, action: (target: any, args: any) => Promise<void>): (target: any, args: any) => Promise<void> {
+export function guardedAction(name: string, action: (target: any, args: any) => Promise<void>): (target: any, args: any) => Promise<void> {
   return async (target, args) => {
     try {
       await action(target, args);
@@ -326,6 +330,12 @@ registerPlayerAction("cells-summon", guardedAction("cells-summon", (target, args
   }
   if (move.why === "summon" && target.isAdmin && !move.admins) {
     void deliverToPlayer(by, packetManager.notify({ message: "You cannot summon other admins" }));
+    return;
+  }
+  // A /goto moves the admin who sent it, so it is they who are told; a summon is refused to the admin who asked.
+  if (isHeld(target)) {
+    if (!teleport) void deliverToPlayer(by, packetManager.notify({ message: heldNote(target, by) }));
+    else if (target.wt) sendPacket(target.wt, packetManager.notify({ message: heldNote(target, target.username) }));
     return;
   }
   // Told before the move: the move may switch the player to another node (a warp into another node's block is a
@@ -432,8 +442,13 @@ export async function sendIgnoreAnswer(wt: any, answer: moderation.IgnoreAnswer)
   sendPacket(wt, packetManager.notify({ message: answer.message }));
   if (answer.ignored) sendPacket(wt, packetManager.updateIgnores({ ignored: answer.ignored }));
   if (!answer.unfriended) return;
+  const me = playerCache.get(wt.data.id);
+  if (me) {
+    me.friends = answer.unfriended.mine;
+    playerCache.set(me.id, me);
+  }
   sendPacket(wt, packetManager.updateFriends({ friends: answer.unfriended.mine }));
-  await deliverToPlayer(answer.unfriended.target, packetManager.updateFriends({ friends: answer.unfriended.theirs }));
+  await sendFriends(answer.unfriended.target, answer.unfriended.theirs);
 }
 
 /** Files a report from a player and answers them. The staff online who handle reports are told of one that was filed. */
@@ -756,6 +771,7 @@ useEngineHooks({
     },
   }),
   kick: (p) => endSessionOf(p, "Server is restarting"),
+  lost: (p) => void tellContactsOffline(p),
 });
 
 // Cells phase 6: the player handoff's trigger. Registered at load; it runs only while startCluster has the links
@@ -1778,6 +1794,8 @@ import * as controlPanel from "../systems/controlpanel";
 // Keeps the startup load order: the handler modules, which import these, load at the first packet.
 import "../systems/playerpick";
 import { areaSpellHarms, PVP_BODY, type PvpAllowed } from "../systems/pvpzone";
+import { heldNote, isHeld, refusedWhileHeld } from "../systems/cutsceneheld";
+import { adopt as adoptCutscene, adoptChain as adoptCutsceneChain, setCutsceneBridge } from "../systems/cutsceneplayer";
 // Keeps the startup load order: the handler modules, which import these, load at the first packet.
 import "../systems/creatures/editor";
 import { setCreatureEngineBridge } from "../systems/creatures/bridge";
@@ -1810,8 +1828,10 @@ import { setLayerChangeHandler, initializePlayerAOI, updatePlayerAOI, shouldUpda
 // Keeps the startup load order: the handler modules, which import these, load at the first packet.
 import "./server.ts";
 import { realmWhitelist, isWhitelistEnabled } from "../services/whitelist";
+import { restartState } from "./serverorders";
 import { refusal as subscriptionRefusal } from "../systems/subscriptions";
-import { deliverToPlayer, isOnline, registerPlayerAction, runOnPlayer } from "../cluster/deliver";
+import { deliverToPlayer, hearDeliveries, isOnline, registerPlayerAction, runOnPlayer } from "../cluster/deliver";
+import { greetContacts, sendFriends, tellContactsOffline } from "./contacts";
 import { clusterEnabled, nodeId } from "../cluster/config";
 import { applyPartyMembers, cacheIfHeld, clearParty } from "./partystate";
 import { clusterBlocks, clusterNodes, clusterStore, useEngineHooks } from "../cluster/index";
@@ -1996,19 +2016,14 @@ async function waitForSpritesReady() {
 
 export const spriteDataCacheReady = waitForSpritesReady();
 
-/** A restart or shutdown that an admin started: the COMMAND handlers (handlers/commands.ts) write it, the receiver reads it. */
-export const restartState = {
-  scheduled: false,
-  timers: [] as ReturnType<typeof setTimeout>[],
-  shutdownStarted: false,
-};
-
 // Commands the control panel is running (runForControlPanel). The packet that
 // stands for one carries no chat text: its command and arguments are kept
 // here, already split. What the command tells the admin while it runs is
 // collected as the panel's answer.
 export const panelCommands = new WeakMap<object, { name: string; args: string[] }>();
 const panelReplies = new Map<any, string[]>();
+const PANEL_REPLY_MS = 3_000;
+const PANEL_REPLY_POLL_MS = 25;
 
 let globalStateRevision: number = 0;
 
@@ -3356,6 +3371,40 @@ export async function teleportPlayerWrapper(playerObj: any, mapName: string, x: 
   );
 }
 
+/**
+ * Puts a player at a place. Another map is a teleport; the map they are on is a jump within it, like an admin teleport,
+ * which does not reload the map (a reload wipes everything the client shows). The creature editor's go-to, the cutscene
+ * editor's go-to and the end of a cutscene move players this way.
+ */
+export async function placePlayer(playerObj: any, mapName: string, x: number, y: number): Promise<void> {
+  const wt = playerObj.wt;
+  if (!wt) return;
+  const destMap = String(mapName).replace(".json", "");
+  const currentMap = String(playerObj.location?.map ?? "").replace(".json", "");
+  if (destMap !== currentMap) {
+    await teleportPlayerWrapper(playerObj, mapName, x, y);
+    return;
+  }
+  const direction = playerObj.location.position?.direction || "down";
+  playerObj.location.position = {
+    ...playerObj.location.position,
+    x: Math.round(Number(x)),
+    y: Math.round(Number(y)),
+    direction,
+  };
+  bumpStateRevision();
+  if (shouldUpdateAOI(playerObj)) {
+    await updatePlayerAOI(playerObj, spawnBatchQueue, despawnBatchQueue);
+  }
+  broadcastToAOI(playerObj, packetManager.moveXY({
+    i: wt.data.id,
+    d: { x: playerObj.location.position.x, y: playerObj.location.position.y, dr: direction },
+    r: stateRevision(),
+    s: playerObj.isStealth ? 1 : 0,
+  }), true);
+  await resyncNpcChunks(playerObj, wt);
+}
+
 // Cluster mode: every login asks which node owns its spawn block (cluster/route.ts), so the live nodes are read at
 // most once a second.
 const liveNodes = new LiveNodeCache(async () => (await clusterNodes()?.live()) ?? []);
@@ -3861,6 +3910,9 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
     }
     // The player is in the cache: from here a failure is cleaned up by the disconnect, as for any login.
     arriving.username = null;
+    // The scene they were watching goes on here: they are held from now, before anything can reach them.
+    if (arrivalState?.cutscene) adoptCutscene(_pcache, arrivalState.cutscene);
+    if (arrivalState?.cutsceneChain) adoptCutsceneChain(_pcache, arrivalState.cutsceneChain);
 
     // The mirror of this player that this node held (from the old node) gives way to the player, with no despawn to
     // its viewers.
@@ -4253,15 +4305,8 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
     setTimeout(deferredStep(`The friends, NPCs and loot sent to ${playerData.username} after their spawn`, async () => {
 
       const currentPlayerData = playerCache.get(wt.data.id);
-      if (currentPlayerData) {
-        const newPlayerFriends = currentPlayerData.friends || [];
-        for (const friendUsername of newPlayerFriends) {
-          // Online here (with a live connection) or, in a cluster, on another node: only then is the friend told, and told back.
-          if (!(await deliverToPlayer(friendUsername, packetManager.updateOnlineStatus({ online: true, username: currentPlayerData.username })))) continue;
-          const shownFriend = playerCache.getByUsername(friendUsername)?.username ?? friendUsername;
-          sendPacket(currentPlayerData.wt, packetManager.updateOnlineStatus({ online: true, username: shownFriend }));
-        }
-      }
+      // A crossing to another node is not a login: the contacts' lists stand as they were.
+      if (currentPlayerData && !arrival) await greetContacts(currentPlayerData);
 
       // NPCs: those of the map chunks round the spawn point; the rest stream in as the player moves (npcStreaming)
       const spawnNpcPackets = await syncNpcChunks({ id: wt.data.id, location: { map: spawnLocation.map, position: { x: spawnLocation.x, y: spawnLocation.y } } }, true);
@@ -4538,6 +4583,10 @@ export default async function packetReceiver(
     // connection). What they send now is dropped; the keepalive still answers until the SWITCH closes the connection.
     // CELLS_ON is read once at load, so a single node looks at nothing more per packet.
     if (CELLS_ON && (wt.data?.handedOff || currentPlayer?.handoff) && type !== "PING" && type !== "PONG") return;
+
+    // A player held in a cutscene sends nothing that acts on the world (systems/cutsceneheld.ts); chat, PING and PONG, the
+    // editors, logout and the CUTSCENE_* packets still flow. Only a player in a scene has `cutscene`, so this costs the rest nothing.
+    if (currentPlayer?.cutscene && refusedWhileHeld(String(type), data, currentPlayer)) return;
 
     for (const interceptor of packetInterceptors) {
       if (interceptor(type, data, wt, currentPlayer)) {
@@ -5175,9 +5224,10 @@ export async function castSpellOnCreature(wt: any, currentPlayer: any, spell: Sp
 
 dots.setPlayerDeathHandler(handlePlayerDeath);
 
+// A player held in a cutscene is out of harm's way: a creature's blow, daze or spell does not reach them (cutsceneheld.ts).
 setCreatureEngineBridge({
   damagePlayer: async (target, amount, info) => {
-    if (target.isDead || target.isGhost || !target.stats) return;
+    if (target.isDead || target.isGhost || !target.stats || isHeld(target)) return;
     const absorbed = spellEffects.consumeBarrier(target, amount);
     if (absorbed > 0) spellEffects.broadcastEffectsUpdate(target);
     target.stats.health = Math.max(0, Math.round(target.stats.health - (amount - absorbed)));
@@ -5196,12 +5246,12 @@ setCreatureEngineBridge({
     sendStatsToPartyMembers(target.username, target.id, target.stats);
   },
   dazePlayer: async (target) => {
-    if (target.isDead || target.isGhost) return;
+    if (target.isDead || target.isGhost || isHeld(target)) return;
     const dazed = { name: "dazed", icon: null, effects: [{ type: "slow", value: 50, duration: 4 }] } as unknown as SpellData;
     await spellEffects.applySpellEffects(dazed, target, target, () => {}, (p: any) => spellEffects.broadcastEffectsUpdate(p));
   },
   applySpellEffects: async (target, caster, spell) => {
-    if (target.isDead || target.isGhost) return;
+    if (target.isDead || target.isGhost || isHeld(target)) return;
     await spellEffects.applySpellEffects(
       spell,
       caster,
@@ -5212,6 +5262,19 @@ setCreatureEngineBridge({
   },
 });
 setPlayerDeathHandler(handlePlayerDeath);
+
+// What the cutscene sessions (systems/cutsceneplayer.ts) need of the socket layer: packets to a player, a walk stopped and a
+// cast interrupted for a scene that holds them, and a player moved when a chain of scenes or a scene's end places them.
+setCutsceneBridge({
+  send: (target, packets) => sendPacket(target.wt, packets),
+  hold: async (target) => {
+    // A step still being handled is stale from here: it must not set the player walking again after they are stopped.
+    target._moveSeq = (target._moveSeq ?? 0) + 1;
+    await forceStopPlayerMovement(target);
+    if (target.casting) await interruptPlayerCast(target);
+  },
+  teleport: (target, map, x, y) => placePlayer(target, map, x, y),
+});
 
 // What the achievements (systems/achievements) need of the receiver after a reward: the player's bags, collectables
 // and mail count sent again, as the player editor's bridge below does after an admin's change.
@@ -5329,18 +5392,25 @@ controlPanel.setControlPanelBridge({
  * and the chat command are one implementation. Resolves with what the
  * command told the admin. The panel runs one at a time per admin.
  */
-export async function runForControlPanel(wt: any, run: controlPanel.PanelRun): Promise<string[]> {
+export async function runForControlPanel(wt: any, run: controlPanel.PanelRun, options: controlPanel.PanelRunOptions = {}): Promise<string[]> {
   const replies: string[] = [];
   const stood = "command" in run ? { type: "COMMAND", data: { command: "" } } : { type: run.packet, data: null };
   if ("command" in run) panelCommands.set(stood, { name: run.command, args: run.args });
   panelReplies.set(wt, replies);
   try {
     await packetReceiver(null, wt, "control panel", stood as unknown as Packet);
+    // A command for a player on another node ends once it is sent: the answer comes from that node, by name.
+    if (options.awaitReply && clusterEnabled()) {
+      const until = Date.now() + PANEL_REPLY_MS;
+      while (replies.length === 0 && Date.now() < until) await Bun.sleep(PANEL_REPLY_POLL_MS);
+    }
   } finally {
     panelReplies.delete(wt);
   }
   return replies;
 }
+
+hearDeliveries(panelHears);
 
 // When a stun lands on a moving player, stop their movement server-side
 // immediately - the client may never send a MOVEXY "abort".
@@ -6453,7 +6523,7 @@ tornadoes.setTornadoBridge({
   },
   // As a creature's blow is taken (setCreatureEngineBridge's damagePlayer).
   hurt: async (target, amount) => {
-    if (target.isDead || target.isGhost || !target.stats) return;
+    if (target.isDead || target.isGhost || !target.stats || isHeld(target)) return;
     const absorbed = spellEffects.consumeBarrier(target, amount);
     if (absorbed > 0) spellEffects.broadcastEffectsUpdate(target);
     target.stats.health = Math.max(0, Math.round(target.stats.health - (amount - absorbed)));

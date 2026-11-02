@@ -970,6 +970,29 @@ const createMountsTable = async () => {
   await query(sql);
 };
 
+// The cutscene editor's scenes (data is the whole scene document, JSON) and which characters have seen the ones that play
+// once. Same SQL as CUTSCENES_TABLE and CUTSCENE_VIEWS_TABLE (mysql) in systems/cutscenes.ts, which makes them at engine start too.
+const createCutscenesTables = async () => {
+  log.info("Creating cutscenes tables...");
+  await query(`
+    CREATE TABLE IF NOT EXISTS cutscenes (
+      id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      name VARCHAR(64) NOT NULL UNIQUE,
+      data MEDIUMTEXT NOT NULL,
+      updated_by VARCHAR(255) NULL,
+      updated_at BIGINT NOT NULL DEFAULT 0
+    )
+  `);
+  await query(`
+    CREATE TABLE IF NOT EXISTS cutscene_views (
+      username VARCHAR(255) NOT NULL,
+      cutscene VARCHAR(64) NOT NULL,
+      seen_at BIGINT NOT NULL DEFAULT 0,
+      PRIMARY KEY (username, cutscene)
+    )
+  `);
+};
+
 const insertDefaultMount = async () => {
   log.info("Inserting default mount...");
   const checkSql = `SELECT COUNT(*) as count FROM mounts WHERE name = 'unicorn'`;
@@ -1610,6 +1633,7 @@ const setupDatabase = async () => {
   await createGuildRankTables();
   await createMountsTable();
   await insertDefaultMount();
+  await createCutscenesTables();
   await createWhitelistTable();
   await createCollectablesTable();
   await createLearnedSpellsTable();

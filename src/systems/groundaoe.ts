@@ -8,6 +8,7 @@ import { setPlayerPvp, listener, Events } from "./events";
 import { broadcastToAOIBestEffort, getPlayersNearPoint } from "../socket/aoi";
 import playerSystem from "./player";
 import { areaSpellHarms, PVP_BODY } from "./pvpzone";
+import { isHeld } from "./cutsceneheld";
 import { nextEntityId } from "../cluster/entityids";
 
 export interface GroundAoeZone {
@@ -418,6 +419,8 @@ export async function processZoneTicks(): Promise<void> {
             if (player.id !== zone.casterId && !inParty) continue;
           } else {
             if (player.id === zone.casterId || inParty) continue;
+            // A player held in a cutscene is out of harm's way.
+            if (isHeld(player)) continue;
             // A hostile zone harms nobody standing in a no-PvP zone, nor anyone while its caster stands in one.
             const allowed = (position: { x: number; y: number }) => playerSystem.isInPvPZone(mapName, position as PositionData, PVP_BODY);
             if (!(await areaSpellHarms(caster?.location?.position, pPos, allowed))) continue;

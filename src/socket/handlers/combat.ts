@@ -10,6 +10,7 @@ import spellEffects, { spellHasHostileEffects, cancelEffect } from "../../system
 import spells from "../../systems/spells";
 import { Events, setPlayerPvp } from "../../systems/events";
 import { areaCastRefusal, areaSpellHarms, PVP_BODY, type PvpAllowed } from "../../systems/pvpzone";
+import { isHeld } from "../../systems/cutsceneheld";
 import { entityById } from "../../cluster/mirrors";
 import { getIconUrl } from "../../modules/spriteSheetManager";
 import { listener } from "../../modules/event_bus";
@@ -393,6 +394,8 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
             if (!pPos) continue;
             const dist = Math.sqrt((pPos.x - aoeX) ** 2 + (pPos.y - aoeY) ** 2);
             if (dist > aoeRadius) continue;
+            // A player held in a cutscene is out of harm's way.
+            if (!aoeIsHeal && isHeld(p)) continue;
             // Nobody in a no-PvP zone is harmed, nor anyone when the caster walked into one during the cast.
             if (!aoeIsHeal && !(await areaSpellHarms(currentPlayer.location.position, pPos, pvpAllowed))) continue;
             splashTargets.push({ target: p });
@@ -684,6 +687,8 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
               if (!pPos) continue;
               const dist = Math.sqrt((pPos.x - groundX) ** 2 + (pPos.y - groundY) ** 2);
               if (dist > groundAoERadius) continue;
+              // A player held in a cutscene is out of harm's way.
+              if (!isHeal && isHeld(p)) continue;
               // Nobody in a no-PvP zone is harmed, nor anyone when the caster walked into one during the cast.
               if (!isHeal && !(await areaSpellHarms(currentPlayer.location.position, pPos, pvpAllowed))) continue;
               splashTargets.push({ target: p });
@@ -1452,6 +1457,8 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
             if (!pPos) continue;
             const dist = Math.sqrt((pPos.x - targetX) ** 2 + (pPos.y - targetY) ** 2);
             if (dist > aoeRadius) continue;
+            // A player held in a cutscene is out of harm's way, here as for the target (player.canAttack).
+            if ((spell_damage > 0 || spellIsHostileEffect) && isHeld(p)) continue;
             // The target passed player.canAttack; the players beside it are asked the same about no-PvP zones.
             if ((spell_damage > 0 || spellIsHostileEffect) && !(await areaSpellHarms(currentPlayer.location.position, pPos, pvpAllowed))) continue;
             splashTargets.push({ target: p, distance: dist });

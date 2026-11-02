@@ -415,6 +415,23 @@ describe("worlds", () => {
     expect(held("worlds")).toEqual([{ name: "overworld", weather: "clear", players: 2 }, { name: "cave", weather: "none", players: 0 }]);
     expect(reads()).toEqual(["SELECT * FROM worlds"]);
   });
+
+  // USER REPORT 2026-10-31 ("the bar stays 0% for 30s"): without CACHE=redis the count went to Bun's own client, which
+  // tries a server that is not there for 31 s, and the first login after a start waited for it behind the worlds' lock.
+  test("without CACHE=redis a player count is kept here, and no Redis is asked", async () => {
+    const configured = process.env.CACHE;
+    delete process.env.CACHE;
+    const send = spyOn(Bun.redis, "send").mockImplementation(async () => 1);
+    try {
+      withPlayers(2);
+      expect(await worlds.adjustPlayerCount("overworld.json", 1)).toBe(3);
+      expect(send).not.toHaveBeenCalled();
+      expect((await worlds.get("overworld"))?.players).toBe(3);
+    } finally {
+      send.mockRestore();
+      if (configured !== undefined) process.env.CACHE = configured;
+    }
+  });
 });
 
 // --------------------------------------------------------------------- npcs

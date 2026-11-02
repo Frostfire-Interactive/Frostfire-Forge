@@ -1,5 +1,7 @@
 import * as classEditor from "../../systems/classeditor";
 import * as controlPanel from "../../systems/controlpanel";
+import * as cutsceneEditor from "../../systems/cutscenes";
+import * as cutscenePlayer from "../../systems/cutsceneplayer";
 import * as itemEditor from "../../systems/itemeditor";
 import * as mailboxEditor from "../../systems/mailboxeditor";
 import * as moderation from "../../systems/moderation";
@@ -31,14 +33,16 @@ import worlds from "../../systems/worlds";
 import { Events } from "../../systems/events";
 import { GuildPermission, refusalText } from "../../systems/guildranks";
 import { audience as chatAudience } from "../../systems/chatgate";
-import { broadcastWorld, deliverToPlayer, isOnline, runOnPlayer } from "../../cluster/deliver";
+import { broadcastWorld, deliverToPlayer, isOnline, registerPlayerAction, runOnPlayer, tryOnPlayer, whetherOnline, type PlayerReach } from "../../cluster/deliver";
 import { clearShared } from "../../cluster/clearguard";
+import { followServerOrders, sendServerOrder, serverOrdersKept } from "../../cluster/index";
+import { greetContacts, tellContactsOffline } from "../contacts";
 import { decryptPrivateKey, decryptRsa, _privateKey } from "../../modules/cipher";
 import { drainQueries } from "../../controllers/sqldatabase";
 import { getPlayerSpriteSheetData, getIconUrl, getMountSpriteUrl } from "../../modules/spriteSheetManager";
 import { ghosts } from "../../cluster/ghosts";
 import { gracefulShutdown } from "../server.ts";
-import { isWhitelistEnabled, setWhitelistEnabled } from "../../services/whitelist";
+import { followWhitelist, isWhitelistEnabled, setWhitelistEnabled, shareWhitelistChanges } from "../../services/whitelist";
 import { listener } from "../../modules/event_bus";
 import { notifyLayerChanged, updatePlayerAOI, broadcastToAOI, findPlayersWithTargetInAOI } from "../aoi";
 import { packetManager } from "../packet_manager";
@@ -47,14 +51,297 @@ import { reloadMap } from "../../modules/assetloader";
 import { resetCooldowns } from "../../systems/cooldowns";
 import { setLock as setSubscriptionLock, isLockId as isSubscriptionLock, subscriptionState } from "../../systems/subscriptions";
 import { forgetLook } from "../looks";
-import { MAX_COMMAND_LENGTH, TORNADO, bumpStateRevision, channelLineOk, chatHearing, chatLinksOf, chatRateOk, constructMapMetadata, defaultMap, despawnBatchQueue, destinationLayerFor, draggedPlayersMap, filterPlayersByMap, getAnimationNameForDirection, guildDone, guildEditOk, handlePlayerDeath, isCiphertext, kickedFromGuild, mapPropertiesCache, maps, offerInvitation, officerChat, panelCommands, panelHears, pushGuild, queueSpawnForReceivers, randomPick, resolvedWeatherCache, restartState, reviveDeps, resyncNpcChunks, rowOf, sendAnimationTo, sendIgnoreAnswer, sendPacket, sendReport, sendToWholeMap, spawnBatchQueue, stateRevision, subscriptionLocked, transitionPlayerToMap, weatherShown, withSender, worldsCache } from "../receiver";
+import { MAX_COMMAND_LENGTH, TORNADO, bumpStateRevision, busyNote, channelLineOk, chatHearing, chatLinksOf, chatRateOk, constructMapMetadata, defaultMap, despawnBatchQueue, destinationLayerFor, draggedPlayersMap, filterPlayersByMap, getAnimationNameForDirection, guardedAction, guildDone, guildEditOk, handlePlayerDeath, isCiphertext, kickedFromGuild, mapPropertiesCache, maps, offerInvitation, officerChat, panelCommands, panelHears, pushGuild, queueSpawnForReceivers, randomPick, resolvedWeatherCache, reviveDeps, resyncNpcChunks, rowOf, sendAnimationTo, sendIgnoreAnswer, sendPacket, sendReport, sendToWholeMap, spawnBatchQueue, stateRevision, subscriptionLocked, transitionPlayerToMap, weatherShown, withSender, worldsCache } from "../receiver";
+import { remoteAdminOf } from "../arrival";
 import { revivePlayer } from "../revive";
+import { trackPacket } from "../../cluster/inflight";
+import { followServerOrder, restartState, shutdownEverywhere, toggleRestart, type ServerOrderDeps } from "../serverorders";
+import { heldNote, isHeld } from "../../systems/cutsceneheld";
 import { settleForAdmin, settleStoreAttached, settlingNotice } from "../../cluster/tradesettle";
 import type { PacketContext } from "./context";
 
 // Packet handlers moved from receiver.ts's packetReceiver switch (phase 6, Task 1). The case bodies are unchanged.
 
 export const handles: ReadonlySet<string> = new Set(["COMMAND", "NOCLIP", "STEALTH", "DRAG_PLAYER_START", "DRAG_PLAYER_STOP", "DRAG_UPDATE", "GET_ONLINE_PLAYERS"]);
+
+/** True, once the admin has been told, when `target` is held in a cutscene: /cutscene stop ends the scene first. */
+function heldInScene(wt: any, target: any, admin: any): boolean {
+  if (!isHeld(target)) return false;
+  sendPacket(wt, packetManager.notify({ message: heldNote(target, String(admin.username)) }));
+  return true;
+}
+
+/** What a restart or shutdown needs of this node. */
+function serverOrderDeps(): ServerOrderDeps {
+  return {
+    players: () => Object.values(playerCache.list()),
+    tell: (target, message) => sendPacket(target.wt, packetManager.notify({ message })),
+    setTimeout: (run, ms) => setTimeout(run, ms),
+    clearTimeout: (timer) => clearTimeout(timer),
+    setInterval: (run, ms) => setInterval(run, ms),
+    clearInterval: (timer) => clearInterval(timer),
+    share: (order) => void sendServerOrder(order),
+    finish: async (reason) => {
+      await clearShared(() => player.clear());
+      // Each disconnect saves its player after leaving the cache:
+      // let the database answer those writes before the process ends.
+      await drainQueries();
+      // The process ends here. Starting it again after a restart is its
+      // supervisor's job (the Docker restart policy).
+      await gracefulShutdown(reason);
+    },
+  };
+}
+
+followServerOrders((order) => followServerOrder(order, serverOrderDeps()));
+shareWhitelistChanges((change) => void sendServerOrder({ what: "whitelist", ...change }));
+
+/** Joins what an admin ordered of the region before this node started. */
+export async function catchUpServerOrders(): Promise<void> {
+  const kept = await serverOrdersKept();
+  if (kept.whitelist !== null) await followWhitelist({ enabled: kept.whitelist });
+  if (kept.restartEndsAt !== null) followServerOrder({ what: "restart", endsAt: kept.restartEndsAt }, serverOrderDeps());
+}
+
+/** The RESPAWN command's body: at the default map's spawn, alive. An offline target is a row: where they will log in changes. */
+async function respawnPlayer(targetPlayer: any, tell: (message: string) => void): Promise<void> {
+  const defaultMapProps = mapPropertiesCache.find(
+    (m: any) => m.name === `${defaultMap}.json`
+  );
+  const centerX = defaultMapProps?.spawn ? defaultMapProps.spawn.x : defaultMapProps
+    ? (defaultMapProps.width * defaultMapProps.tileWidth) / 2
+    : 0;
+  const centerY = defaultMapProps?.spawn ? defaultMapProps.spawn.y : defaultMapProps
+    ? (defaultMapProps.height * defaultMapProps.tileHeight) / 2
+    : 0;
+
+  // By username: the target may be offline, and has a session id only while online.
+  await player.setLocationByUsername(targetPlayer.username, `${defaultMap}`, {
+    x: centerX,
+    y: centerY,
+    direction: "down",
+  });
+
+  if (playerCache.get(targetPlayer.id)) {
+    targetPlayer.location.position = {
+      x: Math.round(centerX),
+      y: Math.round(centerY),
+      direction: "down",
+    };
+    // Admin respawn releases any death state: corpse/ghost cleared,
+    // full health, position is the respawn point.
+    targetPlayer.isDead = false;
+    targetPlayer.isGhost = false;
+    targetPlayer.corpse = null;
+    targetPlayer.reviveOffered = false;
+    targetPlayer.ghostTeleportPending = false;
+    resurrection.clearSickness(targetPlayer);
+    const respawnSynced = await player.synchronizeStats(targetPlayer.username);
+    if (respawnSynced) {
+      targetPlayer.stats = respawnSynced;
+    }
+    if (targetPlayer.stats) {
+      targetPlayer.stats.health = targetPlayer.stats.total_max_health;
+      targetPlayer.stats.stamina = targetPlayer.stats.total_max_stamina;
+    }
+    playerCache.set(targetPlayer.id, targetPlayer);
+    await resyncNpcChunks(targetPlayer, targetPlayer.wt); // respawned at the map's centre
+    try {
+      await player.setDeadState(targetPlayer.username, 0, null);
+    } catch (e: any) {
+      log.error(`Failed to clear death state for ${targetPlayer.username}: ${e?.message || e}`);
+    }
+    const playersInMap = filterPlayersByMap(
+      targetPlayer.location.map
+    );
+    bumpStateRevision();
+    playersInMap.forEach((player) => {
+      const moveData = {
+        i: targetPlayer.id,
+        d: {
+          x: Number(targetPlayer.location.position.x),
+          y: Number(targetPlayer.location.position.y),
+          dr: targetPlayer.location.position.direction
+        },
+        r: stateRevision(),
+        s: targetPlayer.isStealth ? 1 : 0
+      };
+      sendPacket(player.wt, packetManager.moveXY(moveData));
+      sendPacket(player.wt, packetManager.playerGhost({ id: targetPlayer.id, ghost: false }));
+      if (targetPlayer.stats) {
+        sendPacket(player.wt, packetManager.revive({
+          id: targetPlayer.id,
+          target: targetPlayer.id,
+          stats: targetPlayer.stats,
+        }));
+      }
+    });
+    spellEffects.broadcastEffectsUpdate(targetPlayer);
+  }
+
+  tell(`Respawned ${targetPlayer.username.charAt(0).toUpperCase() + targetPlayer.username.slice(1)}`);
+  // An offline target is an account, not a player in the world: only where they will log in changed.
+  if (targetPlayer.location) {
+    listener.emit(Events.PLAYER_RESPAWN, { player: targetPlayer, mapName: targetPlayer.location.map, x: targetPlayer.location.position.x, y: targetPlayer.location.position.y });
+  }
+}
+
+/** The COOLDOWNS command's body, for a player on this node. */
+async function endCooldowns(waiting: any, tell: (message: string) => void): Promise<void> {
+  const waitingName = waiting.username.charAt(0).toUpperCase() + waiting.username.slice(1);
+  try {
+    await resetCooldowns(waiting);
+  } catch (error) {
+    log.error(`The cooldowns of ${waiting.username} could not all be reset: ${error}`);
+    tell(`The home cooldown of ${waitingName} could not be reset. The others were.`);
+  }
+  playerCache.set(waiting.id, waiting);
+  if (waiting.wt) sendPacket(waiting.wt, packetManager.cooldownsReset());
+  tell(`Reset the cooldowns of ${waitingName}`);
+}
+
+/** Why an admin may not kill a player of this node, or null. As kick and ban: not another admin (yourself is fine). */
+async function killRefusal(target: any, self: boolean): Promise<string | null> {
+  if (!self && (target.isAdmin || await player.isAdmin(target.username))) return "You cannot kill other admins";
+  if (target.isDead || target.isGhost) return `${target.username.charAt(0).toUpperCase() + target.username.slice(1)} is already dead`;
+  return null;
+}
+
+/** The GIVE command's body: the item goes to the account, and to the live player when `id` is theirs on this node. */
+async function giveItem(targetName: string, id: string, itemDef: Item, quantity: number, tell: (message: string) => void): Promise<void> {
+  // A trade lost on another node may still be settling for this player (cluster/tradesettle.ts): the item
+  // is added once their mark has run out, so the count starts from what the swap left. The admin is told
+  // while it waits, so the command is not sent again. Guard (test "/give waits for the target's mark
+  // before it adds the item").
+  if (settleStoreAttached()) {
+    const refused = await settleForAdmin(targetName, (leftMs) => tell(settlingNotice(targetName, leftMs)));
+    if (refused) {
+      tell(refused);
+      return;
+    }
+  }
+
+  await inventory.add(targetName, { name: itemDef.name, quantity });
+
+  const cachedTarget = playerCache.get(id);
+  if (cachedTarget) {
+    if (!Array.isArray(cachedTarget.inventory)) cachedTarget.inventory = [];
+    const existing = cachedTarget.inventory.find((i: any) => i.name.toLowerCase() === itemDef.name.toLowerCase());
+    if (existing) {
+      existing.quantity += quantity;
+      if (cachedTarget.wt) {
+        sendPacket(cachedTarget.wt, packetManager.addInventoryItem(existing));
+        sendPacket(cachedTarget.wt, packetManager.notify({ message: `You received ${quantity}x ${itemDef.name}` }));
+      }
+    } else {
+      const newItem = {
+        name: itemDef.name,
+        quantity,
+        equipped: false,
+        slot: null,
+        bag_slot: null,
+        type: itemDef?.type || '',
+        quality: itemDef?.quality || 'common',
+        iconUrl: getIconUrl(itemDef?.icon),
+        equipment_slot: itemDef?.equipment_slot || null,
+        bag_slots: itemDef?.bag_slots ?? null,
+        stat_health: itemDef?.stat_health ?? null,
+        stat_stamina: itemDef?.stat_stamina ?? null,
+        stat_armor: itemDef?.stat_armor ?? null,
+        stat_damage: itemDef?.stat_damage ?? null,
+        stat_critical_chance: itemDef?.stat_critical_chance ?? null,
+        stat_critical_damage: itemDef?.stat_critical_damage ?? null,
+        stat_avoidance: itemDef?.stat_avoidance ?? null,
+        level_requirement: itemDef?.level_requirement ?? null,
+        description: itemDef?.description || '',
+      };
+      cachedTarget.inventory.push(newItem);
+      if (cachedTarget.wt) {
+        sendPacket(cachedTarget.wt, packetManager.addInventoryItem(newItem));
+        sendPacket(cachedTarget.wt, packetManager.notify({ message: `You received ${quantity}x ${itemDef.name}` }));
+      }
+    }
+    playerCache.set(cachedTarget.id, cachedTarget);
+  }
+
+  tell(`Gave ${quantity}x ${itemDef.name} to ${targetName}`);
+}
+
+// An admin's command for a player on this node, sent from the admin's node: as the actions in socket/receiver.ts, counted
+// in flight, never on a player whose handoff is under way, with the answer going back by name.
+function adminAction(name: string, run: (target: any, by: string, tell: (message: string) => void, args: any) => Promise<void>): void {
+  registerPlayerAction(name, guardedAction(name, (target, args) => trackPacket(String(target.id), async () => {
+    const by = remoteAdminOf(args);
+    if (by === null) {
+      log.warn(`The remote admin action "${name}" on ${target.username} was dropped: it names no admin`);
+      return;
+    }
+    if (target.handoff) {
+      void deliverToPlayer(by, busyNote(target.username));
+      return;
+    }
+    await run(target, by, (message) => void deliverToPlayer(by, packetManager.notify({ message })), args);
+  })));
+}
+
+adminAction("cells-respawn", async (target, by, tell) => {
+  if (isHeld(target)) return tell(heldNote(target, by));
+  await respawnPlayer(target, tell);
+});
+
+adminAction("cells-cooldowns", (target, _by, tell) => endCooldowns(target, tell));
+
+adminAction("cells-kill", async (target, by, tell) => {
+  const refusal = await killRefusal(target, false);
+  if (refusal) return tell(refusal);
+  if (isHeld(target)) return tell(heldNote(target, by));
+  await handlePlayerDeath(target, { id: by, username: by, remote: true }, { damage: target.stats?.health || 0, isCrit: false });
+  tell(`Killed ${target.username.charAt(0).toUpperCase() + target.username.slice(1)}`);
+});
+
+adminAction("cells-give", async (target, _by, tell, args) => {
+  const items = await assetCache.get("items") as Item[];
+  const itemDef = Array.isArray(items) ? items.find((i: any) => i.name === args?.item) : null;
+  if (!itemDef || !Number.isSafeInteger(args?.quantity)) {
+    log.warn(`A remote give to ${target.username} was dropped: it brought ${String(args?.quantity)}x ${String(args?.item)}`);
+    return;
+  }
+  await giveItem(target.username, target.id, itemDef, args.quantity, tell);
+});
+
+/** What an admin is told of a command that went to no node. One that could not reach the player must not call them offline. */
+function notSent(reached: PlayerReach | false, offline = ""): string {
+  return reached === "unreached" ? "That player could not be reached, so nothing was done. They may be online on another server node." : offline;
+}
+
+// What the database already holds for a player of this node, changed by a command on another node. A player who is
+// changing node gets it on the node they reach: the snapshot has the old value, and the admin has been told it is done.
+const CHANGE_RETRY_MS = 1_000;
+
+function changeOnArrival(target: any, name: string, args?: unknown): boolean {
+  if (!target.handoff) return false;
+  setTimeout(() => void runOnPlayer(target.username, name, args), CHANGE_RETRY_MS);
+  return true;
+}
+
+registerPlayerAction("cells-role", guardedAction("cells-role", async (target, args) => {
+  if (typeof args?.admin !== "boolean") {
+    log.warn(`A remote role change of ${target.username} was dropped: it brought ${String(args?.admin)}`);
+    return;
+  }
+  if (changeOnArrival(target, "cells-role", args)) return;
+  target.isAdmin = args.admin;
+  // toggleAdmin clears them with the role.
+  if (!args.admin) target.permissions = [];
+  playerCache.set(target.id, target);
+  if (target.wt) sendPacket(target.wt, packetManager.reconnect());
+}));
+
+registerPlayerAction("cells-permissions", guardedAction("cells-permissions", async (target) => {
+  if (changeOnArrival(target, "cells-permissions")) return;
+  target.permissions = await permissions.held(target.username);
+  playerCache.set(target.id, target);
+}));
 
 export async function handle(ctx: PacketContext): Promise<unknown> {
   const { currentPlayer, data, parsedMessage, type, wt } = ctx;
@@ -158,6 +445,7 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
             }
           }
         }
+        await (currentPlayer.isStealth ? tellContactsOffline(currentPlayer) : greetContacts(currentPlayer));
         listener.emit(Events.PLAYER_STEALTH_CHANGE, { player: currentPlayer, isStealth: currentPlayer.isStealth });
         break;
       }
@@ -182,6 +470,7 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
 
         const targetPlayer = playerCache.get(targetPlayerId);
         if (!targetPlayer) break;
+        if (heldInScene(wt, targetPlayer, currentPlayer)) break;
 
         // Track that this player is being dragged
         draggedPlayersMap.set(targetPlayerId, wt.data.id);
@@ -834,7 +1123,7 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
               // A player on another node is summoned by that node (cells-summon, socket/receiver.ts): it checks
               // the admin rule, tells the player, and moves them, by a handoff when this point is not its own.
               // Only a name is asked for: an id is local to the node that gave it.
-              const sent = isNaN(Number(identifier)) && (await runOnPlayer(identifier, "cells-summon", {
+              const reached = isNaN(Number(identifier)) && (await tryOnPlayer(identifier, "cells-summon", {
                 by: currentPlayer.username,
                 map: currentPlayer.location.map,
                 x: Math.round(currentPlayer.location.position.x),
@@ -842,8 +1131,8 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
                 why: "summon",
                 admins: currentPlayer.permissions.some((p: string) => p === "admin.summonadmins" || p === "admin.*"),
               }));
-              if (!sent) {
-                sendPacket(wt, packetManager.notify({ message: "Player not found or is not online" }));
+              if (reached !== "sent") {
+                sendPacket(wt, packetManager.notify({ message: notSent(reached, "Player not found or is not online") }));
               }
               break;
             }
@@ -871,6 +1160,8 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
               sendPacket(wt, packetManager.notify(notifyData));
               break;
             }
+
+            if (heldInScene(wt, targetPlayer, currentPlayer)) break;
 
             if (targetPlayer.location.map !== currentPlayer.location.map) {
 
@@ -1097,6 +1388,9 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
               break;
             }
 
+            // The one moved here is the admin.
+            if (heldInScene(wt, currentPlayer, currentPlayer)) break;
+
             let targetPlayer;
             if (isNaN(Number(identifier))) {
 
@@ -1113,14 +1407,14 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
               // A player on another node: that node sends back its player's point, and this admin is moved by the
               // admin's own node (cells-teleport-to, then cells-summon; Deviation 21). Only a name is asked for:
               // an id is local to the node that gave it.
-              const sent = isNaN(Number(identifier)) && (await runOnPlayer(identifier, "cells-teleport-to", {
+              const reached = isNaN(Number(identifier)) && (await tryOnPlayer(identifier, "cells-teleport-to", {
                 by: currentPlayer.username,
                 // The admin's own held permission, as /summon reads it: the target's node passes it on to the
                 // cells-summon it sends back, and never makes one up.
                 admins: currentPlayer.permissions.some((p: string) => p === "admin.summonadmins" || p === "admin.*"),
               }));
-              if (!sent) {
-                sendPacket(wt, packetManager.notify({ message: "Player not found or is not online" }));
+              if (reached !== "sent") {
+                sendPacket(wt, packetManager.notify({ message: notSent(reached, "Player not found or is not online") }));
               }
               break;
             }
@@ -1368,18 +1662,21 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
 
             if (!targetPlayer) {
               // Not here: a player on another node (cluster mode) is disconnected where they are.
-              if (isNaN(Number(identifier)) && (await isOnline(identifier))) {
+              const known = isNaN(Number(identifier)) ? await whetherOnline(identifier) : false;
+              let reached: PlayerReach | false = known === null ? "unreached" : false;
+              if (known) {
                 if (await player.isAdmin(identifier)) {
                   sendPacket(wt, packetManager.notify({ message: "You cannot disconnect other admins" }));
                   break;
                 }
-                if (await runOnPlayer(identifier, "admin-kick")) {
+                reached = await tryOnPlayer(identifier, "admin-kick");
+                if (reached === "sent") {
                   sendPacket(wt, packetManager.notify({ message: `Disconnected ${identifier.charAt(0).toUpperCase() + identifier.slice(1)} from the server` }));
                   break;
                 }
               }
               const notifyData = {
-                message: "Player not found or is not online",
+                message: notSent(reached, "Player not found or is not online"),
               };
               sendPacket(wt, packetManager.notify(notifyData));
               break;
@@ -1393,8 +1690,9 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
               break;
             }
 
-            if (!(await runOnPlayer(targetPlayer.username, "admin-kick"))) {
-              sendPacket(wt, packetManager.notify({ message: "Player not found or is not online" }));
+            const reached = await tryOnPlayer(targetPlayer.username, "admin-kick");
+            if (reached !== "sent") {
+              sendPacket(wt, packetManager.notify({ message: notSent(reached, "Player not found or is not online") }));
               break;
             }
             const notifyData = {
@@ -1777,6 +2075,8 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
 
             if (targetPlayer?.wt) {
               sendPacket(targetPlayer.wt, packetManager.reconnect());
+            } else {
+              await runOnPlayer(targetPlayer.username, "cells-role", { admin });
             }
             sendPacket(wt, packetManager.notify(notifyData));
             break;
@@ -1938,36 +2238,7 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
               sendPacket(wt, packetManager.notify({ message: "The server is already shutting down" }));
               break;
             }
-            restartState.shutdownStarted = true;
-            const players = Object.values(playerCache.list());
-            players.forEach((player) => {
-              const notifyData = {
-                message:
-                  "⚠️ Server shutting down - please reconnect in a few minutes ⚠️",
-              };
-              sendPacket(player.wt, packetManager.notify(notifyData));
-            });
-
-            await new Promise((resolve) => setTimeout(resolve, 5000));
-            players.forEach((player) => {
-              player.wt.close(1000, "Server is restarting", { drain: true });
-            });
-
-            const checkInterval = setInterval(async () => {
-              const remainingPlayers = Object.values(playerCache.list());
-              remainingPlayers.forEach((player) => {
-                player.wt.close(1000, "Server is restarting", { drain: true });
-              });
-
-              if (remainingPlayers.length === 0) {
-                clearInterval(checkInterval);
-                await clearShared(() => player.clear());
-                // Each disconnect saves its player after leaving the cache:
-                // let the database answer those writes before the process ends.
-                await drainQueries();
-                await gracefulShutdown("/shutdown");
-              }
-            }, 100);
+            await shutdownEverywhere(serverOrderDeps());
             break;
           }
 
@@ -2026,6 +2297,25 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
               break;
             }
             sendPacket(wt, packetManager.toggleMountEditor());
+            break;
+          }
+
+          // /ce is the creature editor's; the class editor took /cle, and this takes /cse.
+          case "CSE":
+          case "CUTSCENEEDITOR": {
+            if (!cutsceneEditor.canUseEditor(currentPlayer)) {
+              sendPacket(wt, packetManager.notify({ message: "You don't have permission to use this command" }));
+              break;
+            }
+            sendPacket(wt, packetManager.toggleCutsceneEditor());
+            break;
+          }
+
+          // /cutscene play <name> [player|map], /cutscene stop [player], /cutscene list, /cutscene reset <name> <player>
+          case "CUTSCENE": {
+            for (const reply of await cutscenePlayer.runCommand(currentPlayer, args)) {
+              sendPacket(wt, packetManager.notify({ message: reply }));
+            }
             break;
           }
 
@@ -2168,91 +2458,7 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
               break;
             }
 
-            if (restartState.scheduled) {
-              restartState.timers.forEach((timer) => clearTimeout(timer));
-              restartState.timers = [];
-              restartState.scheduled = false;
-
-              const players = Object.values(playerCache.list());
-              players.forEach((player) => {
-                const notifyData = {
-                  message: "⚠️ Server restart has been aborted ⚠️",
-                };
-                sendPacket(player.wt, packetManager.notify(notifyData));
-              });
-              break;
-            }
-
-            restartState.scheduled = true;
-            restartState.timers = [];
-
-            const minutes = 15;
-            const RESTART_DELAY = minutes * 60000;
-            const totalMinutes = Math.floor(RESTART_DELAY / 60000);
-
-            const minuteIntervals = Array.from(
-              { length: totalMinutes },
-              (_, i) => totalMinutes - i
-            );
-            const secondIntervals = Array.from(
-              { length: 30 },
-              (_, i) => 30 - i
-            );
-
-            minuteIntervals.forEach((minutes) => {
-              restartState.timers.push(
-                setTimeout(() => {
-                  const players = Object.values(playerCache.list());
-                  players.forEach((player) => {
-                    const notifyData = {
-                      message: `⚠️ Server restarting in ${minutes} minute${minutes === 1 ? "" : "s"
-                        } ⚠️`,
-                    };
-                    sendPacket(player.wt, packetManager.notify(notifyData));
-                  });
-                }, RESTART_DELAY - minutes * 60 * 1000)
-              );
-            });
-
-            secondIntervals.forEach((seconds) => {
-              restartState.timers.push(
-                setTimeout(() => {
-                  const players = Object.values(playerCache.list());
-                  players.forEach((player) => {
-                    const notifyData = {
-                      message: `⚠️ Server restarting in ${seconds} second${seconds === 1 ? "" : "s"
-                        } ⚠️`,
-                    };
-                    sendPacket(player.wt, packetManager.notify(notifyData));
-                  });
-                }, RESTART_DELAY - seconds * 1000)
-              );
-            });
-
-            restartState.timers.push(
-              setTimeout(() => {
-                const players = Object.values(playerCache.list());
-                players.forEach((player) => {
-                  player.wt.close(1000, "Server is restarting", { drain: true });
-                });
-
-                const checkInterval = setInterval(async () => {
-                  const remainingPlayers = Object.values(playerCache.list());
-                  remainingPlayers.forEach((player) => {
-                    player.wt.close(1000, "Server is restarting", { drain: true });
-                  });
-
-                  if (remainingPlayers.length === 0) {
-                    clearInterval(checkInterval);
-                    await clearShared(() => player.clear());
-                    await drainQueries();
-                    // The process ends here. Starting it again is its
-                    // supervisor's job (the Docker restart policy).
-                    await gracefulShutdown("/restart");
-                  }
-                }, 100);
-              }, RESTART_DELAY)
-            );
+            toggleRestart(serverOrderDeps());
             break;
           }
 
@@ -2304,90 +2510,20 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
               }
             }
 
-            const defaultMapProps = mapPropertiesCache.find(
-              (m: any) => m.name === `${defaultMap}.json`
-            );
-            const centerX = defaultMapProps?.spawn ? defaultMapProps.spawn.x : defaultMapProps
-              ? (defaultMapProps.width * defaultMapProps.tileWidth) / 2
-              : 0;
-            const centerY = defaultMapProps?.spawn ? defaultMapProps.spawn.y : defaultMapProps
-              ? (defaultMapProps.height * defaultMapProps.tileHeight) / 2
-              : 0;
-
-            // By username: the target may be offline, and has a session id only while online.
-            await player.setLocationByUsername(targetPlayer.username, `${defaultMap}`, {
-              x: centerX,
-              y: centerY,
-              direction: "down",
-            });
-
-            if (playerCache.get(targetPlayer.id)) {
-              targetPlayer.location.position = {
-                x: Math.round(centerX),
-                y: Math.round(centerY),
-                direction: "down",
-              };
-              // Admin respawn releases any death state: corpse/ghost cleared,
-              // full health, position is the respawn point.
-              targetPlayer.isDead = false;
-              targetPlayer.isGhost = false;
-              targetPlayer.corpse = null;
-              targetPlayer.reviveOffered = false;
-              targetPlayer.ghostTeleportPending = false;
-              resurrection.clearSickness(targetPlayer);
-              const respawnSynced = await player.synchronizeStats(targetPlayer.username);
-              if (respawnSynced) {
-                targetPlayer.stats = respawnSynced;
+            // A player on another node is respawned there. Nobody holding them, they are offline.
+            if (!playerCache.get(targetPlayer.id)) {
+              const reached = await tryOnPlayer(targetPlayer.username, "cells-respawn", { by: currentPlayer.username });
+              if (reached === "sent") break;
+              // Their account is not written while they may be online somewhere.
+              if (reached === "unreached") {
+                sendPacket(wt, packetManager.notify({ message: notSent(reached) }));
+                break;
               }
-              if (targetPlayer.stats) {
-                targetPlayer.stats.health = targetPlayer.stats.total_max_health;
-                targetPlayer.stats.stamina = targetPlayer.stats.total_max_stamina;
-              }
-              playerCache.set(targetPlayer.id, targetPlayer);
-              await resyncNpcChunks(targetPlayer, targetPlayer.wt); // respawned at the map's centre
-              try {
-                await player.setDeadState(targetPlayer.username, 0, null);
-              } catch (e: any) {
-                log.error(`Failed to clear death state for ${targetPlayer.username}: ${e?.message || e}`);
-              }
-              const playersInMap = filterPlayersByMap(
-                targetPlayer.location.map
-              );
-              bumpStateRevision();
-              playersInMap.forEach((player) => {
-                const moveData = {
-                  i: targetPlayer.id,
-                  d: {
-                    x: Number(targetPlayer.location.position.x),
-                    y: Number(targetPlayer.location.position.y),
-                    dr: targetPlayer.location.position.direction
-                  },
-                  r: stateRevision(),
-                  s: targetPlayer.isStealth ? 1 : 0
-                };
-                sendPacket(player.wt, packetManager.moveXY(moveData));
-                sendPacket(player.wt, packetManager.playerGhost({ id: targetPlayer.id, ghost: false }));
-                if (targetPlayer.stats) {
-                  sendPacket(player.wt, packetManager.revive({
-                    id: targetPlayer.id,
-                    target: targetPlayer.id,
-                    stats: targetPlayer.stats,
-                  }));
-                }
-              });
-              spellEffects.broadcastEffectsUpdate(targetPlayer);
             }
 
-            const notifyData = {
-              message: `Respawned ${targetPlayer.username.charAt(0).toUpperCase() +
-                targetPlayer.username.slice(1)
-                }`,
-            };
-            sendPacket(wt, packetManager.notify(notifyData));
-            // An offline target is an account, not a player in the world: only where they will log in changed.
-            if (targetPlayer.location) {
-              listener.emit(Events.PLAYER_RESPAWN, { player: targetPlayer, mapName: targetPlayer.location.map, x: targetPlayer.location.position.x, y: targetPlayer.location.position.y });
-            }
+            if (heldInScene(wt, targetPlayer, currentPlayer)) break;
+
+            await respawnPlayer(targetPlayer, (message) => sendPacket(wt, packetManager.notify({ message })));
             break;
           }
 
@@ -2425,10 +2561,10 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
             if (!onlineTarget) {
               // A player on another node is revived there (cells-revive, socket/receiver.ts; Deviation 20).
               // Only a name is asked for: an id is local to the node that gave it.
-              const sent = !!reviveIdentifier && isNaN(Number(reviveIdentifier))
-                && (await runOnPlayer(reviveIdentifier, "cells-revive", { by: currentPlayer.username }));
-              if (!sent) {
-                sendPacket(wt, packetManager.notify({ message: "Player must be online to revive" }));
+              const reached = !!reviveIdentifier && isNaN(Number(reviveIdentifier))
+                && (await tryOnPlayer(reviveIdentifier, "cells-revive", { by: currentPlayer.username }));
+              if (reached !== "sent") {
+                sendPacket(wt, packetManager.notify({ message: notSent(reached, "Player must be online to revive") }));
               }
               break;
             }
@@ -2475,25 +2611,21 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
                 : playerCache.get(named);
             const waiting = found ? playerCache.get((found as any).id) : null;
             if (!waiting) {
-              sendPacket(wt, packetManager.notify({ message: "Player must be online to reset their cooldowns" }));
+              // A player on another node has theirs reset there. Only a name is asked for: an id is local to the node that gave it.
+              const reached = !!named && isNaN(Number(named))
+                && (await tryOnPlayer(named, "cells-cooldowns", { by: currentPlayer.username }));
+              if (reached !== "sent") {
+                sendPacket(wt, packetManager.notify({ message: notSent(reached, "Player must be online to reset their cooldowns") }));
+              }
               break;
             }
 
-            const waitingName = waiting.username.charAt(0).toUpperCase() + waiting.username.slice(1);
-            try {
-              await resetCooldowns(waiting);
-            } catch (error) {
-              log.error(`The cooldowns of ${waiting.username} could not all be reset: ${error}`);
-              sendPacket(wt, packetManager.notify({ message: `The home cooldown of ${waitingName} could not be reset. The others were.` }));
-            }
+            await endCooldowns(waiting, (message) => sendPacket(wt, packetManager.notify({ message })));
             // The admin's own, as their connection carries them.
             if (waiting.id === currentPlayer.id) {
               currentPlayer.spellCooldowns = waiting.spellCooldowns;
               currentPlayer.spellLockoutUntil = 0;
             }
-            playerCache.set(waiting.id, waiting);
-            if (waiting.wt) sendPacket(waiting.wt, packetManager.cooldownsReset());
-            sendPacket(wt, packetManager.notify({ message: `Reset the cooldowns of ${waitingName}` }));
             break;
           }
 
@@ -2529,23 +2661,22 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
 
             const onlineTarget = killTarget ? playerCache.get(killTarget.id) : null;
             if (!onlineTarget) {
-              sendPacket(wt, packetManager.notify({ message: "Player must be online to kill" }));
+              // A player on another node is killed there. Only a name is asked for: an id is local to the node that gave it.
+              const reached = !!killIdentifier && isNaN(Number(killIdentifier))
+                && (await tryOnPlayer(killIdentifier, "cells-kill", { by: currentPlayer.username }));
+              if (reached !== "sent") {
+                sendPacket(wt, packetManager.notify({ message: notSent(reached, "Player must be online to kill") }));
+              }
               break;
             }
 
-            // As kick and ban: not another admin (yourself is fine).
-            if (onlineTarget.id !== currentPlayer.id && (onlineTarget.isAdmin || await player.isAdmin(onlineTarget.username))) {
-              sendPacket(wt, packetManager.notify({ message: "You cannot kill other admins" }));
+            const refusal = await killRefusal(onlineTarget, onlineTarget.id === currentPlayer.id);
+            if (refusal) {
+              sendPacket(wt, packetManager.notify({ message: refusal }));
               break;
             }
 
-            if (onlineTarget.isDead || onlineTarget.isGhost) {
-              const notifyData = {
-                message: `${onlineTarget.username.charAt(0).toUpperCase() + onlineTarget.username.slice(1)} is already dead`,
-              };
-              sendPacket(wt, packetManager.notify(notifyData));
-              break;
-            }
+            if (heldInScene(wt, onlineTarget, currentPlayer)) break;
 
             // Force the standard death flow: skeleton, corpse persistence,
             // Release Spirit popup, full server-side locks.
@@ -2841,6 +2972,8 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
                 break;
               }
             }
+            // A player on another node carries their permissions there.
+            if (mode !== "LIST" && !targetPlayer.wt) await runOnPlayer(targetPlayer.username, "cells-permissions");
             break;
           }
           case "RELOADMAP": {
@@ -2958,6 +3091,7 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
             const identifier = args[1]?.toLowerCase() || null;
 
             if (!identifier) {
+              if (heldInScene(wt, currentPlayer, currentPlayer)) break;
 
               const mapProps = mapPropertiesCache.find((m: any) => m.name === `${mapName}.json`);
               // A world names its own spawn (a town square): its centre may well be a lake
@@ -3138,62 +3272,18 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
               break;
             }
 
-            // A trade lost on another node may still be settling for this player (cluster/tradesettle.ts): the item
-            // is added once their mark has run out, so the count starts from what the swap left. The admin is told
-            // while it waits, so the command is not sent again. Guard (test "/give waits for the target's mark
-            // before it adds the item").
-            if (settleStoreAttached()) {
-              const refused = await settleForAdmin(targetName, (leftMs) => sendPacket(wt, packetManager.notify({ message: settlingNotice(targetName, leftMs) })));
-              if (refused) {
-                sendPacket(wt, packetManager.notify({ message: refused }));
+            // A player on another node is given it there, so what changes their bags stays in order on that node.
+            if (!playerCache.get(targetPlayer.id)) {
+              const reached = await tryOnPlayer(targetName, "cells-give", { by: currentPlayer.username, item: itemDef.name, quantity });
+              if (reached === "sent") break;
+              // Their bags are not written while they may be online somewhere.
+              if (reached === "unreached") {
+                sendPacket(wt, packetManager.notify({ message: notSent(reached) }));
                 break;
               }
             }
 
-            await inventory.add(targetName, { name: itemDef.name, quantity });
-
-            const cachedTarget = playerCache.get(targetPlayer.id);
-            if (cachedTarget) {
-              if (!Array.isArray(cachedTarget.inventory)) cachedTarget.inventory = [];
-              const existing = cachedTarget.inventory.find((i: any) => i.name.toLowerCase() === itemDef.name.toLowerCase());
-              if (existing) {
-                existing.quantity += quantity;
-                if (cachedTarget.wt) {
-                  sendPacket(cachedTarget.wt, packetManager.addInventoryItem(existing));
-                  sendPacket(cachedTarget.wt, packetManager.notify({ message: `You received ${quantity}x ${itemDef.name}` }));
-                }
-              } else {
-                const newItem = {
-                  name: itemDef.name,
-                  quantity,
-                  equipped: false,
-                  slot: null,
-                  bag_slot: null,
-                  type: itemDef?.type || '',
-                  quality: itemDef?.quality || 'common',
-                  iconUrl: getIconUrl(itemDef?.icon),
-                  equipment_slot: itemDef?.equipment_slot || null,
-                  bag_slots: itemDef?.bag_slots ?? null,
-                  stat_health: itemDef?.stat_health ?? null,
-                  stat_stamina: itemDef?.stat_stamina ?? null,
-                  stat_armor: itemDef?.stat_armor ?? null,
-                  stat_damage: itemDef?.stat_damage ?? null,
-                  stat_critical_chance: itemDef?.stat_critical_chance ?? null,
-                  stat_critical_damage: itemDef?.stat_critical_damage ?? null,
-                  stat_avoidance: itemDef?.stat_avoidance ?? null,
-                  level_requirement: itemDef?.level_requirement ?? null,
-                  description: itemDef?.description || '',
-                };
-                cachedTarget.inventory.push(newItem);
-                if (cachedTarget.wt) {
-                  sendPacket(cachedTarget.wt, packetManager.addInventoryItem(newItem));
-                  sendPacket(cachedTarget.wt, packetManager.notify({ message: `You received ${quantity}x ${itemDef.name}` }));
-                }
-              }
-              playerCache.set(cachedTarget.id, cachedTarget);
-            }
-
-            sendPacket(wt, packetManager.notify({ message: `Gave ${quantity}x ${itemDef.name} to ${targetName}` }));
+            await giveItem(targetName, targetPlayer.id, itemDef, quantity, (message) => sendPacket(wt, packetManager.notify({ message })));
             break;
           }
           case "DROP": {
@@ -3372,14 +3462,8 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
       case "GET_ONLINE_PLAYERS": {
         if (!currentPlayer?.isAdmin) return;
 
-        const allPlayers = Object.values(playerCache.list());
-        const playerList = allPlayers.map((p: any) => ({
-          username: p.username,
-          map: p.location.map.replace(".json", ""),
-          isAdmin: p.isAdmin || false
-        }));
-
-        sendPacket(wt, packetManager.onlinePlayersList(playerList));
+        const everyone = await controlPanel.everyoneOnline(currentPlayer);
+        sendPacket(wt, packetManager.onlinePlayersList(everyone.map(({ username, map, isAdmin }) => ({ username, map, isAdmin }))));
         break;
       }
   }

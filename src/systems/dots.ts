@@ -7,6 +7,7 @@ import { Events, setPlayerPvp } from "./events";
 import log from "../modules/logger";
 import { withPeriodicBonus } from "./spellmath";
 import { broadcastToAOIBestEffort } from "../socket/aoi";
+import { isHeld } from "./cutsceneheld";
 
 export interface DotInstance {
   id: string;
@@ -182,6 +183,9 @@ async function tickPlayerDot(targetKey: string, dot: DotInstance): Promise<boole
     }));
     return true;
   }
+
+  // A player held in a cutscene is out of harm's way: the tick passes, and the effect runs out as usual.
+  if (isHeld(target)) return true;
 
   // Avoidance check - DoT ticks can be dodged like direct damage
   let damage = amount;

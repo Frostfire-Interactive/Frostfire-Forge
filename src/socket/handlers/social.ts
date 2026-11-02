@@ -11,6 +11,7 @@ import { Events } from "../../systems/events";
 import { GuildPermission, refusalText } from "../../systems/guildranks";
 import { clusterEnabled } from "../../cluster/config";
 import { deliverToPlayer, isOnline, runOnPlayer } from "../../cluster/deliver";
+import { greetContacts, sendFriends } from "../contacts";
 import { entityById } from "../../cluster/mirrors";
 import { getPlayerSpriteSheetData, getMountSpriteUrl } from "../../modules/spriteSheetManager";
 import { invitations } from "../../cluster/invitations";
@@ -851,6 +852,9 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
                 currentPlayer.username.toLowerCase()
               );
 
+              currentPlayer.friends = updatedCurrentPlayersFriendsList;
+              playerCache.set(currentPlayer.id, currentPlayer);
+
               sendPacket(
                 wt,
                 packetManager.notify({
@@ -875,10 +879,8 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
                 })
               );
 
-              await deliverToPlayer(
-                inviterName,
-                packetManager.updateFriends({ friends: updatedFriendsList })
-              );
+              await sendFriends(inviterName, updatedFriendsList);
+              await greetContacts(currentPlayer, [inviterName]);
 
               // only an accepted request makes friends
               listener.emit(Events.FRIEND_ADDED, { type: "add", playerUsername: currentPlayer.username, friendUsername: inviterName });
@@ -925,6 +927,7 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
                 for (const member of (updatedPartyMembers as string[])) {
                   await runOnPlayer(member, "party-update", { members: updatedPartyMembers, notice: null });
                 }
+                await greetContacts(currentPlayer, updatedPartyMembers as string[]);
 
                 const partyLeader = await parties.getPartyLeader(partyId);
                 if (partyLeader && updatedPartyMembers.length > 0) {
@@ -996,6 +999,7 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
                 for (const member of (updatedPartyMembers as string[])) {
                   await runOnPlayer(member, "party-update", { members: updatedPartyMembers, notice: null });
                 }
+                await greetContacts(currentPlayer, updatedPartyMembers as string[]);
 
                 if (Array.isArray(updatedPartyMembers) && updatedPartyMembers.length > 0) {
                   // Local: layers are synced among the party members on this node (the leader too, or nothing is).
@@ -1087,6 +1091,7 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
 
               broadcastPlayerUpdate(currentPlayer);
               await pushGuild(guildId);
+              await greetContacts(currentPlayer, updatedGuildMembers);
               listener.emit(Events.GUILD_CHANGED, { type: "join", guildId, guildName, playerUsername: currentPlayer.username });
             }
             break;
@@ -1129,13 +1134,11 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           currentPlayer.username.toLowerCase()
         );
 
+        currentPlayer.friends = updatedFriendsList;
+        playerCache.set(currentPlayer.id, currentPlayer);
+
         // Online here or, in a cluster, on another node (then only their name was found here).
-        await deliverToPlayer(
-          get_friend?.username?.toLowerCase() || username.toLowerCase(),
-          packetManager.updateFriends({
-            friends: updatedCurrentPlayersFriendsList,
-          })
-        );
+        await sendFriends(get_friend?.username?.toLowerCase() || username.toLowerCase(), updatedCurrentPlayersFriendsList);
 
         sendPacket(
           wt,

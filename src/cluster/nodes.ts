@@ -36,6 +36,8 @@ export interface LoadReport {
    * does not answer a block move in time. Absent on a report from an older node: that counts as not lagging.
    */
   lagMs?: number;
+  /** The process's memory in MB (resident set). What the control panel's readings add up across the nodes. */
+  memoryMb?: number;
 }
 
 /** How often the loop-lag meter looks, and how far back its worst value reaches. */
@@ -281,10 +283,11 @@ export class NodeRegistry {
     return parse<NodeInfo>(await this.store.get(infoKey(nodeId)));
   }
 
-  /** Reports of live nodes only: a dead node's last report must not count. */
-  async loads(): Promise<LoadReport[]> {
+  /** Reports of live nodes only: a dead node's last report must not count. With `region`, of that region's nodes. */
+  async loads(region?: string): Promise<LoadReport[]> {
     const loads: LoadReport[] = [];
     for (const node of await this.live()) {
+      if (region !== undefined && node.regionId !== region) continue;
       const load = parse<LoadReport>(await this.store.get(loadKey(node.nodeId)));
       if (load) loads.push(load);
     }

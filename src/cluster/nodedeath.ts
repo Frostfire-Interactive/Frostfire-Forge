@@ -61,6 +61,8 @@ export interface NodeDeathDeps {
    * confirmed, a resent copy of a handled one included (adoption is idempotent). Never for this node's own run.
    */
   adopt?(nodeId: string, startedAt: number): void;
+  /** A confirmed notice: the run's players are gone. `restarted`: the node is back, and what it holds now is its new run's. */
+  playersLost?(peer: string, restarted: boolean): void;
 }
 
 type Step = "mirrors" | "away" | "foreign";
@@ -282,6 +284,7 @@ export class NodeDeath {
         owed.delete("mirrors");
         owed.delete("away");
       }
+      if (!again?.confirmed && peer !== this.deps.self) this.deps.playersLost?.(peer, restarted);
       // Already handled as a restart (the notice itself, or a death notice downgraded to one).
       const effective = `${peer}|${message.startedAt}|${restarted}`;
       if (effective !== key && this.handled.has(effective)) {

@@ -817,6 +817,25 @@ declare interface ControlPanelPlayer {
   dead: number;
   /** Seconds since they logged in, or null where that is not known. */
   onlineFor: Nullable<number>;
+  /** The node that holds them. Only in a cluster. */
+  node?: string;
+  /** Their account. Only in what a node tells the others. */
+  userid?: number;
+}
+
+/** One node of a cluster as the control panel lists it. */
+declare interface ControlPanelNode {
+  id: string;
+  /** Players on it. */
+  online: number;
+  /** Seconds since its process started, or null where that is not known. */
+  uptime: Nullable<number>;
+  memoryMb: Nullable<number>;
+  eventLoopLagMs: Nullable<number>;
+  /** Creatures awake on it. */
+  awake: Nullable<number>;
+  /** False when it did not answer in time: the figures are those of its last load report. */
+  answered: boolean;
 }
 
 /**
@@ -861,6 +880,8 @@ declare interface ControlPanelData {
     whitelist: { enabled: boolean; size: number };
     /** What the /creature-stats route reports. */
     creatures: Nullable<Record<string, unknown>>;
+    /** Each node of a cluster. The figures above are then the cluster's: added up, the worst lag, the oldest node's uptime. */
+    nodes?: ControlPanelNode[];
   };
   /** The viewer's map with its weather, and every world. `showing` is the weather a "random" world has settled on. */
   world: {
@@ -933,6 +954,11 @@ declare interface EngineAPI {
   addHttpRoute(method: string, route: string, handler: (req: Request) => Promise<Response>): void;
   /** False when the move was refused (in cluster mode, the player is being handed off to another node). */
   teleportPlayer(playerObj: any, mapName: string, x: number, y: number): Promise<boolean>;
+  /**
+   * Plays a saved cutscene (made in /cutsceneeditor) to a player. False when it did not begin: there is no such scene,
+   * the player is dead, in a scene already, changing server node, or not on the scene's map.
+   */
+  playCutscene(playerObj: any, name: string): Promise<boolean>;
   registerSpell(spell: SpellData): Promise<void>;
 }
 

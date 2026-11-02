@@ -665,12 +665,14 @@ function makeSummon() {
   let action: ((target: any, args: any) => Promise<void>) | null = null;
   compile(summonCode, [
     "registerPlayerAction", "trackPacket", "adminMoveOf", "assetCache", "log", "deliverToPlayer", "packetManager", "shownName",
-    "sendPacket", "teleportPlayerWrapper",
+    "sendPacket", "teleportPlayerWrapper", "isHeld", "heldNote",
   ], "null")({
     registerPlayerAction: (_name: string, fn: any) => { action = fn; },
     trackPacket,
     adminMoveOf,
     assetCache: { get: async () => MAPS },
+    isHeld: () => false,
+    heldNote: () => "",
     log,
     deliverToPlayer: async (...call: any[]) => { seen.delivered.push(call); return true; },
     packetManager: { notify: (data: any) => data },

@@ -31,8 +31,7 @@
 //   SERVER_ID                <REGION_ID>-node-<i>. The gateway keys game servers by
 //                            this id, so nodes sharing one would overwrite each
 //                            other's registration (host/port) on every heartbeat.
-//                            Side effects of the per-node id: whitelist rows are
-//                            read and written per SERVER_ID, the asset-server
+//                            Side effects of the per-node id: the asset-server
 //                            world-list calls carry it, and the gateway realm list
 //                            shows one entry per node (cluster mode folds them into
 //                            one region from phase 3 Task 6).

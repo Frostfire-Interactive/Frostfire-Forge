@@ -1,6 +1,6 @@
 import { beforeEach, expect, test } from "bun:test";
 import { ClusterBus } from "../cluster/bus";
-import { Delivery } from "../cluster/deliver";
+import { Delivery, hearDeliveries } from "../cluster/deliver";
 import { PlayerDirectory } from "../cluster/directory";
 import { MemoryStore } from "../cluster/memorystore";
 
@@ -127,6 +127,28 @@ test("a failing lookup never throws out of delivery", async () => {
   await a.runOnPlayerAt("b", "7", "greet", {});
 });
 
+test("a player no node holds is told from one the cluster could not look for", async () => {
+  const flaky = new FlakyStore();
+  const a = await nodeOn(flaky, "a", {});
+  await nodeOn(flaky, "b", { "7": { username: "Hero", ...fakeConnection() } });
+  expect(await a.tryOnPlayer("hero", "greet", {})).toBe("sent");
+  expect(await a.tryOnPlayer("nobody", "greet", {})).toBe("offline");
+  expect(await a.whetherOnline("hero")).toBe(true);
+  expect(await a.whetherOnline("nobody")).toBe(false);
+  flaky.failing = true;
+  expect(await a.tryOnPlayer("nobody", "greet", {})).toBe("unreached");
+  expect(await a.whetherOnline("nobody")).toBeNull();
+});
+
+test("a failing publish is not taken for a player who is offline", async () => {
+  const flaky = new FlakyStore();
+  const a = await nodeOn(flaky, "a", {});
+  await nodeOn(flaky, "b", { "7": { username: "Hero", ...fakeConnection() } });
+  flaky.get = MemoryStore.prototype.get;
+  flaky.failing = true;
+  expect(await a.tryOnPlayer("hero", "greet", {})).toBe("unreached");
+});
+
 test("a failing publish never throws out of delivery", async () => {
   const flaky = new FlakyStore();
   const a = await nodeOn(flaky, "a", {});
@@ -148,4 +170,72 @@ test("a local player is still reached while the cluster is failing", async () =>
   expect(await a.deliverToPlayer("hero", [encode("hi")])).toBe(true);
   expect(await a.isOnline("hero")).toBe(true);
   expect(hero.sent).toEqual(["hi"]);
+});
+
+test("an asked action gives back what it gave, from the player's node", async () => {
+  const a = await node("a", {});
+  const b = await node("b", { "7": { username: "Hero", ...fakeConnection() } });
+  b.registerAction("read", (player, args) => `${player.username}:${args.word}`);
+  expect(await a.askPlayer("hero", "read", { word: "hi" }, 1_000)).toEqual({ status: "answered", value: "Hero:hi" });
+});
+
+test("an action asked of a player on this node runs here", async () => {
+  const a = await node("a", { "1": { username: "Hero", ...fakeConnection() } });
+  a.registerAction("read", (player) => player.username);
+  expect(await a.askPlayer("hero", "read", {}, 1_000)).toEqual({ status: "answered", value: "Hero" });
+});
+
+test("nobody holding the player is an answer, with a cluster and without", async () => {
+  const a = await node("a", {});
+  expect(await a.askPlayer("nobody", "read", {}, 1_000)).toEqual({ status: "gone" });
+  expect(await new Delivery(players({})).askPlayer("nobody", "read", {}, 1_000)).toEqual({ status: "gone" });
+});
+
+test("a node the directory still names says so when it no longer holds the player", async () => {
+  const a = await node("a", {});
+  await node("b", {});
+  await new PlayerDirectory(store, "b").claim("Hero", "7", "main");
+  expect(await a.askPlayer("hero", "read", {}, 1_000)).toEqual({ status: "gone" });
+});
+
+test("a question that cannot be sent has changed nothing", async () => {
+  const flaky = new FlakyStore();
+  const a = await nodeOn(flaky, "a", {});
+  await nodeOn(flaky, "b", { "7": { username: "Hero", ...fakeConnection() } });
+  flaky.failing = true;
+  expect(await a.askPlayer("hero", "read", {}, 1_000)).toEqual({ status: "unreached" });
+  // The lookup works; only the publish fails.
+  flaky.get = MemoryStore.prototype.get;
+  expect(await a.askPlayer("hero", "read", {}, 1_000)).toEqual({ status: "unreached" });
+});
+
+test("no answer in time may still have run, and so may an action that threw", async () => {
+  const a = await node("a", {});
+  const b = await node("b", { "7": { username: "Hero", ...fakeConnection() } });
+  b.registerAction("slow", () => new Promise(() => {}));
+  b.registerAction("broken", () => { throw new Error("no"); });
+  expect(await a.askPlayer("hero", "slow", {}, 20)).toEqual({ status: "unsure" });
+  expect(await a.askPlayer("hero", "broken", {}, 20)).toEqual({ status: "unsure" });
+});
+
+test("a node that passes a player on passes the question on too", async () => {
+  const a = await node("a", {});
+  const b = await node("b", {});
+  const c = await node("c", { "7": { username: "Hero", ...fakeConnection() } });
+  c.registerAction("read", (player) => player.username);
+  a.setForwarder(() => "b");
+  b.setForwarder(() => "c");
+  expect(await a.askPlayer("Hero", "read", {}, 1_000)).toEqual({ status: "answered", value: "Hero" });
+});
+
+test("what reaches a connection through delivery is heard", async () => {
+  const hero = fakeConnection();
+  const heard: unknown[][] = [];
+  hearDeliveries((wt, packets) => heard.push([wt, packets.length]));
+  try {
+    await new Delivery(players({ "1": { username: "Hero", ...hero } })).deliverToPlayer("hero", [encode("hi")]);
+    expect(heard).toEqual([[hero.wt, 1]]);
+  } finally {
+    hearDeliveries(null);
+  }
 });

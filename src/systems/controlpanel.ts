@@ -20,8 +20,10 @@ import lootTable from "./lootTable";
 import mutes, { parseDuration } from "./mutes";
 import reports from "./reports";
 import tradeLog from "./tradelog";
-import { findOnline, oneAtATime, search as searchEditor } from "./playereditor";
+import { findOnline, freshOrNull, NOT_READ, oneAtATime, search as searchEditor } from "./playereditor";
 import { subscriptionState, isLockId } from "./subscriptions";
+import { clusterSelf, peerReports, peerRoster, peersOnline, servePanelFrom, sharePanelActivity } from "../cluster/index";
+import type { NodeAnswer } from "../cluster/census";
 
 export const DENIED = "You don't have permission to use the control panel.";
 const NOT_ALLOWED = "You don't have permission to do that.";
@@ -108,6 +110,7 @@ export function setControlPanelBridge(next: ControlPanelBridge | null): void {
   bridge = next;
   // The readings the dashboard charts are taken for as long as there is a server to read.
   keepReadings(!!next);
+  servePanelFrom(next ? { answer: nodeAnswer, activity: (entry) => keepActivity(entry as ControlPanelActivity) } : null);
 }
 
 /**
@@ -116,8 +119,10 @@ export function setControlPanelBridge(next: ControlPanelBridge | null): void {
  * two admin packets.
  */
 export type PanelRun = { command: string; args: string[] } | { packet: "NOCLIP" | "STEALTH" };
+/** `awaitReply`: the panel has no answer of its own, so a command that ended without a word is waited on. */
+export type PanelRunOptions = { awaitReply?: boolean };
 /** Runs it for the admin and resolves with what the command told them. */
-export type RunCommand = (run: PanelRun) => Promise<string[]>;
+export type RunCommand = (run: PanelRun, options?: PanelRunOptions) => Promise<string[]>;
 
 const NOTIFY_HEAD = new TextEncoder().encode('{"type":"NOTIFY",');
 const decoder = new TextDecoder();
@@ -221,6 +226,98 @@ export function onlinePlayers(viewer: any): ControlPanelPlayer[] {
   return list.sort((a, b) => a.username.localeCompare(b.username));
 }
 
+/** How a node stands, in its own words. */
+type NodeStatus = Pick<ControlPanelNode, "uptime" | "memoryMb" | "eventLoopLagMs"> & { creatures: Record<string, any> | null };
+
+const megabytes = (): number => Math.round(process.memoryUsage().rss / 1048576);
+
+function statusHere(extra: ReturnType<ControlPanelBridge["status"]> | undefined): NodeStatus {
+  return {
+    uptime: Math.floor(process.uptime()),
+    memoryMb: megabytes(),
+    eventLoopLagMs: extra ? Math.round(extra.eventLoopLagMs) : null,
+    creatures: extra?.creatures ?? null,
+  };
+}
+
+/** What this node tells the panels open on the others: everyone, since each panel keeps what its viewer may see. */
+function nodeAnswer(): NodeAnswer {
+  return {
+    rows: onlinePlayers({ isAdmin: true }).map((row) => ({ ...row, userid: Number(playerCache.getByUsername(row.username)?.userid) || 0 })),
+    status: statusHere(bridge?.status()),
+  };
+}
+
+/** One set of creature figures from several nodes: counts add up, and a round is as slow as the slowest node's. */
+function allCreatures(figures: Array<Record<string, any> | null>): Record<string, any> | null {
+  const present = figures.filter((c): c is Record<string, any> => !!c);
+  if (present.length < 2) return present[0] ?? null;
+  const merged = { ...present[0] };
+  for (const key of ["creatures", "mirrors", "awake", "dormant", "observed", "inCombat"]) {
+    merged[key] = present.reduce((total, c) => total + (Number(c[key]) || 0), 0);
+  }
+  merged.maps = Math.max(...present.map((c) => Number(c.maps) || 0));
+  const ticks = present.map((c) => c.tick).filter(Boolean);
+  if (ticks.length) {
+    merged.tick = { ...ticks[0] };
+    for (const key of ["p50", "p95", "p99", "max", "budgetPctP95"]) merged.tick[key] = Math.max(...ticks.map((t) => Number(t[key]) || 0));
+  }
+  return merged;
+}
+
+/**
+ * Everyone online and how each node of the region stands: this node's own, and what the others said. A node that did
+ * not answer in time counts by its load report, which holds no names.
+ */
+async function clusterView(viewer: any): Promise<{ players: ControlPanelPlayer[]; online: number; nodes: ControlPanelNode[]; creatures: Record<string, any> | null; worldCounts: Map<string, number> | null }> {
+  const players = onlinePlayers(viewer);
+  const self = clusterSelf();
+  const { creatures: own, ...numbers } = statusHere(bridge?.status());
+  if (self) for (const row of players) row.node = self;
+  const nodes: ControlPanelNode[] = [{ ...numbers, id: self ?? "", online: players.length, awake: Number(own?.awake) || 0, answered: true }];
+  const figures = [own];
+  // A player being handed over is on two nodes for a moment: this node's row stands.
+  const seen = new Set(players.map((row) => row.username));
+  // How many are on each map, by what the nodes say. A world counts everyone, seen by this viewer or not.
+  const onMap = new Map<string, number>();
+  const counted = new Set<string>();
+  const count = (row: ControlPanelPlayer) => {
+    if (counted.has(row.username)) return;
+    counted.add(row.username);
+    const map = normMap(row.map);
+    onMap.set(map, (onMap.get(map) ?? 0) + 1);
+  };
+  onlinePlayers({ isAdmin: true }).forEach(count);
+  for (const { nodeId, report, answer } of await peerRoster()) {
+    const status = answer?.status as NodeStatus | null | undefined;
+    nodes.push({
+      id: nodeId,
+      online: answer ? answer.rows.length : report?.players ?? 0,
+      uptime: status?.uptime ?? null,
+      memoryMb: status?.memoryMb ?? report?.memoryMb ?? null,
+      eventLoopLagMs: status?.eventLoopLagMs ?? report?.lagMs ?? null,
+      awake: status?.creatures ? Number(status.creatures.awake) || 0 : report?.creatures ?? null,
+      answered: !!answer,
+    });
+    figures.push(status?.creatures ?? null);
+    for (const row of (answer?.rows ?? []) as ControlPanelPlayer[]) {
+      count(row);
+      if (seen.has(row.username) || !canSee(viewer, row)) continue;
+      seen.add(row.username);
+      players.push({ ...row, node: nodeId });
+    }
+  }
+  players.sort((a, b) => a.username.localeCompare(b.username));
+  const unanswered = nodes.reduce((total, node) => total + (node.answered ? 0 : node.online), 0);
+  const worldCounts = self && nodes.every((node) => node.answered) ? onMap : null;
+  return { players, online: players.length + unanswered, nodes, creatures: allCreatures(figures), worldCounts };
+}
+
+/** Everyone the viewer may see online, on every node. */
+export async function everyoneOnline(viewer: any): Promise<ControlPanelPlayer[]> {
+  return (await clusterView(viewer)).players;
+}
+
 /** What each control's rule says for this viewer, so the panel can grey out what would be refused. */
 export async function capabilities(viewer: any): Promise<Record<string, boolean>> {
   const can: Record<string, boolean> = {};
@@ -294,9 +391,9 @@ let readingFailed = false;
 
 const higher = (a: number, b: number): number => (Number.isNaN(a) ? b : Number.isNaN(b) ? a : Math.max(a, b));
 
-/** Everyone connected. Only admins open the panel, and an admin may see a stealthed player. */
+/** Everyone connected, here and on the other nodes. Only admins open the panel, and an admin may see a stealthed player. */
 function countOnline(): number {
-  let online = 0;
+  let online = peersOnline();
   for (const p of Object.values(playerCache.list() as Record<string, any>)) if (p?.username) online++;
   return online;
 }
@@ -310,12 +407,15 @@ export function takeReading(now = Date.now()): void {
   const extra = bridge?.status();
   const online = countOnline();
   const awake = Number(extra?.creatures?.awake);
+  const peers = peerReports();
+  const lag = extra ? Math.round(extra.eventLoopLagMs * 10) / 10 : NaN;
+  // The whole cluster's: lag as the worst node has it, the rest added up. The other nodes' are as of their load reports.
   const row = [
     Math.floor(now / 1000),
     online,
-    extra ? Math.round(extra.eventLoopLagMs * 10) / 10 : NaN,
-    Math.round(process.memoryUsage().rss / 1048576),
-    Number.isFinite(awake) ? awake : NaN,
+    peers.reduce((worst, report) => higher(worst, report.lagMs ?? NaN), lag),
+    peers.reduce((total, report) => total + (report.memoryMb ?? 0), megabytes()),
+    Number.isFinite(awake) ? peers.reduce((total, report) => total + report.creatures, awake) : NaN,
   ];
   notePeak(online, now);
   recent.add(row);
@@ -364,15 +464,21 @@ function noteActivity(actor: any, action: string, target: string | undefined, da
     // The names of a set of permissions; for the rows of a chest, how many.
     else if (Array.isArray(value)) details[key] = key === "permissions" ? value.map(String).join(", ").slice(0, DETAIL_MAX) : value.length;
   }
-  activity.push({
-    seq: ++activityCount,
+  const entry = {
     at: Date.now(),
     by: lower(actor.username),
     action,
     target: target ?? null,
     details,
     said: said.join(" ").slice(0, DETAIL_MAX * 2),
-  });
+  };
+  keepActivity(entry);
+  sharePanelActivity(entry);
+}
+
+/** Lists an action, done here or through a panel on another node. Its place in the list is this node's own. */
+function keepActivity(entry: Omit<ControlPanelActivity, "seq">): void {
+  activity.push({ ...entry, seq: ++activityCount });
   if (activity.length > ACTIVITY_KEEP) activity.splice(0, activity.length - ACTIVITY_KEEP);
 }
 
@@ -430,12 +536,14 @@ export function forgetHistory(): void {
  * the whole history; a refresh that says what it holds gets what is newer.
  */
 export async function buildData(viewer: any, full: boolean, since: Since | null = null): Promise<ControlPanelData> {
-  const players = onlinePlayers(viewer);
+  const { players, online, nodes, creatures, worldCounts } = await clusterView(viewer);
   const map = normMap(viewer.location?.map);
   const extra = bridge?.status();
-  const worlds = bridge ? await bridge.worlds() : [];
+  // The world's own count is shared by the nodes, but a node that dies leaves it too high: it only stands in for a node that did not answer.
+  const worlds = (bridge ? await bridge.worlds() : []).map((w) => (worldCounts ? { ...w, players: worldCounts.get(w.name) ?? 0 } : w));
   const here = worlds.find((w) => w.name === map);
-  notePeak(countOnline(), Date.now());
+  notePeak(Math.max(online, countOnline()), Date.now());
+  const lags = nodes.map((node) => node.eventLoopLagMs).filter((lag): lag is number => lag !== null);
 
   const data: ControlPanelData = {
     viewer: {
@@ -447,14 +555,15 @@ export async function buildData(viewer: any, full: boolean, since: Since | null 
     },
     players,
     status: {
-      uptime: Math.floor(process.uptime()),
-      online: players.length,
+      uptime: Math.max(...nodes.map((node) => node.uptime ?? 0)),
+      online,
       peak: { ...peak },
-      memoryMb: Math.round(process.memoryUsage().rss / 1048576),
-      eventLoopLagMs: extra ? Math.round(extra.eventLoopLagMs) : null,
+      memoryMb: nodes.reduce((total, node) => total + (node.memoryMb ?? 0), 0),
+      eventLoopLagMs: lags.length ? Math.max(...lags) : null,
       restartScheduled: bridge ? bridge.restartScheduled() : false,
       whitelist: { enabled: !!extra?.whitelistEnabled, size: extra?.whitelisted ?? 0 },
-      creatures: extra?.creatures ?? null,
+      creatures,
+      ...(clusterSelf() ? { nodes } : {}),
     },
     world: { map, weather: here?.weather || "clear", showing: here?.showing || "clear", conditions: here?.conditions ?? null, worlds },
     subscription: subscriptionState(),
@@ -1027,53 +1136,64 @@ export async function handlePanelPacket(actor: any, type: string, data: any, run
     return result(false, [DENIED], { denied: true });
   }
 
-  if (type === "CONTROL_PANEL_LOAD") return { kind: "data", data: await buildData(actor, data?.full === true, sinceOf(data)) };
-  if (type === "CONTROL_PANEL_QUERY") {
-    const found = await lookUp(actor, data);
-    return Array.isArray(found) ? fail(found) : { kind: "results", data: found };
-  }
-  if (type !== "CONTROL_PANEL_ACTION") return fail([`Unknown control panel request: ${type}`]);
-
-  const definition = Object.hasOwn(ACTIONS, action) ? ACTIONS[action] : null;
-  if (!definition) return fail([`Unknown control panel action: ${action}`]);
-  if (!requestId) return fail(["That request could not be told apart from a repeat, so it was not run."]);
-  if (isRepeat(actor, requestId)) return result(false, [], { duplicate: true });
-
-  if (!(await definition.allowed(actor))) {
-    log.warn(`[CONTROL_PANEL] ${actor.username} was refused ${action}`);
-    return fail([NOT_ALLOWED]);
-  }
-  if (definition.confirm && data?.confirm !== true) return fail([UNCONFIRMED]);
-
-  const plan = await definition.plan({ actor, data });
-  if (Array.isArray(plan)) return fail(plan);
-
-  const carryOut = async (): Promise<PanelResult> => {
-    let said: string[];
-    try {
-      const already = plan.already ? await plan.already() : null;
-      if (already) return result(true, [already], { data: await buildData(actor, false) });
-      const replies = await run(plan.run);
-      const own = plan.answer ? plan.answer(replies) : null;
-      said = own ? [own] : withShownName(replies, plan.target);
-    } catch (error) {
-      log.error(`[CONTROL_PANEL] ${action} by ${actor.username} failed: ${error}`);
-      return fail(["That failed on the server."]);
-    }
-    if (said.length === 0) return fail([NO_ANSWER]);
-    const details = { ...data };
-    delete details.action;
-    delete details.requestId;
-    delete details.confirm;
-    log.info(`[CONTROL_PANEL] ${actor.username} (${actor.id}) ran ${action}: ${JSON.stringify(details).slice(0, 300)}`);
-    noteActivity(actor, action, plan.target, details, said);
-    // The fresh state with the answer: the panel shows what the server has now.
-    return result(true, said, { data: await buildData(actor, false) });
+  // The fresh state with an answer: the panel shows what the server has now.
+  const fresh = async (): Promise<Partial<ControlPanelResult>> => {
+    const state = await freshOrNull(() => buildData(actor, false), `[CONTROL_PANEL] the state after ${action}`);
+    return state ? { data: state } : {};
   };
 
-  // One command at a time for this admin (its answer is read off their
-  // connection), and one change at a time for whatever it changes: two
-  // admins, or this panel and the player editor, are ordered too.
-  const mine = actorKey(actor);
-  return oneAtATime(mine, () => (plan.key === mine ? carryOut() : oneAtATime(plan.key, carryOut)));
+  try {
+    if (type === "CONTROL_PANEL_LOAD") return { kind: "data", data: await buildData(actor, data?.full === true, sinceOf(data)) };
+    if (type === "CONTROL_PANEL_QUERY") {
+      const found = await lookUp(actor, data);
+      return Array.isArray(found) ? fail(found) : { kind: "results", data: found };
+    }
+    if (type !== "CONTROL_PANEL_ACTION") return fail([`Unknown control panel request: ${type}`]);
+
+    const definition = Object.hasOwn(ACTIONS, action) ? ACTIONS[action] : null;
+    if (!definition) return fail([`Unknown control panel action: ${action}`]);
+    if (!requestId) return fail(["That request could not be told apart from a repeat, so it was not run."]);
+    if (isRepeat(actor, requestId)) return result(false, [], { duplicate: true });
+
+    if (!(await definition.allowed(actor))) {
+      log.warn(`[CONTROL_PANEL] ${actor.username} was refused ${action}`);
+      return fail([NOT_ALLOWED]);
+    }
+    if (definition.confirm && data?.confirm !== true) return fail([UNCONFIRMED]);
+
+    const plan = await definition.plan({ actor, data });
+    if (Array.isArray(plan)) return fail(plan);
+
+    const carryOut = async (): Promise<PanelResult> => {
+      let said: string[];
+      try {
+        const already = plan.already ? await plan.already() : null;
+        if (already) return result(true, [already], await fresh());
+        const replies = await run(plan.run, { awaitReply: !plan.answer });
+        const own = plan.answer ? plan.answer(replies) : null;
+        said = own ? [own] : withShownName(replies, plan.target);
+      } catch (error) {
+        log.error(`[CONTROL_PANEL] ${action} by ${actor.username} failed: ${error}`);
+        return fail(["That failed on the server."]);
+      }
+      if (said.length === 0) return fail([NO_ANSWER]);
+      const details = { ...data };
+      delete details.action;
+      delete details.requestId;
+      delete details.confirm;
+      log.info(`[CONTROL_PANEL] ${actor.username} (${actor.id}) ran ${action}: ${JSON.stringify(details).slice(0, 300)}`);
+      noteActivity(actor, action, plan.target, details, said);
+      return result(true, said, await fresh());
+    };
+
+    // One command at a time for this admin (its answer is read off their
+    // connection), and one change at a time for whatever it changes: two
+    // admins, or this panel and the player editor, are ordered too.
+    const mine = actorKey(actor);
+    return await oneAtATime(mine, () => (plan.key === mine ? carryOut() : oneAtATime(plan.key, carryOut)));
+  } catch (error) {
+    // A command runs inside carryOut, which answers for itself, so nothing has been run by here.
+    log.error(`[CONTROL_PANEL] ${action} by ${actor?.username} failed: ${error}`);
+    return fail([NOT_READ]);
+  }
 }

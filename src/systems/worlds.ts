@@ -23,14 +23,10 @@ function withWorldsLock<T>(action: () => Promise<T>): Promise<T> {
 }
 
 async function getRedisClient(): Promise<any | null> {
-  // The cache's own client, which comes back after an outage (services/redisclient.ts); Bun's singleton does not.
-  if (process.env.CACHE?.toLowerCase() === "redis") return sharedRedis();
-  try {
-    const mod = await import("bun");
-    return (mod as any).redis;
-  } catch {
-    return null;
-  }
+  // The cache's own client, which comes back after an outage (services/redisclient.ts). Without CACHE=redis there is no
+  // Redis to ask: Bun's singleton would look for one on this machine and hold the first login of every start behind the
+  // worlds' lock until it gave up, 31 s later.
+  return process.env.CACHE?.toLowerCase() === "redis" ? sharedRedis() : null;
 }
 
 /**

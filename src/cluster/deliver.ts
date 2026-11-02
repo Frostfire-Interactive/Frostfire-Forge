@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import log from "../modules/logger";
 import playerCache from "../services/playermanager";
 import type { ClusterBus } from "./bus";
@@ -17,10 +18,26 @@ export interface LocalPlayers {
   list(): Record<string, any>;
 }
 
-type Action = (player: any, args: any) => void | Promise<void>;
+type Action = (player: any, args: any) => unknown;
 
 /** The node a player who just left this node went to, or null (cells phase 6 forwarding). */
 export type Forwarder = (username: string) => string | null;
+
+/**
+ * How an action asked of a player's node ended. `answered`: it ran, and this is what it gave. `gone`: no node holds
+ * the player, so nothing ran. `unreached`: the message never went, so nothing ran. `unsure`: no answer came in time,
+ * so it may have run.
+ */
+export type PlayerAnswer<T> = { status: "answered"; value: T } | { status: "gone" | "unreached" | "unsure" };
+
+/** Where an action for a player went. `offline`: no node holds them. `unreached`: nothing went out, and they may be online. */
+export type PlayerReach = "sent" | "offline" | "unreached";
+
+/** Where the answer to an asked action goes: the node that asked, and the asker's id for it. */
+type AskRef = { from: string; id: string };
+
+const askRefOf = (data: any): AskRef | null =>
+  typeof data?.ask?.from === "string" && typeof data?.ask?.id === "string" ? { from: data.ask.from, id: data.ask.id } : null;
 
 const toWire = (packets: Uint8Array[]) => packets.map((p) => Buffer.from(p).toString("base64"));
 const fromWire = (packets: unknown): Uint8Array[] =>
@@ -33,9 +50,17 @@ export function hopsOf(data: any): number {
   return data?.forwarded === true ? 1 : 0;
 }
 
+let onDelivered: ((wt: any, packets: Uint8Array[]) => void) | null = null;
+
+/** Who hears what reaches a connection through here: the control panel takes the answer of a command another node ran. */
+export function hearDeliveries(listener: typeof onDelivered): void {
+  onDelivered = listener;
+}
+
 function sendTo(player: any, packets: Uint8Array[], bestEffort: boolean): boolean {
   const wt = player?.wt;
   if (!wt || wt.readyState !== 1) return false;
+  onDelivered?.(wt, packets);
   try {
     for (const packet of packets) {
       if (bestEffort && typeof wt.sendBestEffort === "function") wt.sendBestEffort(packet);
@@ -71,6 +96,8 @@ export class Delivery {
   private readonly holdMs: number;
   private readonly maxHeld: number;
   private held = 0;
+  // Actions asked of another node, by the id their answer comes back under.
+  private asked = new Map<string, (answer: PlayerAnswer<any>) => void>();
 
   constructor(private players: LocalPlayers, opts: DeliveryOptions = {}) {
     this.health = opts.health ?? storeHealth;
@@ -116,8 +143,10 @@ export class Delivery {
     bus.on("player-action", async (data) => {
       const byName = !data?.playerId;
       const player = byName ? this.players.getByUsername(String(data?.username ?? "")) : this.players.get(String(data.playerId));
+      const ask = askRefOf(data);
       if (player) {
-        await this.runLocal(player, String(data?.action), data?.args);
+        if (ask) await this.answerAsk(ask, player, String(data?.action), data?.args);
+        else await this.runLocal(player, String(data?.action), data?.args);
         return;
       }
       // Only an action addressed by name follows the player: a session id names a session this node had.
@@ -131,7 +160,7 @@ export class Delivery {
         note = "";
       }
       if (next && await this.passOn(next.peer, "player-action", {
-        username: data?.username, action: data?.action, args: data?.args, hops: hops + 1, ...(next.epoch ? { epoch: next.epoch } : {}),
+        username: data?.username, action: data?.action, args: data?.args, hops: hops + 1, ...(next.epoch ? { epoch: next.epoch } : {}), ...(ask ? { ask } : {}),
       })) {
         // A directory pass-on goes to a node that may have died since its claim: what the action carried is named
         // here, so it is in the log if that node never runs it.
@@ -141,6 +170,22 @@ export class Delivery {
         return;
       }
       log.warn(`Player action "${data?.action}" found no player ${data?.username ?? data?.playerId} here${note ? `: ${note}` : ""}`);
+      if (ask) await this.sendAnswer(ask, { gone: true });
+    });
+    bus.on("player-answer", (data) => {
+      const id = String(data?.id ?? "");
+      const settle = this.asked.get(id);
+      if (!settle) return;
+      if (data?.gone === true) {
+        settle({ status: "gone" });
+        return;
+      }
+      try {
+        settle({ status: "answered", value: JSON.parse(String(data?.answer)) });
+      } catch (error) {
+        log.error(`The answer to an asked action could not be read: ${error}`);
+        settle({ status: "unsure" });
+      }
     });
   }
 
@@ -242,17 +287,22 @@ export class Delivery {
 
   /** Runs a registered action on the player's node. Whether the player is online. */
   async runOnPlayer(username: string, action: string, args?: unknown): Promise<boolean> {
+    return (await this.tryOnPlayer(username, action, args)) === "sent";
+  }
+
+  /** runOnPlayer for a caller that must not take a player it could not reach for one who is offline. */
+  async tryOnPlayer(username: string, action: string, args?: unknown): Promise<PlayerReach> {
     const local = this.players.getByUsername(username);
     if (local) {
       await this.runLocal(local, action, args);
-      return true;
+      return "sent";
     }
     const back = await this.storeBack();
     // The player may have logged in or arrived here while the action was held, and a local run needs no store.
     const arrived = this.players.getByUsername(username);
     if (arrived) {
       await this.runLocal(arrived, action, args);
-      return true;
+      return "sent";
     }
     if (!back) {
       // The note is only for a log line: one that throws on odd arguments never changes the answer.
@@ -263,18 +313,60 @@ export class Delivery {
         note = "";
       }
       log.warn(`Action "${action}" for ${username} was dropped: the cluster store is down${note ? `: ${note}` : ""}`);
-      return false;
+      return "unreached";
     }
     const peer = this.forwardPeer(username);
-    if (peer) return this.passOn(peer, "player-action", { username, action, args });
+    if (peer) return (await this.passOn(peer, "player-action", { username, action, args })) ? "sent" : "unreached";
     try {
       const entry = await this.remoteEntry(username);
-      if (!entry) return false;
+      if (!entry) return "offline";
       await this.bus!.toNode(entry.nodeId, "player-action", { username, action, args, epoch: entry.epoch });
-      return true;
+      return "sent";
     } catch (error) {
       log.error(`Cluster action "${action}" for ${username} failed: ${error}`);
-      return false;
+      return "unreached";
+    }
+  }
+
+  /**
+   * Runs a registered action on the player's node and gives back what it gave (see PlayerAnswer). The answer waits at
+   * most `timeoutMs` for the other node, which has to be longer than the action can take.
+   */
+  async askPlayer<T = unknown>(username: string, action: string, args: unknown, timeoutMs: number): Promise<PlayerAnswer<T>> {
+    const local = this.players.getByUsername(username);
+    if (local) return { status: "answered", value: await this.runLocal(local, action, args) as T };
+    const back = await this.storeBack();
+    // The player may have logged in or arrived here while the action was held, and a local run needs no store.
+    const arrived = this.players.getByUsername(username);
+    if (arrived) return { status: "answered", value: await this.runLocal(arrived, action, args) as T };
+    if (!back) {
+      log.warn(`Action "${action}" for ${username} was not sent: the cluster store is down`);
+      return { status: "unreached" };
+    }
+    try {
+      const peer = this.forwardPeer(username);
+      const entry = peer ? null : await this.remoteEntry(username);
+      if (!peer && !entry) return { status: "gone" };
+      const id = randomUUID();
+      const ask: AskRef = { from: this.bus!.nodeId, id };
+      return await new Promise<PlayerAnswer<T>>((resolve, reject) => {
+        const settle = (answer: PlayerAnswer<T>) => {
+          clearTimeout(timer);
+          this.asked.delete(id);
+          resolve(answer);
+        };
+        const timer = setTimeout(() => settle({ status: "unsure" }), timeoutMs);
+        this.asked.set(id, settle);
+        const data = entry ? { username, action, args, epoch: entry.epoch, ask } : { username, action, args, ask };
+        this.bus!.toNode(peer ?? entry!.nodeId, "player-action", data).catch((error) => {
+          clearTimeout(timer);
+          this.asked.delete(id);
+          reject(error);
+        });
+      });
+    } catch (error) {
+      log.error(`Cluster action "${action}" for ${username} failed: ${error}`);
+      return { status: "unreached" };
     }
   }
 
@@ -297,6 +389,11 @@ export class Delivery {
   }
 
   async isOnline(username: string): Promise<boolean> {
+    return (await this.whetherOnline(username)) === true;
+  }
+
+  /** isOnline for a caller that must tell "no" from "not known": null is the store down, or a lookup that failed. */
+  async whetherOnline(username: string): Promise<boolean | null> {
     if (this.players.getByUsername(username)) return true;
     if (this.forwardPeer(username)) return true;
     const back = await this.storeBack();
@@ -304,13 +401,13 @@ export class Delivery {
     if (this.players.getByUsername(username)) return true;
     if (!back) {
       log.warn(`Whether ${username} is online is not known: the cluster store is down`);
-      return false;
+      return null;
     }
     try {
       return !!(await this.remoteEntry(username));
     } catch (error) {
       log.error(`Cluster lookup of ${username} failed: ${error}`);
-      return false;
+      return null;
     }
   }
 
@@ -331,13 +428,26 @@ export class Delivery {
     return entry && entry.nodeId !== this.bus.nodeId ? entry : null;
   }
 
-  private async runLocal(player: any, name: string, args: unknown): Promise<void> {
+  private async runLocal(player: any, name: string, args: unknown): Promise<unknown> {
     const action = this.actions.get(name);
     if (!action) {
       log.warn(`Player action "${name}" is not registered`);
-      return;
+      return undefined;
     }
-    await action(player, args);
+    return await action(player, args);
+  }
+
+  /** Runs an action another node asked for and answers it. One that throws sends no answer, as it may have done part. */
+  private async answerAsk(ask: AskRef, player: any, name: string, args: unknown): Promise<void> {
+    await this.sendAnswer(ask, { answer: JSON.stringify((await this.runLocal(player, name, args)) ?? null) });
+  }
+
+  private async sendAnswer(ask: AskRef, data: { answer: string } | { gone: true }): Promise<void> {
+    try {
+      await this.bus?.toNode(ask.from, "player-answer", { id: ask.id, ...data });
+    } catch (error) {
+      log.error(`The answer to an asked action could not reach ${ask.from}: ${error}`);
+    }
   }
 
   private sendToAll(packets: Uint8Array[]): void {
@@ -351,5 +461,8 @@ export const delivery = new Delivery(playerCache);
 export const deliverToPlayer = delivery.deliverToPlayer.bind(delivery);
 export const broadcastWorld = delivery.broadcastWorld.bind(delivery);
 export const runOnPlayer = delivery.runOnPlayer.bind(delivery);
+export const tryOnPlayer = delivery.tryOnPlayer.bind(delivery);
+export const askPlayer = delivery.askPlayer.bind(delivery);
 export const registerPlayerAction = delivery.registerAction.bind(delivery);
 export const isOnline = delivery.isOnline.bind(delivery);
+export const whetherOnline = delivery.whetherOnline.bind(delivery);

@@ -1129,6 +1129,7 @@ The `engine` object passed to `register()` provides these methods:
 | `engine.onPacket(fn)` | Push a packet interceptor. Receives `(type, data, wt, player)`. Return `true` to suppress engine handling. |
 | `engine.addHttpRoute(method, path, handler)` | Register an HTTP route. `handler` receives `(req: Request)` and returns `Response`. |
 | `engine.teleportPlayer(playerObj, mapName, x, y)` | Teleport a player to a map position. |
+| `engine.playCutscene(playerObj, name)` | Play a saved cutscene (made in `/cutsceneeditor`) to a player. Resolves `false` when it did not begin: no such scene, the player is dead, in a scene already, changing server node, or not on the scene's map. |
 | `engine.registerSpell(spell)` | Register a spell into the asset cache at runtime. Duplicate names are skipped. Spells are not persisted to the database. |
 
 #### Imports Available to Plugins
@@ -1275,6 +1276,9 @@ import { listener } from "@engine/systems/events";
 | `onQuestReady` | `{ username, questId }` | After all objectives of a quest are met. |
 | `onQuestCompleted` | `{ username, questId, rewards }` | After a quest is turned in. |
 | `onQuestAbandoned` | `{ username, questId }` | After a quest is abandoned. |
+| `onCutsceneStarted` | `{ player, cutscene }` | After a cutscene is sent to a player. `cutscene` is the scene's name. |
+| `onCutsceneEnded` | `{ player, cutscene, skipped }` | After a player's cutscene is over: it ran its course, was skipped or stopped, or its clock ran out. Not emitted when the player disconnects. |
+| `onCutsceneMark` | `{ player, cutscene, name, t }` | When a player's cutscene reaches a mark placed on its timeline (`t` is its time in seconds). |
 
 ---
 

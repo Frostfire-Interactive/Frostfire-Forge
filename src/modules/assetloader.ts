@@ -19,6 +19,7 @@ import * as settings from "../config/settings.json";
 const defaultMap = settings.default_map?.replace(".json", "") || "main";
 const mapDir = path.join('.', 'src', 'assets', 'maps');
 import mounts from "../systems/mounts";
+import { readTable as readCutsceneTable, type StoredCutscene } from "../systems/cutscenes";
 
 const assetLoadingStartTime = performance.now();
 
@@ -48,6 +49,19 @@ await assetCache.add("mounts", await mounts.list());
 const mountList = await assetCache.get("mounts") as Mount[];
 
 log.success(`Loaded ${mountList.length} mount(s) from the database in ${(performance.now() - mountNow).toFixed(2)}ms`);
+
+// The cutscenes (the cutscene editor's). A database set up before the table was added has none yet: the start makes it
+// (ensureCutsceneSchema) and reads the scenes then, so a missing table is no reason to stop here.
+const cutsceneNow = performance.now();
+let cutsceneList: StoredCutscene[] = [];
+try {
+  cutsceneList = await readCutsceneTable();
+} catch (error) {
+  log.warn(`Cutscenes could not be read from the database (the table is made at startup): ${error}`);
+}
+await assetCache.add("cutscenes", cutsceneList);
+
+log.success(`Loaded ${cutsceneList.length} cutscene(s) from the database in ${(performance.now() - cutsceneNow).toFixed(2)}ms`);
 
 const spellnow = performance.now();
 const spellList = await spell.list() as any[];

@@ -5,6 +5,7 @@ import log from "../modules/logger";
 import cooldownManager from "../services/cooldownmanager";
 import effectManager from "../services/effectmanager";
 import { CONSUMABLE_COOLDOWN_MS, setReadyIn as setConsumableReadyIn } from "../systems/consumables";
+import type { CarriedChain, CarriedScene } from "../systems/cutsceneplayer";
 import { SICKNESS_DURATION_MS, saveOnDisconnect as saveSickness } from "../systems/resurrection";
 import { STAT_INT_MAX } from "../systems/creatures/remotereward";
 
@@ -34,6 +35,10 @@ export interface HandoffState {
   walk: string | null;
   /** How long the walk had stood still on the old node when the final snapshot was taken (ms, 0 when not walking). */
   walkIdleMs: number;
+  /** The cutscene the player is watching, or null: it goes on here (cutsceneplayer.ts adopt). */
+  cutscene: CarriedScene | null;
+  /** The chain of cutscenes that moved the player here, or null: its next scene begins here (adoptChain). */
+  cutsceneChain: CarriedChain | null;
 }
 
 /** The directions a MOVEXY names (the same eight as VALID_DIRECTIONS in receiver.ts), as the walk of an arrival may be. */
@@ -403,6 +408,75 @@ function clampedDot(d: any, now: number, who: string, known: ArrivalKnown): any 
   return out;
 }
 
+/** A scene's name, marks and length as the scene store takes them, and how long a chain gets (systems/cutscenes.ts, cutsceneplayer.ts). The sessions' test reads them, so they cannot drift apart. */
+export const SCENE_LIMITS = { nameMax: 64, durationMax: 600, marksMax: 4000, chainMax: 16 };
+/** How far past its length a scene's clock runs (cutsceneplayer.ts timing): the 30 s a client has to begin it is the most. */
+export const SCENE_CLOCK_SLACK_MS = 30_000;
+
+const placeOf = (place: any): boolean => !!place && typeof place === "object" && typeof place.map === "string" && place.map.length > 0 && finite(place.x) && finite(place.y);
+
+/**
+ * The cutscene of an arrival, or null when it has none or when what came could not be a session this node's rules
+ * make. A scene dropped is only that: the client plays it to the end, and the player is not held.
+ */
+function arrivalScene(raw: any, deadState: number, now: number, who: string): CarriedScene | null {
+  if (raw === undefined || raw === null) return null;
+  const drop = (why: string): null => {
+    log.warn(`The cutscene ${who} brought by handoff was dropped: ${why}`);
+    return null;
+  };
+  if (typeof raw !== "object") return drop("not a record");
+  if (deadState !== 0) return drop("they are dead");
+  if (typeof raw.name !== "string" || raw.name.length === 0 || raw.name.length > SCENE_LIMITS.nameMax) return drop("no name");
+  if (typeof raw.token !== "string" || !/^[0-9a-f]{32}$/.test(raw.token)) return drop("no token");
+  if (raw.phase !== "pending" && raw.phase !== "running") return drop(`it was ${String(raw.phase).slice(0, 16)}`);
+  if (!finite(raw.duration) || raw.duration <= 0 || raw.duration > SCENE_LIMITS.durationMax) return drop(`a length of ${raw.duration} s`);
+  const latest = now + raw.duration * 1000 + SCENE_CLOCK_SLACK_MS + ARRIVAL_CLOCK_SLACK_MS;
+  if (!finite(raw.clockEndsAt) || raw.clockEndsAt <= 0 || raw.clockEndsAt > latest) return drop(`it ends ${Math.round((Number(raw.clockEndsAt) - now) / 1000)} s from now`);
+  if (raw.phase === "running" && (!finite(raw.startedAt) || raw.startedAt <= 0 || raw.startedAt > now + ARRIVAL_CLOCK_SLACK_MS)) return drop("no start time");
+  if (!finite(raw.at)) return drop("no time it left");
+  if (!Number.isInteger(raw.depth) || raw.depth < 0 || raw.depth > SCENE_LIMITS.chainMax) return drop(`${raw.depth} scenes before it`);
+
+  const end = raw.end;
+  if (!end || typeof end !== "object") return drop("no end");
+  if (end.next !== null && (typeof end.next !== "string" || end.next.length > SCENE_LIMITS.nameMax)) return drop("the scene after it is not a name");
+  if (end.teleport !== null && !placeOf(end.teleport)) return drop("the place it ends at is not a map and a point");
+  if (raw.origin !== null && !placeOf(raw.origin)) return drop("the place it began at is not a map and a point");
+  if (!Array.isArray(raw.marks) || raw.marks.length > SCENE_LIMITS.marksMax) return drop("its marks are not a list");
+  if (!raw.marks.every((m: any) => typeof m?.name === "string" && finite(m?.t) && m.t >= 0)) return drop("one of its marks is not a name and a time");
+
+  return {
+    name: raw.name,
+    token: raw.token,
+    lock: raw.lock === true,
+    phase: raw.phase,
+    clockEndsAt: raw.clockEndsAt,
+    startedAt: raw.phase === "running" ? raw.startedAt : 0,
+    duration: raw.duration,
+    skippable: raw.skippable === true,
+    end: { next: end.next, teleport: end.teleport && { map: end.teleport.map, x: end.teleport.x, y: end.teleport.y } },
+    origin: raw.origin && { map: raw.origin.map, x: raw.origin.x, y: raw.origin.y, direction: String(raw.origin.direction || "down") },
+    depth: raw.depth,
+    marks: raw.marks.map((m: any) => ({ name: m.name, t: m.t })),
+    at: raw.at,
+  };
+}
+
+/** The chain of an arrival, or null when it has none or when what came could not be one. */
+function arrivalChain(raw: any, deadState: number, who: string): CarriedChain | null {
+  if (raw === undefined || raw === null) return null;
+  const good = typeof raw === "object" && deadState === 0
+    && typeof raw.name === "string" && raw.name.length > 0 && raw.name.length <= SCENE_LIMITS.nameMax
+    && Number.isInteger(raw.depth) && raw.depth >= 0 && raw.depth < SCENE_LIMITS.chainMax
+    && (raw.origin === null || placeOf(raw.origin));
+  if (good) {
+    const origin = raw.origin && { map: raw.origin.map, x: raw.origin.x, y: raw.origin.y, direction: String(raw.origin.direction || "down") };
+    return { name: raw.name, origin, depth: raw.depth };
+  }
+  log.warn(`The cutscene chain ${who} brought by handoff was dropped`);
+  return null;
+}
+
 /**
  * The record as it came over the link, each field made the type the login reads and each element checked against
  * `limits`. `who` names the player in the warnings.
@@ -493,6 +567,8 @@ export function handoffStateOf(raw: unknown, limits: ArrivalLimits, who = "an ar
     // A dead player does not walk; anything but one of the eight directions is no walk.
     walk: deadState === 0 && typeof r.walk === "string" && WALK_DIRECTIONS.has(r.walk) ? r.walk : null,
     walkIdleMs: Math.min(MAX_RESUME_CATCH_UP_MS, positive(r.walkIdleMs)),
+    cutscene: arrivalScene(r.cutscene, deadState, limits.now, who),
+    cutsceneChain: arrivalChain(r.cutsceneChain, deadState, who),
   };
 }
 

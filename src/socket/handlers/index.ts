@@ -3,6 +3,7 @@ import type { PacketContext } from "./context";
 import * as chat from "./chat";
 import * as combat from "./combat";
 import * as commands from "./commands";
+import * as cutscenes from "./cutscenes";
 import * as death from "./death";
 import * as editors from "./editors";
 import * as gathering from "./gathering";
@@ -22,7 +23,7 @@ export interface PacketModule {
   handle(ctx: PacketContext): Promise<unknown>;
 }
 
-const modules: PacketModule[] = [session, movement, chat, targeting, combat, editors, npcs, commands, social, trade, death, items, gathering, mail];
+const modules: PacketModule[] = [session, movement, chat, targeting, combat, editors, npcs, commands, social, trade, death, items, gathering, mail, cutscenes];
 const byType = new Map<string, PacketModule>();
 for (const module of modules) {
   for (const type of module.handles) {

@@ -83,7 +83,7 @@ afterEach(() => {
 });
 
 /** A client whose factory hands out the fakes in `made`, each connecting as `state.next` says when it is made. */
-function setup(first = new FakeClient(), attemptMs = 50) {
+function setup(first = new FakeClient(), attemptMs = 50, callMs?: number, probeMs?: number) {
   const made: FakeClient[] = [];
   const state = { next: "ok" as Connect };
   const redis = new SharedRedis("redis://unused", first as unknown as RedisClient, () => {
@@ -91,10 +91,26 @@ function setup(first = new FakeClient(), attemptMs = 50) {
     fake.behaviour = state.next;
     made.push(fake);
     return fake as unknown as RedisClient;
-  }, attemptMs, REVIVE_TEST_MS);
+  }, attemptMs, REVIVE_TEST_MS, callMs, probeMs);
   clients.push(redis);
   return { redis, first, made, state };
 }
+
+const CALL_TEST_MS = 20;
+const PROBE_TEST_MS = 20;
+/** A cache client against a Redis that took `a` and then froze: no call answers, and a new connection gets nowhere. */
+async function frozen() {
+  const found = setup(new FakeClient(), 50, CALL_TEST_MS, PROBE_TEST_MS);
+  await found.redis.set("a", "1");
+  found.first.get = () => new Promise<string | null>(() => {});
+  found.state.next = "hang";
+  return found;
+}
+/** What a call ended in, or that it had not ended in time. */
+const ending = (call: Promise<unknown>) => Promise.race([
+  call.then(() => "answered", (error) => String(error)),
+  sleep(500).then(() => "no answer"),
+]);
 
 test("a call goes to the client, and nothing is revived while the connection holds", async () => {
   const { redis, first, made } = setup();
@@ -177,7 +193,7 @@ test("the asset cache and the worlds' counts use the shared client, not Bun's re
   const worlds = readFileSync(join(import.meta.dir, "..", "systems", "worlds.ts"), "utf8");
   expect(cache).toContain("sharedRedis()");
   expect(cache).not.toContain(".redis");
-  expect(worlds).toMatch(/CACHE\?\.toLowerCase\(\) === "redis"\) return sharedRedis\(\)/);
+  expect(worlds).toMatch(/CACHE\?\.toLowerCase\(\) === "redis" \? sharedRedis\(\) : null/);
 });
 
 test("close ends the revival: no fresh client is made after it", async () => {
@@ -214,6 +230,68 @@ test("a call made while the client is reconnecting waits and completes when it c
   back();
   await pending;
   expect(answer).toBe("1");
+  expect(redis.isUp()).toBe(true);
+});
+
+test("a call a frozen Redis never answers fails", async () => {
+  const { redis } = await frozen();
+  expect(await ending(redis.get("a"))).toContain("Redis did not answer");
+});
+
+test("a frozen Redis is said once, however many calls it leaves unanswered", async () => {
+  const { redis } = await frozen();
+  expect(await ending(redis.get("a"))).toContain("Redis did not answer");
+  expect(await ending(redis.get("a"))).toContain("Redis did not answer");
+  expect(errors.mock.calls.filter(([text]) => String(text).includes("did not answer")).length).toBe(1);
+});
+
+test("a frozen connection is replaced once Redis is back", async () => {
+  const { redis, first, state } = await frozen();
+  expect(await ending(redis.get("a"))).toContain("Redis did not answer");
+  expect(redis.isUp()).toBe(false);
+
+  state.next = "ok";
+  await until(() => redis.isUp());
+  expect(first.closes).toBe(1);
+  expect(await redis.get("missing")).toBeNull();
+  expect(successes.mock.calls).toEqual([["Redis cache connection restored"]]);
+});
+
+test("a call that takes long on a Redis that still answers is left to finish", async () => {
+  // A value of tens of MB on its way: what is behind it waits, and Redis is there.
+  const { redis, first } = setup(new FakeClient(), 50, CALL_TEST_MS, PROBE_TEST_MS);
+  await redis.set("a", "1");
+  first.get = async (key: string) => { await sleep(CALL_TEST_MS * 4); return first.data.get(key) ?? null; };
+  expect(await redis.get("a")).toBe("1");
+  expect(redis.isUp()).toBe(true);
+});
+
+test("the connection that asks whether Redis answers is closed afterwards", async () => {
+  const { redis, first, made } = setup(new FakeClient(), 50, CALL_TEST_MS, PROBE_TEST_MS);
+  await redis.set("a", "1");
+  first.get = async (key: string) => { await sleep(CALL_TEST_MS * 2); return first.data.get(key) ?? null; };
+  await redis.get("a");
+  expect(made.length).toBeGreaterThan(0);
+  expect(made.every((probe) => probe.closes === 1)).toBe(true);
+});
+
+test("calls left waiting together ask once", async () => {
+  const { redis, first, made, state } = setup(new FakeClient(), 50, CALL_TEST_MS, PROBE_TEST_MS);
+  await redis.set("a", "1");
+  // The question stays open until the calls end, so all three find it open.
+  state.next = "hang";
+  first.get = async (key: string) => { await sleep(CALL_TEST_MS + PROBE_TEST_MS / 2); return first.data.get(key) ?? null; };
+  await Promise.all([redis.get("a"), redis.get("a"), redis.get("a")]);
+  expect(made.length).toBe(1);
+});
+
+test("a call that ends while Redis is asked gives its own answer", async () => {
+  const { redis, first, state } = setup(new FakeClient(), 50, CALL_TEST_MS, PROBE_TEST_MS);
+  await redis.set("a", "1");
+  // Nobody answers the question, but the call itself ends before the question gives up.
+  state.next = "hang";
+  first.get = async (key: string) => { await sleep(CALL_TEST_MS + PROBE_TEST_MS / 2); return first.data.get(key) ?? null; };
+  expect(await redis.get("a")).toBe("1");
   expect(redis.isUp()).toBe(true);
 });
 

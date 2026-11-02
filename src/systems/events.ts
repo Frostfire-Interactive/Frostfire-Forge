@@ -84,6 +84,11 @@ export const Events = {
     // Achievements (systems/achievements) count these; plugins may listen too.
     GATHER_COMPLETED: "onGatherCompleted",
     COLLECTABLE_ADDED: "onCollectableAdded",
+    // Cutscenes (systems/cutsceneplayer.ts): a scene begins for a player, is over (finished, skipped or stopped), and a
+    // mark placed on its timeline is reached. Plugins may listen to tie the story to them.
+    CUTSCENE_STARTED: "onCutsceneStarted",
+    CUTSCENE_ENDED: "onCutsceneEnded",
+    CUTSCENE_MARK: "onCutsceneMark",
 } as const;
 
 // ── Event payload types ──
@@ -321,6 +326,27 @@ export interface CollectableAddedEvent {
     username: string;
     type: string;
     item: string;
+}
+
+/** A scene was sent to a player (systems/cutsceneplayer.ts). `cutscene` is the scene's name. */
+export interface CutsceneStartedEvent {
+    player: any;
+    cutscene: string;
+}
+
+/** A scene is over for a player: it ran its course, they skipped it, it was stopped or its clock ran out. */
+export interface CutsceneEndedEvent {
+    player: any;
+    cutscene: string;
+    skipped: boolean;
+}
+
+/** The player's scene reached a mark: `name` is the mark's, `t` its time in seconds on the scene's timeline. */
+export interface CutsceneMarkEvent {
+    player: any;
+    cutscene: string;
+    name: string;
+    t: number;
 }
 
 export interface PartyChatEvent {

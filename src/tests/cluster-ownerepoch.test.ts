@@ -424,7 +424,7 @@ describe("the disconnect save", () => {
     [
       "playerCache", "packetManager", "effectManager", "dots", "getStunsForPlayer", "getSlowsForPlayer", "saveSicknessOnDisconnect",
       "loot", "cleanupPlayerState", "releaseDraggedBy", "listener", "Events", "removeFromAuthenticationQueues", "worlds", "log", "player",
-      "console", "forgetPlayer", "fencedSaves", "clusterEnabled", "isOnline", "deliverToPlayer", "takeAchievementProgress", "settleFencedLeave",
+      "console", "forgetPlayer", "fencedSaves", "clusterEnabled", "isOnline", "tellContactsOffline", "takeAchievementProgress", "settleFencedLeave",
     ],
     `return ${cut(serverSource, 'listener.on("onDisconnect", ', /\r?\n}\);\r?\n/).replace('listener.on("onDisconnect", ', "")}\n};`,
   );
@@ -454,7 +454,7 @@ describe("the disconnect save", () => {
     settleFencedLeave: async () => {},
     clusterEnabled: () => false,
     isOnline: async () => false,
-    deliverToPlayer: async () => {},
+    tellContactsOffline: async () => {},
   });
   const leave = async (live: any) => {
     online = { [live.id]: live };
@@ -504,6 +504,11 @@ describe("the SAVE loop", () => {
   let accounts: Array<{ id: number; session_id: string; subscribed: number }> = [];
   const kicked: string[] = [];
   const cleaned: string[] = [];
+  const npcStreamsDropped: string[] = [];
+  /** Set: what a write throws, as a Redis outage makes it do. */
+  let writeFailure: Error | null = null;
+  const failing = <A extends any[], R>(write: (...args: A) => Promise<R>) => (...args: A) =>
+    writeFailure ? Promise.reject(writeFailure) : write(...args);
   const save = make({
     playerCache: { list: () => online, remove: (id: string) => { delete online[id]; } },
     log: quiet,
@@ -511,9 +516,14 @@ describe("the SAVE loop", () => {
     query: async (sql: string) => (sql.startsWith("SELECT id, session_id") ? accounts : []),
     subscriptionRefusal: (row: any) => (row.locked ? "Not subscribed" : null),
     packetManager: { notify: () => [{}] },
-    player: { saveFenced: player.saveFenced, setStats: player.setStats, setLocation: player.setLocation, kick: async (username: string) => { kicked.push(username); } },
+    player: {
+      saveFenced: failing(player.saveFenced),
+      setStats: failing(player.setStats),
+      setLocation: failing(player.setLocation),
+      kick: async (username: string) => { kicked.push(username); },
+    },
     cleanupPlayerState: (live: any) => { cleaned.push(live.username); },
-    forgetNpcStream: () => {},
+    forgetNpcStream: (id: string) => { npcStreamsDropped.push(id); },
     fencedSaves,
   });
   const runSave = async (live: Record<string, any>) => {
@@ -571,6 +581,35 @@ describe("the SAVE loop", () => {
     await runSave({ p1: { id: "p1", userid: 1, username: "alice", stats: { ...stats }, location: here, wt: {} } });
     expect(rows.get("alice")!.health).toBe(7);
     expect(unfencedWrites().length).toBe(2);
+  });
+
+  describe("a save that fails", () => {
+    afterEach(() => { writeFailure = null; npcStreamsDropped.length = 0; });
+
+    test("keeps a fenced player, and the next save writes them", async () => {
+      account("alice", 4);
+      accounts = [{ id: 1, session_id: "p1", subscribed: 1 }];
+      const alice = { id: "p1", userid: 1, username: "alice", ownerEpoch: 4, stats: { ...stats }, location: here, wt: {} };
+      writeFailure = new Error("Connection has failed");
+      await runSave({ p1: alice });
+      expect(online.p1).toBe(alice);
+      expect(npcStreamsDropped).toEqual([]);
+      expect(rows.get("alice")!.health).toBe(10);
+
+      writeFailure = null;
+      await save();
+      expect(rows.get("alice")!.health).toBe(7);
+    });
+
+    test("keeps a player with no owner epoch (CLUSTER=false)", async () => {
+      account("alice", 9);
+      accounts = [{ id: 1, session_id: "p1", subscribed: 1 }];
+      const alice = { id: "p1", userid: 1, username: "alice", stats: { ...stats }, location: here, wt: {} };
+      writeFailure = new Error("Connection has failed");
+      await runSave({ p1: alice });
+      expect(online.p1).toBe(alice);
+      expect(npcStreamsDropped).toEqual([]);
+    });
   });
 });
 

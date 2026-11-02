@@ -24,6 +24,7 @@ mock.module("../controllers/sqldatabase", () => databaseModule({
 
 const { default: permissions, canGrant, outranks } = await import("../systems/permissions");
 const { clearCaches } = await import("../services/datacache");
+const { followServerOrder, restartState, shutdownEverywhere, startRestart, toggleRestart } = await import("../socket/serverorders");
 
 // ------------------------------------------------------------------ harness
 // The receiver cannot be imported (it starts the server), so a command is run
@@ -46,12 +47,21 @@ const NAMES = [
   "listener", "Events", "maps", "mapPropertiesCache", "transitionPlayerToMap", "spawnBatchQueue", "despawnBatchQueue",
   "gracefulShutdown", "drainQueries", "setTimeout", "clearTimeout", "setInterval", "clearInterval", "Bun",
   "defaultMap", "resurrection", "resyncNpcChunks", "filterPlayersByMap", "spellEffects", "canGrant", "outranks",
-  "runOnPlayer", "isOnline", "broadcastWorld", "panelHears", "clearShared",
+  "runOnPlayer", "tryOnPlayer", "isOnline", "whetherOnline", "broadcastWorld", "panelHears", "clearShared", "heldInScene",
+  "restartState", "toggleRestart", "shutdownEverywhere", "sendServerOrder",
+  "resetCooldowns", "assetCache", "inventory", "getIconUrl", "settleStoreAttached", "settleForAdmin", "settlingNotice",
 ];
-/** The receiver's module state (the restart countdown), declared as it is there. */
+/** Functions beside the commands that they call, which use the same names. */
+const HELPERS = ["serverOrderDeps", "respawnPlayer", "endCooldowns", "killRefusal", "giveItem", "notSent"];
+/** The source of one of those functions, without its `export`. */
+function helperSource(name: string): string {
+  const start = source.search(new RegExp(`^(export )?(async )?function ${name}\\b`, "m"));
+  if (start < 0) throw new Error(`The commands have no ${name}`);
+  return source.slice(start, source.indexOf("\n}\n", start) + 3).replace(/^export /, "");
+}
+/** The receiver's module state, declared as it is there. */
 const moduleState = [
   ...[...source.matchAll(/^let (\w+)[^\n]*;\r?$/gm)].map((match) => ({ name: match[1], line: match[0] })),
-  ...[...source.matchAll(/^export const (restartState) = \{[\s\S]*?\n\};/gm)].map((match) => ({ name: match[1], line: match[0].replace("export ", "") })),
   // The revision counter, as the receiver exports it to the handler modules.
   { name: "(?:bumpStateRevision|stateRevision)", line: "let globalStateRevision = 0;\nconst bumpStateRevision = () => ++globalStateRevision;\nconst stateRevision = () => globalStateRevision;" },
 ];
@@ -61,8 +71,9 @@ const transpiler = new Bun.Transpiler({ loader: "ts" });
 function command(name: string): (names: Row) => Promise<void> {
   const block = commandBlock(name);
   if (!block) throw new Error(`The receiver has no ${name} command`);
-  const state = moduleState.filter((item) => new RegExp(`\\b${item.name}\\b`).test(block)).map((item) => item.line).join("\n");
-  const body = transpiler.transformSync(`${state}\nasync function run({ ${NAMES.join(", ")} }: any) { switch (commandName) {${block}\n} }`);
+  const helpers = HELPERS.map(helperSource).join("\n");
+  const state = moduleState.filter((item) => new RegExp(`\\b${item.name}\\b`).test(`${block}\n${helpers}`)).map((item) => item.line).join("\n");
+  const body = transpiler.transformSync(`${state}\nasync function run({ ${NAMES.join(", ")} }: any) {\n${helpers}\nswitch (commandName) {${block}\n} }`);
   return new Function(`"use strict";\n${body}\nreturn run;`)();
 }
 
@@ -78,6 +89,8 @@ let emitted: any[][];
 let closed: string[];
 /** What the end of a shutdown did, in order. */
 let ending: string[];
+/** What the other nodes were told. */
+let orders: any[];
 /** Whether the clear guard (cluster/clearguard.ts) lets the clear run: false while another node of the region is alive. */
 let clearAllowed: boolean;
 let spawned: any[];
@@ -89,9 +102,15 @@ let transitions: any[][];
 let locationRows: number;
 /** Players online on another node of the cluster. */
 let elsewhere: Set<string>;
+/** The cluster store is out: a player on no connection here cannot be looked for. */
+let storeOut: boolean;
 /** Each action run on a player, and each world broadcast. */
 let ran: any[][];
 let broadcasts: any[][];
+/** Each item added, what reached an admin on another node, and each death. */
+let added: any[][];
+let answers: string[][];
+let deaths: any[][];
 
 const accountOf = (username: string) => accounts.find((row) => row.username === String(username).toLowerCase());
 /** The columns of an account a saved location is. */
@@ -112,6 +131,15 @@ function connect(id: string, username: string, over: Row = {}): any {
   return live;
 }
 
+/** As cluster/deliver.ts answers: the action runs on the node that holds the player, and a store that is out finds nobody elsewhere. */
+async function tryOnPlayer(username: string, action: string, args?: unknown): Promise<"sent" | "offline" | "unreached"> {
+  const here = onlineHere(username);
+  if (!here && storeOut) return "unreached";
+  ran.push([username, action, args]);
+  if (here && action === "admin-kick") here.wt.close();
+  return here || elsewhere.has(username.toLowerCase()) ? "sent" : "offline";
+}
+
 /** The names a command's body uses, standing for what the receiver has. */
 function names(name: string, args: string[], over: Row = {}): Row {
   return {
@@ -123,6 +151,8 @@ function names(name: string, args: string[], over: Row = {}): Row {
     packetManager: {
       notify: (data: Row) => [{ type: "NOTIFY", data }],
       reconnect: () => [{ type: "RECONNECT", data: null }],
+      cooldownsReset: () => [{ type: "COOLDOWNS_RESET", data: null }],
+      addInventoryItem: (data: Row) => [{ type: "ADD_INVENTORY_ITEM", data }],
       moveXY: (data: Row) => [{ type: "MOVEXY", data }],
       playerGhost: (data: Row) => [{ type: "PLAYER_GHOST", data }],
       revive: (data: Row) => [{ type: "REVIVE", data }],
@@ -209,20 +239,60 @@ function names(name: string, args: string[], over: Row = {}): Row {
     filterPlayersByMap: (map: string) => Object.values(online).filter((live) => live.location.map === map),
     spellEffects: { broadcastEffectsUpdate: () => {} },
     // As cluster/deliver.ts answers: a player here, or on another node, is online; the action runs on the node that holds them.
-    isOnline: async (username: string) => !!onlineHere(username) || elsewhere.has(username.toLowerCase()),
-    runOnPlayer: async (username: string, action: string, args?: unknown) => {
-      ran.push([username, action, args]);
-      const here = onlineHere(username);
-      if (here && action === "admin-kick") here.wt.close();
-      return !!here || elsewhere.has(username.toLowerCase());
-    },
+    isOnline: async (username: string) => !!onlineHere(username) || (!storeOut && elsewhere.has(username.toLowerCase())),
+    whetherOnline: async (username: string) => (onlineHere(username) ? true : storeOut ? null : elsewhere.has(username.toLowerCase())),
+    runOnPlayer: async (username: string, action: string, args?: unknown) => (await tryOnPlayer(username, action, args)) === "sent",
+    tryOnPlayer,
     broadcastWorld: async (packets: any[]) => { broadcasts.push(packets); },
     panelHears: () => {},
+    heldInScene: () => false,
+    restartState,
+    toggleRestart,
+    shutdownEverywhere,
+    sendServerOrder: async (order: any) => { orders.push(order); },
+    resetCooldowns: async () => {},
+    assetCache: { get: async () => [{ name: "Iron Ore", type: "material" }] },
+    inventory: { add: async (...call: any[]) => { added.push(call); } },
+    getIconUrl: () => null,
+    settleStoreAttached: () => false,
+    settleForAdmin: async () => null,
+    settlingNotice: () => "",
     ...over,
   };
 }
 
 const run = (name: string, args: string[] = [], over: Row = {}) => command(name)(names(name, args, over));
+
+/** The actions the commands leave on a player's node, registered as the module registers them, with the same fakes. */
+function remoteActions(over: Row = {}): Record<string, (target: any, args?: any) => Promise<void>> {
+  const start = source.indexOf("function adminAction(");
+  const block = source.slice(start, source.indexOf("\n}));\n", source.indexOf('registerPlayerAction("cells-permissions"', start)) + 6);
+  const helpers = HELPERS.map(helperSource).join("\n");
+  const state = moduleState.filter((item) => new RegExp(`\\b${item.name}\\b`).test(`${block}\n${helpers}`)).map((item) => item.line).join("\n");
+  const actions: Record<string, (target: any, args?: any) => Promise<void>> = {};
+  const given: Row = {
+    registerPlayerAction: (name: string, action: (target: any, args?: any) => Promise<void>) => { actions[name] = action; },
+    guardedAction: (_name: string, action: unknown) => action,
+    trackPacket: (_id: string, work: () => Promise<void>) => work(),
+    remoteAdminOf: (args: any) => (typeof args?.by === "string" ? args.by : null),
+    deliverToPlayer: async (username: string, packets: any[]) => { answers.push(...packets.map((packet) => [username, packet.data.message])); return true; },
+    busyNote: (name: string) => [{ type: "NOTIFY", data: { message: `${name} is busy` } }],
+    isHeld: () => false,
+    heldNote: () => "held in a scene",
+    handlePlayerDeath: async (...call: any[]) => { deaths.push(call); },
+    ...over,
+  };
+  const body = transpiler.transformSync(`${state}\nfunction register({ ${[...NAMES, ...Object.keys(given)].join(", ")} }: any) {\n${helpers}\n${block}\n}`);
+  new Function(`"use strict";\n${body}\nreturn register;`)()({ ...names("", []), ...given });
+  return actions;
+}
+
+/** What the commands hand a server order, from the same source and the same fakes. */
+function serverDeps(): any {
+  const given = names("RESTART", []);
+  const body = transpiler.transformSync(`function deps({ ${NAMES.join(", ")} }: any) {\n${helperSource("serverOrderDeps")}\nreturn serverOrderDeps(); }`);
+  return new Function(`"use strict";\n${body}\nreturn deps;`)()(given);
+}
 
 let consoleLog: ReturnType<typeof spyOn>;
 beforeAll(() => {
@@ -231,6 +301,8 @@ beforeAll(() => {
 });
 beforeEach(async () => {
   await clearCaches();
+  Object.assign(restartState, { scheduled: false, timers: [], shutdownStarted: false });
+  orders = [];
   online = {};
   sent = [];
   emitted = [];
@@ -244,8 +316,12 @@ beforeEach(async () => {
   transitions = [];
   locationRows = 1;
   elsewhere = new Set();
+  storeOut = false;
   ran = [];
   broadcasts = [];
+  added = [];
+  answers = [];
+  deaths = [];
   accounts = [
     { username: "ac_boss", banned: 0, role: 1 },
     { username: "ac_mod", banned: 0, role: 1 },
@@ -344,13 +420,84 @@ describe("/restart", () => {
   });
 
   test("both commands clear through the cluster guard, and never with player.clear directly", () => {
-    for (const name of ["SHUTDOWN", "RESTART"]) {
-      const block = commandBlock(name);
-      expect(block).toContain("clearShared(() => player.clear())");
-      expect(block.replace("clearShared(() => player.clear())", "")).not.toContain("player.clear(");
-    }
+    const ending = helperSource("serverOrderDeps");
+    expect(ending).toContain("clearShared(() => player.clear())");
+    expect(ending.replace("clearShared(() => player.clear())", "")).not.toContain("player.clear(");
+    for (const name of ["SHUTDOWN", "RESTART"]) expect(commandBlock(name)).not.toContain("player.clear(");
   });
 
+  test("the other nodes are told to start, and to call it off", async () => {
+    const before = Date.now();
+    await run("RESTART");
+    expect(orders).toHaveLength(1);
+    expect(orders[0].what).toBe("restart");
+    expect(orders[0].endsAt).toBeGreaterThanOrEqual(before + 15 * 60000);
+
+    await run("RESTART");
+    expect(orders[1]).toEqual({ what: "restart-off" });
+  });
+
+  test("a /shutdown tells the other nodes", async () => {
+    const done = run("SHUTDOWN");
+    expect(orders).toEqual([{ what: "shutdown" }]);
+    timeouts[0].run();
+    await done;
+  });
+
+  test("a node told by another counts down to the same moment", async () => {
+    const deps = serverDeps();
+    followServerOrder({ what: "restart", endsAt: Date.now() + 15 * 60000 }, deps);
+    expect(restartState.scheduled).toBe(true);
+    expect(orders).toEqual([]);
+
+    const last = timeouts[timeouts.length - 1];
+    expect(timeouts).toHaveLength(15 + 30 + 1);
+    expect(last.ms).toBeGreaterThan(15 * 60000 - 1000);
+    expect(last.ms).toBeLessThanOrEqual(15 * 60000);
+    // The first notice is not lost to the time the order took to get here.
+    expect(timeouts[0].ms).toBe(0);
+
+    followServerOrder({ what: "restart-off" }, deps);
+    expect(restartState.scheduled).toBe(false);
+    expect(timeouts.every((timer) => timer.cleared)).toBe(true);
+    expect(told(hero)).toEqual(["⚠️ Server restart has been aborted ⚠️"]);
+    expect(orders).toEqual([]);
+  });
+
+  test("a node that starts part way through gives only the notices still to come", () => {
+    startRestart(5 * 60000 + 10000, serverDeps());
+    // Minutes 5 to 1, seconds 30 to 1, and the restart.
+    expect(timeouts).toHaveLength(5 + 30 + 1);
+    expect(Math.min(...timeouts.map((timer) => timer.ms))).toBe(10000);
+    expect(timeouts[timeouts.length - 1].ms).toBe(5 * 60000 + 10000);
+  });
+
+  test("an order for a restart that has passed starts nothing", () => {
+    followServerOrder({ what: "restart", endsAt: Date.now() - 1 }, serverDeps());
+    expect(restartState.scheduled).toBe(false);
+    expect(timeouts).toEqual([]);
+  });
+});
+
+describe("/shutdown ordered from another node", () => {
+  test("warns and ends this node, without telling anyone else", async () => {
+    followServerOrder({ what: "shutdown" }, serverDeps());
+    expect(told(hero)).toEqual(["⚠️ Server shutting down - please reconnect in a few minutes ⚠️"]);
+    expect(orders).toEqual([]);
+    timeouts[0].run();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(closed.sort()).toEqual(["ac_boss", "ac_hero", "ac_mod"]);
+    online = {};
+    await intervals[0].run();
+    expect(ending).toEqual(["player.clear", "drainQueries", "gracefulShutdown /shutdown"]);
+  });
+
+  test("a second order does nothing", async () => {
+    followServerOrder({ what: "shutdown" }, serverDeps());
+    followServerOrder({ what: "shutdown" }, serverDeps());
+    expect(timeouts).toHaveLength(1);
+  });
   test("asked again before then, the countdown is called off", async () => {
     const restart = command("RESTART");
     await restart(names("RESTART", []));
@@ -739,5 +886,216 @@ describe("/respawn", () => {
     await run("RESPAWN", ["ac_hero"]);
     expect(told(boss)).toEqual(["You don't have permission to use this command"]);
     expect(accountOf("ac_hero")!.position).toBeUndefined();
+  });
+});
+
+describe("a player on another node", () => {
+  beforeEach(() => {
+    elsewhere.add("ac_far");
+    accounts.push({ username: "ac_far", banned: 0, role: 1 });
+  });
+
+  test("/respawn runs on their node, and saves nothing here", async () => {
+    await run("RESPAWN", ["ac_far"]);
+    expect(ran).toEqual([["ac_far", "cells-respawn", { by: "ac_boss" }]]);
+    expect(accountOf("ac_far")!.position).toBeUndefined();
+    expect(told(boss)).toEqual([]);
+  });
+
+  test("/respawn of a player no node holds saves it for their next login", async () => {
+    await run("RESPAWN", ["ac_exile"]);
+    expect(ran).toEqual([["ac_exile", "cells-respawn", { by: "ac_boss" }]]);
+    expect(accountOf("ac_exile")).toMatchObject({ map: "cave" });
+  });
+
+  test("/kill and /cooldowns run on their node, and need them online", async () => {
+    for (const [name, action, refused] of [
+      ["KILL", "cells-kill", "Player must be online to kill"],
+      ["COOLDOWNS", "cells-cooldowns", "Player must be online to reset their cooldowns"],
+    ]) {
+      ran = [];
+      sent = [];
+      await run(name, ["ac_far"]);
+      expect(ran).toEqual([["ac_far", action, { by: "ac_boss" }]]);
+      expect(told(boss)).toEqual([]);
+
+      await run(name, ["ac_exile"]);
+      expect(told(boss)).toEqual([refused]);
+    }
+  });
+
+  describe("while the cluster store is out", () => {
+    const NOT_REACHED = "That player could not be reached, so nothing was done. They may be online on another server node.";
+    beforeEach(() => {
+      storeOut = true;
+    });
+
+    test("a command that needs the player online does not call them offline", async () => {
+      for (const [name, commandArgs] of [["KILL", ["ac_far"]], ["COOLDOWNS", ["ac_far"]], ["REVIVE", ["ac_far"]], ["SUMMON", ["ac_far"]], ["TELEPORT", ["ac_far"]], ["KICK", ["ac_far"]]] as Array<[string, string[]]>) {
+        sent = [];
+        await run(name, commandArgs);
+        expect([name, told(boss)]).toEqual([name, [NOT_REACHED]]);
+      }
+    });
+
+    test("/respawn writes nothing to an account that may be online", async () => {
+      await run("RESPAWN", ["ac_far"]);
+      expect(accountOf("ac_far")!.map).toBeUndefined();
+      expect(told(boss)).toEqual([NOT_REACHED]);
+    });
+
+    test("/give adds nothing to an account that may be online", async () => {
+      await run("GIVE", ["ac_far", "Iron Ore", "3"]);
+      expect(added).toEqual([]);
+      expect(told(boss)).toEqual([NOT_REACHED]);
+    });
+
+    test("a player on this node is still acted on", async () => {
+      await run("KICK", [hero.username]);
+      expect(closed).toEqual([hero.username]);
+      expect(told(boss)).not.toContain(NOT_REACHED);
+    });
+  });
+
+  test("/kill and /cooldowns send no id: one is local to the node that gave it", async () => {
+    await run("KILL", ["12345"]);
+    await run("COOLDOWNS", ["12345"]);
+    expect(ran).toEqual([]);
+  });
+
+  test("/give runs on their node, and adds nothing here", async () => {
+    await run("GIVE", ["ac_far", "iron ore", "3"]);
+    expect(ran).toEqual([["ac_far", "cells-give", { by: "ac_boss", item: "Iron Ore", quantity: 3 }]]);
+    expect(added).toEqual([]);
+    expect(told(boss)).toEqual([]);
+  });
+
+  test("/give to a player no node holds goes to their account", async () => {
+    await run("GIVE", ["ac_exile", "Iron Ore", "3"]);
+    expect(added).toEqual([["ac_exile", { name: "Iron Ore", quantity: 3 }]]);
+    expect(told(boss)).toEqual(["Gave 3x Iron Ore to ac_exile"]);
+  });
+
+  test("/admin changes the account here and tells their node", async () => {
+    await run("ADMIN", ["ac_far"]);
+    expect(accountOf("ac_far")!.role).toBe(0);
+    expect(ran).toEqual([["ac_far", "cells-role", { admin: false }]]);
+    expect(told(boss)).toEqual(["Ac_far is now not an admin"]);
+  });
+
+  test("/permission changes the table here and tells their node, a look at it does not", async () => {
+    await run("PERMISSION", ["add", "ac_far", "admin.kick"]);
+    expect(held.ac_far).toBe("admin.kick");
+    expect(ran).toEqual([["ac_far", "cells-permissions", undefined]]);
+
+    ran = [];
+    await run("PERMISSION", ["list", "ac_far"]);
+    expect(ran).toEqual([]);
+  });
+
+  test("a player on this node is changed directly", async () => {
+    await run("ADMIN", ["ac_hero"]);
+    expect(ran).toEqual([]);
+  });
+});
+
+describe("the commands a player's node runs", () => {
+  test("a respawn answers the admin by name", async () => {
+    await remoteActions()["cells-respawn"](hero, { by: "ac_far" });
+    expect(hero.location.position).toEqual({ x: 160, y: 320, direction: "down" });
+    expect(answers).toEqual([["ac_far", "Respawned Ac_hero"]]);
+    expect(emitted).toEqual([["onPlayerRespawn", { player: hero, mapName: "main", x: 160, y: 320 }]]);
+  });
+
+  test("a kill goes through the death flow, by a stand-in for the admin", async () => {
+    await remoteActions()["cells-kill"](hero, { by: "ac_far" });
+    expect(deaths).toEqual([[hero, { id: "ac_far", username: "ac_far", remote: true }, { damage: 0, isCrit: false }]]);
+    expect(answers).toEqual([["ac_far", "Killed Ac_hero"]]);
+  });
+
+  test("a kill is refused for an admin and for the dead", async () => {
+    const actions = remoteActions();
+    await actions["cells-kill"](mod, { by: "ac_far" });
+    await actions["cells-kill"]({ ...hero, isDead: true }, { by: "ac_far" });
+    expect(deaths).toEqual([]);
+    expect(answers).toEqual([["ac_far", "You cannot kill other admins"], ["ac_far", "Ac_hero is already dead"]]);
+  });
+
+  test("cooldowns are reset, and the player's client told", async () => {
+    await remoteActions()["cells-cooldowns"](hero, { by: "ac_far" });
+    expect(answers).toEqual([["ac_far", "Reset the cooldowns of Ac_hero"]]);
+    expect(sent.some((entry) => entry.to === hero.wt && entry.packets[0].type === "COOLDOWNS_RESET")).toBe(true);
+  });
+
+  test("a gift reaches the bags and the live copy", async () => {
+    hero.inventory = [{ name: "Iron Ore", quantity: 1 }];
+    await remoteActions()["cells-give"](hero, { by: "ac_far", item: "Iron Ore", quantity: 2 });
+    expect(added).toEqual([["ac_hero", { name: "Iron Ore", quantity: 2 }]]);
+    expect(hero.inventory).toEqual([{ name: "Iron Ore", quantity: 3 }]);
+    expect(answers).toEqual([["ac_far", "Gave 2x Iron Ore to ac_hero"]]);
+  });
+
+  test("a gift of an item this node does not know, or of no number, is dropped", async () => {
+    const actions = remoteActions();
+    await actions["cells-give"](hero, { by: "ac_far", item: "Nothing", quantity: 2 });
+    await actions["cells-give"](hero, { by: "ac_far", item: "Iron Ore", quantity: "2" });
+    expect(added).toEqual([]);
+  });
+
+  test("a command with no admin is dropped, and nothing runs", async () => {
+    const actions = remoteActions();
+    for (const name of ["cells-respawn", "cells-kill", "cells-cooldowns", "cells-give"]) await actions[name](hero, {});
+    expect(answers).toEqual([]);
+    expect(deaths).toEqual([]);
+    expect(hero.location.position).toEqual({ x: 10, y: 20, direction: "down" });
+  });
+
+  test("a player who is changing node is left alone, and the admin told to try again", async () => {
+    const actions = remoteActions();
+    hero.handoff = true;
+    for (const name of ["cells-respawn", "cells-kill", "cells-cooldowns", "cells-give"]) await actions[name](hero, { by: "ac_far", item: "Iron Ore", quantity: 1 });
+    expect(answers).toEqual(Array(4).fill(["ac_far", "ac_hero is busy"]));
+    expect(deaths).toEqual([]);
+    expect(added).toEqual([]);
+  });
+
+  test("a player held in a scene is not respawned or killed", async () => {
+    const actions = remoteActions({ isHeld: () => true });
+    await actions["cells-respawn"](hero, { by: "ac_far" });
+    await actions["cells-kill"](hero, { by: "ac_far" });
+    expect(answers).toEqual([["ac_far", "held in a scene"], ["ac_far", "held in a scene"]]);
+    expect(deaths).toEqual([]);
+    expect(hero.location.position).toEqual({ x: 10, y: 20, direction: "down" });
+  });
+
+  test("a role change reaches the live copy, and the client reconnects", async () => {
+    mod.permissions = ["admin.kick"];
+    await remoteActions()["cells-role"](mod, { admin: false });
+    expect(mod).toMatchObject({ isAdmin: false, permissions: [] });
+    expect(sent.some((entry) => entry.to === mod.wt && entry.packets[0].type === "RECONNECT")).toBe(true);
+  });
+
+  test("a role change that brings no role is dropped", async () => {
+    await remoteActions()["cells-role"](mod, { admin: "no" });
+    expect(mod.isAdmin).toBe(true);
+  });
+
+  test("permissions are read from the table, as the admin's node left it", async () => {
+    held.ac_hero = "admin.kick";
+    await remoteActions()["cells-permissions"](hero);
+    expect(hero.permissions).toEqual(["admin.kick"]);
+  });
+
+  test("a change for a player who is changing node follows them, as the database already holds it", async () => {
+    const actions = remoteActions();
+    hero.handoff = true;
+    await actions["cells-role"](hero, { admin: true });
+    await actions["cells-permissions"](hero);
+    expect(hero.isAdmin).toBe(false);
+    expect(timeouts.map((timer) => timer.ms)).toEqual([1000, 1000]);
+
+    for (const timer of timeouts) timer.run();
+    await Bun.sleep(0);
+    expect(ran).toEqual([["ac_hero", "cells-role", { admin: true }], ["ac_hero", "cells-permissions", undefined]]);
   });
 });

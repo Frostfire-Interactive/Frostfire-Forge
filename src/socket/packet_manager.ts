@@ -1340,6 +1340,44 @@ export const packetManager = {
       packet.encode(JSON.stringify({ type: "MOUNT_EDITOR_UPDATED", data })),
     ] as any[];
   },
+  /** Opens the cutscene editor (/cutsceneeditor, /cse), or closes it. */
+  toggleCutsceneEditor: () => {
+    return [
+      packet.encode(JSON.stringify({ type: "TOGGLE_CUTSCENE_EDITOR", data: null })),
+    ] as any[];
+  },
+  cutsceneEditorData: (data: any) => {
+    return [
+      packet.encode(JSON.stringify({ type: "CUTSCENE_EDITOR_DATA", data })),
+    ] as any[];
+  },
+  cutsceneEditorResult: (data: { ok: boolean; errors: string[]; fields?: Record<string, string>; name: string | null; action?: string; doc?: any }) => {
+    return [
+      packet.encode(JSON.stringify({ type: "CUTSCENE_EDITOR_RESULT", data })),
+    ] as any[];
+  },
+  cutsceneEditorResolved: (data: { doc: any }) => {
+    return [
+      packet.encode(JSON.stringify({ type: "CUTSCENE_EDITOR_RESOLVED", data })),
+    ] as any[];
+  },
+  cutsceneEditorUpdated: (data: { by: string }) => {
+    return [
+      packet.encode(JSON.stringify({ type: "CUTSCENE_EDITOR_UPDATED", data })),
+    ] as any[];
+  },
+  /** A scene for a player to watch: `doc` is resolved and has no triggers. `token` marks this showing of it. */
+  cutscenePlay: (data: { token: string; doc: any }) => {
+    return [
+      packet.encode(JSON.stringify({ type: "CUTSCENE_PLAY", data })),
+    ] as any[];
+  },
+  /** The showing with this token is over: the client drops the scene wherever it is. */
+  cutsceneStop: (data: { token: string }) => {
+    return [
+      packet.encode(JSON.stringify({ type: "CUTSCENE_STOP", data })),
+    ] as any[];
+  },
   toggleSpellEditor: () => {
     return [
       packet.encode(JSON.stringify({ type: "TOGGLE_SPELL_EDITOR", data: null })),

@@ -7,9 +7,10 @@ import assetCache from "../services/assetCache";
 import { getWorldMap, type WorldBits } from "../modules/worldmaps";
 import { readHeldList } from "./npcStreaming";
 import { pvpEnabled, targetedCastRefused } from "./pvpzone";
+import { isHeld } from "./cutsceneheld";
 import * as settings from "../config/settings.json";
 import playerCache from "../services/playermanager.ts";
-import { realmWhitelist } from "../services/whitelist";
+import { realmWhitelist, whitelistNameChanged, whitelistRealm } from "../services/whitelist";
 import { rowCache, tableCache, dropRows, dropAllRows, reloadTable, type RowCache } from "../services/datacache";
 import type { Batch } from "../services/batch";
 import { Events, listener } from "./events";
@@ -1684,6 +1685,9 @@ const player = {
 
     if (target.isStealth || self.isStealth) return { value: false, reason: "path_blocked" };
 
+    // A player held in a cutscene is out of harm's way: a harmful cast at them fails as it does at someone unseen (cutsceneheld.ts).
+    if (harmful && !isSelf && isHeld(target)) return { value: false, reason: "path_blocked" };
+
     if (!self.stats || self.stats.health <= 0)
       return { value: false, reason: "dead" };
 
@@ -2011,8 +2015,8 @@ const player = {
     realmWhitelist.add(username);
 
     try {
-      const realmId = process.env.SERVER_ID || "default";
-      await query("INSERT INTO whitelist (realm, username) VALUES (?, ?)", [realmId, username]);
+      await query("INSERT INTO whitelist (realm, username) VALUES (?, ?)", [whitelistRealm(), username]);
+      whitelistNameChanged({ add: username });
       return { success: true, message: `Added ${username} to whitelist` };
     } catch (error: any) {
       realmWhitelist.delete(username);
@@ -2035,8 +2039,8 @@ const player = {
     realmWhitelist.delete(username);
 
     try {
-      const realmId = process.env.SERVER_ID || "default";
-      await query("DELETE FROM whitelist WHERE realm = ? AND username = ?", [realmId, username]);
+      await query("DELETE FROM whitelist WHERE realm = ? AND username = ?", [whitelistRealm(), username]);
+      whitelistNameChanged({ remove: username });
       return { success: true, message: `Removed ${username} from whitelist` };
     } catch (error) {
       realmWhitelist.add(username);

@@ -8,6 +8,7 @@ import playerCache from "../services/playermanager";
 import { BlockMover, BlockMoveOrders } from "./blockmove";
 import { BlockTable, blockAt, blockKey } from "./blocks";
 import { ClusterBus } from "./bus";
+import { CENSUS_MS, Census, type PanelSource, type PeerRoster } from "./census";
 import { requireClusterKeys } from "./clusterkeys";
 import { clusterEnabled, nodeId, regionId } from "./config";
 import { LOCK_KEY, deadKey } from "./coordinator";
@@ -62,6 +63,8 @@ export interface ClusterTiming {
   healthPollMs?: number;
   /** How often the block mover reads its open orders: the seed until it succeeds, then the review. Default MOVER_REVIEW_MS. */
   moverReviewMs?: number;
+  /** How often the other nodes' load reports are read. Default CENSUS_MS. */
+  censusMs?: number;
 }
 
 /**
@@ -129,6 +132,8 @@ interface RunningNode {
   bus: ClusterBus;
   directory: PlayerDirectory;
   startedAt: number;
+  /** Who is on the region's other nodes. */
+  census: Census;
   /** What stopCluster takes off again. */
   teardown: Teardown;
   beating: Promise<void> | null;
@@ -177,6 +182,8 @@ export interface EngineHooks {
   claimed(player: any, entry: DirectoryEntry, directory: PlayerDirectory): Promise<number | null>;
   /** Ends a player's session on this node. */
   kick(player: any, why: string): void;
+  /** A player handed to another node never arrived there: nobody holds them now. */
+  lost?(player: any): void;
 }
 
 let engine: EngineHooks | null = null;
@@ -203,6 +210,77 @@ export function usePeerDeathHandlers(handlers: PeerDeathHandlers | null): PeerDe
   const previous = peerDeath;
   peerDeath = handlers;
   return previous;
+}
+
+/** A run of a node is over: its players are gone. `restarted`: the node is back, and what it holds now is its new run's. */
+type PlayersLost = (peer: string, restarted: boolean) => void;
+
+let playersLost: PlayersLost | null = null;
+
+/** Who hears that a node's players are gone: the socket layer (this module does not import it). */
+export function onPlayersLost(listener: PlayersLost | null): void {
+  playersLost = listener;
+}
+
+let panelSource: PanelSource | null = null;
+
+/** What this node tells other nodes' control panels: the control panel sets it (this module does not load that). */
+export function servePanelFrom(source: PanelSource | null): void {
+  panelSource = source;
+}
+
+/** What an admin ordered of the whole server, sent from the node that was asked to the region's others. */
+export type ServerOrder =
+  | { what: "restart"; endsAt: number }
+  | { what: "restart-off" }
+  | { what: "shutdown" }
+  | { what: "whitelist"; enabled?: boolean; add?: string; remove?: string };
+
+let serverOrders: ((order: ServerOrder) => void) | null = null;
+
+/** Who carries out another node's orders: the socket layer (this module does not import it). */
+export function followServerOrders(handler: ((order: ServerOrder) => void) | null): void {
+  serverOrders = handler;
+}
+
+/** How long past its end a restart is kept. A node that starts then has nothing to join, so it reads the time and drops it. */
+const RESTART_KEPT_MS = 60_000;
+
+const whitelistKey = (): string => `cells:whitelist:${regionId()}`;
+const restartKey = (): string => `cells:restart:${regionId()}`;
+
+/**
+ * Tells the region's other nodes what an admin ordered, and keeps what a node that starts later has to join. A node
+ * that is down misses a shutdown, which is not kept: it was stopped already. Does nothing outside cluster mode.
+ */
+export async function sendServerOrder(order: ServerOrder): Promise<void> {
+  const bus = clusterBus();
+  const store = clusterStore();
+  if (!bus || !store) return;
+  try {
+    if (order.what === "restart") await store.set(restartKey(), String(order.endsAt), order.endsAt - Date.now() + RESTART_KEPT_MS);
+    if (order.what === "restart-off") await store.del(restartKey());
+    if (order.what === "whitelist" && typeof order.enabled === "boolean") await store.set(whitelistKey(), order.enabled ? "on" : "off");
+    await bus.toWorld("server-order", { ...order, region: regionId() });
+  } catch (error) {
+    log.warn(`The other nodes could not be told of a ${order.what} order, so it holds on this node only: ${error}`);
+  }
+}
+
+/** What a node starting now has to join: a whitelist switched, a restart counting down. Nothing outside cluster mode. */
+export async function serverOrdersKept(): Promise<{ whitelist: boolean | null; restartEndsAt: number | null }> {
+  const store = clusterStore();
+  if (!store) return { whitelist: null, restartEndsAt: null };
+  const [whitelist, endsAt] = await Promise.all([store.get(whitelistKey()), store.get(restartKey())]);
+  return {
+    whitelist: whitelist === null ? null : whitelist === "on",
+    restartEndsAt: endsAt === null ? null : Number(endsAt),
+  };
+}
+
+/** A region that starts from nothing goes by its WHITELIST setting again, as a lone server does. */
+export async function forgetServerOrders(): Promise<void> {
+  await clusterStore()?.del(whitelistKey());
 }
 
 /** A fenced node waits this long for its players' disconnect saves, then exits. */
@@ -400,8 +478,13 @@ export async function startCluster(
     const bus = new ClusterBus(store, self, keys.bus);
     // Handlers before the bus starts listening: no message can arrive before what handles it.
     const directory = new PlayerDirectory(store, self);
+    const census = new Census(registry, bus, self, regionId(), () => panelSource);
     delivery.attach(bus, directory);
     teardown.rest.push({ what: "detach delivery", run: () => delivery.detach() });
+    // The world channel reaches every region.
+    bus.on("server-order", (data, from) => {
+      if (from !== self && data?.region === regionId()) serverOrders?.(data);
+    });
     // Phase 7: trade settle marks are shared (Task 20b).
     tradeSettle.attach(store);
     teardown.rest.push({ what: "detach the settle marks", run: () => tradeSettle.detach() });
@@ -422,6 +505,7 @@ export async function startCluster(
       dropMirrors: (peer) => ghosts.dropPeer(peer),
       releaseAwayHeldBy: (peer) => peerDeath?.releaseAwayHeldBy(peer) ?? 0,
       dropForeignFrom: (home) => peerDeath?.dropForeignFrom(home) ?? 0,
+      playersLost: (peer, restarted) => playersLost?.(peer, restarted),
       fence,
       // Only for a notice the store confirms (security review M1): the grants of a run that is not over stay with it.
       // The fenced check is not needed for safety: adoptFrom throws once mayAct is false, which a fence makes it.
@@ -460,6 +544,7 @@ export async function startCluster(
       // A handoff arrival is not a second login: the old node released the player itself.
       quiet: (username) => playerHandoff.arrivedRecently(username),
       holdReleaseMs: (value) => (value?.handedOff === true ? HANDOFF_PRESENCE_HOLD_MS : 0),
+      onLost: (value) => engine?.lost?.(value),
       // Phase 7: a login takes the owner epoch its saves are fenced on (Task 1). The receiver hands the hook in.
       onClaimed: (value, entry) => (engine ? engine.claimed(value, entry, directory) : Promise.resolve(null)),
     });
@@ -491,7 +576,7 @@ export async function startCluster(
     followBlocks();
 
     const node: RunningNode = {
-      self, store, registry, blocks, maps, links: nodeLinks, bus, directory, startedAt, teardown,
+      self, store, registry, blocks, maps, links: nodeLinks, bus, directory, startedAt, census, teardown,
       graceLeft: timing.unownedGraceMs ?? UNOWNED_GRACE_MS,
       coordinatorSeen: false, checkedAt: startedAt, unownedOpen: false, stopped: false,
       timers: [],
@@ -517,6 +602,13 @@ export async function startCluster(
     node.timers.push(node.lag.start());
     node.timers.push(setInterval(() => { node.beating ??= beat(node).finally(() => { node.beating = null; }); }, timing.beatMs ?? BEAT_MS));
     node.timers.push(setInterval(() => { node.refreshing ??= refresh(node).finally(() => { node.refreshing = null; }); }, timing.refreshMs ?? REFRESH_MS));
+    await census.read();
+    let counting = false;
+    node.timers.push(setInterval(() => {
+      if (counting || node.stopped) return;
+      counting = true;
+      void census.read().finally(() => { counting = false; });
+    }, timing.censusMs ?? CENSUS_MS));
     // The per-node player set is an index: a member whose entry names another node is dropped here, within DIRECTORY_REPAIR_MS.
     let repairing = false;
     node.timers.push(setInterval(() => {
@@ -655,6 +747,26 @@ export function clusterStartedAt(): number | null {
   return running?.startedAt ?? null;
 }
 
+/** The players on the region's other nodes; 0 outside cluster mode. */
+export function peersOnline(): number {
+  return running?.census.othersOnline() ?? 0;
+}
+
+/** The load reports of the region's other nodes; none outside cluster mode. */
+export function peerReports(): readonly LoadReport[] {
+  return running?.census.reports() ?? [];
+}
+
+/** What each of the region's other nodes says of itself; none outside cluster mode. Resolves within a short wait. */
+export function peerRoster(): Promise<PeerRoster[]> {
+  return running?.census.roster() ?? Promise.resolve([]);
+}
+
+/** Tells the other nodes' control panels what an admin did here. Does nothing outside cluster mode. */
+export function sharePanelActivity(entry: unknown): void {
+  running?.census.shareActivity(entry);
+}
+
 /**
  * Whether this node spawns creatures and gathering nodes at (x, y) of the map: yes in
  * its own blocks, no in another node's, and in a block no one owns only once the start
@@ -772,7 +884,7 @@ export function loadReport(self: string, at: number, table?: BlockTable, lagMs?:
   // 0.1 + 0.1 + 0.1 is not 0.3 in floating point.
   for (const key in blocks) blocks[key] = Math.round(blocks[key]! * 10) / 10;
   // creaturesTotal is not load: it never enters `blocks`, which is all the rebalancer weighs.
-  return { nodeId: self, at, players, creatures: active, creaturesTotal: creaturesTotal?.() ?? active, blocks, ...(lagMs === undefined ? {} : { lagMs }) };
+  return { nodeId: self, at, players, creatures: active, creaturesTotal: creaturesTotal?.() ?? active, blocks, memoryMb: Math.round(process.memoryUsage().rss / 1048576), ...(lagMs === undefined ? {} : { lagMs }) };
 }
 
 async function beat(node: RunningNode): Promise<void> {

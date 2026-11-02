@@ -9,7 +9,11 @@ import playerCache from "../services/playermanager";
 const store = new MemoryStore();
 const directory = new PlayerDirectory(store, "a");
 const displaced: Array<{ previous: DirectoryEntry; username: string }> = [];
-trackPresence(directory, (previous, username) => displaced.push({ previous, username }));
+const lost: string[] = [];
+trackPresence(directory, (previous, username) => displaced.push({ previous, username }), {
+  holdReleaseMs: (value) => value.holdMs ?? 0,
+  onLost: (value) => lost.push(value.username),
+});
 
 // Every claim and release here is a chain of MemoryStore calls, which settle within one immediate.
 const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
@@ -17,6 +21,7 @@ const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
 beforeEach(() => {
   playerCache.clear();
   displaced.length = 0;
+  lost.length = 0;
 });
 
 test("a login points the name at this node", async () => {
@@ -50,4 +55,34 @@ test("a login over this node's own entry does not count as displaced", async () 
   await settle();
   expect(displaced).toEqual([]);
   expect((await directory.get("mine"))?.nodeId).toBe("a");
+});
+
+test("a held player whose entry is still this node's when the hold runs out is lost", async () => {
+  playerCache.add("10", { username: "Stranded", holdMs: 1, location: { map: "main" } });
+  await settle();
+  playerCache.remove("10");
+  await Bun.sleep(5);
+  await settle();
+  expect(lost).toEqual(["Stranded"]);
+  expect(await directory.get("stranded")).toBeNull();
+});
+
+test("a held player another node has claimed is not lost", async () => {
+  playerCache.add("11", { username: "Arrived", holdMs: 1, location: { map: "main" } });
+  await settle();
+  await new PlayerDirectory(store, "b").claim("Arrived", "99", "east");
+  playerCache.remove("11");
+  await Bun.sleep(5);
+  await settle();
+  expect(lost).toEqual([]);
+  expect((await directory.get("arrived"))?.nodeId).toBe("b");
+});
+
+test("a player who leaves with no hold is not reported lost", async () => {
+  playerCache.add("12", { username: "Bye", location: { map: "main" } });
+  await settle();
+  playerCache.remove("12");
+  await settle();
+  expect(lost).toEqual([]);
+  expect(await directory.get("bye")).toBeNull();
 });

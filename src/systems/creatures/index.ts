@@ -21,6 +21,7 @@ import playerCache from "../../services/playermanager";
 import spatialGrid from "../../services/spatialgrid";
 import { packetManager } from "../../socket/packet_manager";
 import { CREATURE_MOVE_MAX_ENTRIES } from "../../socket/creature_move_codec";
+import { isHeld } from "../cutsceneheld";
 import { Events, listener, setPlayerPvp } from "../events";
 import lootTable from "../lootTable";
 import { getCreatureEngineBridge } from "./bridge";
@@ -1027,7 +1028,8 @@ onApplyEffect("creature_on_player", async (target, body: CreatureOnPlayer, from)
     spell = creatureSpell(Number(body.creatureId), body.spell);
     if (!spell) return { outcome: "refused", reason: "spell" };
   }
-  if (player.isDead || player.isGhost || player.isStealth) return { outcome: "refused", reason: "immune" };
+  // A player held in a cutscene is out of harm's way (cutsceneheld.ts), as one who is dead or unseen is.
+  if (player.isDead || player.isGhost || player.isStealth || isHeld(player)) return { outcome: "refused", reason: "immune" };
   // The creature's node holds no threat entry for it here, so the player is put in combat as a local creature would.
   if (body.kind !== "daze") {
     setPlayerPvp(player, true);

@@ -232,3 +232,56 @@ describe("everything that reads the switch reads the live value", () => {
     expect(server).toContain("onWhitelistSwitch(() => {\n  void gatewayClient?.heartbeatNow();\n});");
   });
 });
+
+describe("in a cluster", () => {
+  let told: Array<{ enabled?: boolean; add?: string; remove?: string }>;
+  const envBefore = { CLUSTER: process.env.CLUSTER, REGION_ID: process.env.REGION_ID };
+  beforeEach(() => {
+    told = [];
+    whitelist.shareWhitelistChanges((change) => told.push(change));
+  });
+  afterAll(() => {
+    whitelist.shareWhitelistChanges(() => {});
+    for (const [key, value] of Object.entries(envBefore)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  test("the nodes share their region's rows, not one set each", async () => {
+    process.env.CLUSTER = "true";
+    process.env.REGION_ID = "another_realm";
+    try {
+      expect(whitelist.whitelistRealm()).toBe("another_realm");
+      await whitelist.loadRealmWhitelist();
+      expect([...whitelist.realmWhitelist]).toEqual(["wl_carol"]);
+    } finally {
+      delete process.env.CLUSTER;
+      delete process.env.REGION_ID;
+    }
+    expect(whitelist.whitelistRealm()).toBe(REALM);
+  });
+
+  test("a switch here reaches the other nodes, and a refused one does not", async () => {
+    await whitelist.setWhitelistEnabled(true);
+    expect(told).toEqual([{ enabled: true }]);
+    await whitelist.setWhitelistEnabled(true);
+    expect(told).toHaveLength(1);
+    await whitelist.setWhitelistEnabled(false);
+    expect(told).toEqual([{ enabled: true }, { enabled: false }]);
+  });
+
+  test("a change from another node reads the list and is not passed on", async () => {
+    await whitelist.followWhitelist({ enabled: true });
+    expect(whitelist.isWhitelistEnabled()).toBe(true);
+    expect(whitelist.realmWhitelist.has("wl_alice")).toBe(true);
+    expect(switched).toEqual([true]);
+    expect(told).toEqual([]);
+
+    await whitelist.followWhitelist({ add: "wl_dave" });
+    await whitelist.followWhitelist({ remove: "wl_bob" });
+    expect(whitelist.realmWhitelist.has("wl_dave")).toBe(true);
+    expect(whitelist.realmWhitelist.has("wl_bob")).toBe(false);
+    expect(told).toEqual([]);
+  });
+});
