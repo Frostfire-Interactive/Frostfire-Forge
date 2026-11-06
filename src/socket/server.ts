@@ -47,7 +47,7 @@ import packet from "../modules/packet.ts";
 import fs from "node:fs";
 import query from "../controllers/sqldatabase";
 import { generateKeyPair } from "../modules/cipher.ts";
-import { despawnPlayerFromAllAOI, releasePlayerAOI, startAutoPartyLayerSync, startAutoLayerCondensation, findPlayersWithTargetInAOI } from "./aoi.ts";
+import { despawnPlayerFromAllAOI, releasePlayerAOI, startAutoPartyLayerSync, startAutoLayerCondensation, findPlayersWithTargetInAOI, relayToMirrorViewers } from "./aoi.ts";
 import { loadPlugins, registerAllPlugins, mergePluginSpellsIntoCache } from "../modules/plugin_loader.ts";
 import { pluginHandlers, warpInterceptors, packetInterceptors } from "./receiver.ts";
 import { startWebTransportServer, TransportConnection, frameLimitFor } from "./transport.ts";
@@ -1506,6 +1506,9 @@ listener.on(Events.SERVER_TICK, async () => {
         other.wt.sendBestEffort(frames.frameFor(other));
       }
     }
+    // Cluster mode: the viewers of the player's mirrors on neighbouring nodes see the bars fill too (the observers'
+    // fields: a party member there has the full stats from the party updates).
+    if (clusterEnabled()) relayToMirrorViewers(playerData, [frames.frameFor({})], true);
   }
 
   if (inactiveSet.size > 0) {

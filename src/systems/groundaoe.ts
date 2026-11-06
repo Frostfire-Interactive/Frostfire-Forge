@@ -10,6 +10,7 @@ import playerSystem from "./player";
 import { areaSpellHarms, PVP_BODY } from "./pvpzone";
 import { isHeld } from "./cutsceneheld";
 import { nextEntityId } from "../cluster/entityids";
+import { mirrorsOnLayerNear } from "../cluster/mirrors";
 
 export interface GroundAoeZone {
   id: string;
@@ -58,6 +59,17 @@ export function setCreatureZoneHandler(handler: CreatureZoneHandler) {
 
 export function setPlayerDeathHandler(handler: typeof playerDeathHandler) {
   playerDeathHandler = handler;
+}
+
+/**
+ * Cluster mode: a zone tick on a player of a neighbouring node standing in it (a mirror). Registered by
+ * receiver.ts, which sends the hit to the player's owner; the owner checks and applies it.
+ */
+type MirrorZoneHitHandler = (caster: any, mirror: any, zone: GroundAoeZone, damage: number) => Promise<unknown>;
+let mirrorZoneHitHandler: MirrorZoneHitHandler | null = null;
+
+export function setMirrorZoneHitHandler(handler: MirrorZoneHitHandler | null) {
+  mirrorZoneHitHandler = handler;
 }
 
 // Who should be seeing a zone: players near its centre on its layer, whose own sight radius covers the centre. A
@@ -447,6 +459,34 @@ export async function processZoneTicks(): Promise<void> {
         }
         zoneOccupants.set(zone.id, currentOccupants);
 
+        // Players of neighbouring nodes standing in the zone: the same checks, then the hit goes to their owner.
+        const mirrorHits: Promise<unknown>[] = [];
+        if (caster && mirrorZoneHitHandler) {
+          for (const mirror of mirrorsOnLayerNear(mapName, zone.position.x, zone.position.y, zone.radius, zone.layerId)) {
+            if (mirror.isGuest || mirror.isGhost || mirror.isDead || mirror.isStealth) continue;
+            const mPos = mirror.location?.position;
+            if (!mPos) continue;
+            const inParty = caster.party?.includes(mirror.username) || false;
+            if (isHeal) {
+              if (!inParty) continue;
+            } else {
+              if (inParty) continue;
+              const allowed = (position: { x: number; y: number }) => playerSystem.isInPvPZone(mapName, position as PositionData, PVP_BODY);
+              if (!(await areaSpellHarms(caster.location?.position, mPos, allowed))) continue;
+            }
+            let tickDamage = zone.damagePerTick;
+            if (tickDamage > 0 && !isHeal) {
+              const av = mirror.stats?.stat_avoidance || 0;
+              if (Math.random() * 100 < av) tickDamage = 0;
+              if (tickDamage > 0) {
+                const ar = mirror.stats?.stat_armor || 0;
+                tickDamage = Math.floor(tickDamage * (1 - Math.min(ar, 75) / 100));
+              }
+            }
+            mirrorHits.push(mirrorZoneHitHandler(caster, mirror, zone, tickDamage).catch((e) => log.error(`Ground AoE hit on a mirror failed: ${e}`)));
+          }
+        }
+
         // Creatures standing in the zone take the tick too (hostile zones only).
         if (!isHeal && creatureZoneHandler) {
           try {
@@ -522,6 +562,7 @@ export async function processZoneTicks(): Promise<void> {
             await applySpellEffects(zone.spell, caster, player, () => {}, () => {});
           }
         }
+        await Promise.all(mirrorHits);
       }
     }
   }

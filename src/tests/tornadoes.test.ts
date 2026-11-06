@@ -237,3 +237,27 @@ test("a tornado is named by a world entity id, and none forms when no id can be 
   expect(t.tornadoesOn("overworld")).toEqual([]);
   expect(errors).toHaveBeenCalled();
 });
+
+// Cluster mode: a tornado another node owns, shown here near the border (setRemoteTornado), pulls and hurts this node's
+// players as its own do. Only its owner moves it: its place here changes only by moveRemoteTornado.
+test("another node's tornado pulls and hurts the players here, and is not moved by this node", async () => {
+  expect(t.setRemoteTornado({ id: "t900", map: "overworld", x: 5030, y: 5000 })).toBe(true);
+  await run(0, 2_950);
+  expect(moves.length).toBeGreaterThan(0);
+  expect(Math.hypot(people[0].location.position.x - 5030, people[0].location.position.y - 5000)).toBeLessThan(30);
+  expect(hurts.map((h) => h.amount)).toEqual([50, 50, 50]);
+  // shown where its owner last put it
+  expect(shown.at(-1)).toMatchObject({ map: "overworld", list: [{ id: "t900", x: 5030, y: 5000 }] });
+});
+
+test("another node's tornado out of reach neither pulls nor hurts, and one removed stops", async () => {
+  t.setRemoteTornado({ id: "t901", map: "overworld", x: 5000 + t.PULL_RADIUS + 50, y: 5000 });
+  await run(0, 1_000);
+  expect(moves).toEqual([]);
+  expect(hurts).toEqual([]);
+  t.moveRemoteTornado("t901", 5030, 5000);
+  t.removeRemoteTornado("t901");
+  await run(1_100, 1_000);
+  expect(moves).toEqual([]);
+  expect(hurts).toEqual([]);
+});

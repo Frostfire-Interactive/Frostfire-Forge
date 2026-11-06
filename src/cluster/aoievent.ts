@@ -4,7 +4,7 @@ import ignores from "../systems/ignores";
 import { fromWire, toWire } from "./linkproto";
 import type { LinkSender } from "./linktransport";
 import { mirrorByUsername } from "./mirrors";
-import { MIRROR_KEEP_PX, nodesWithin, type Owners } from "./strip";
+import { MIRROR_KEEP_PX, MIRROR_RADIUS_PX, nodesWithin, type Owners } from "./strip";
 
 // aoiEvent (spec §6): something seen by everyone within `radius` of a point,
 // such as a line of say chat. Local players in range get it here; neighbours
@@ -24,9 +24,14 @@ export function attachAoiEvents(links: LinkSender, ownersOf: (map: string) => Ow
     // An event reaches across one strip at most: a larger radius from the wire would scan the whole map.
     const radius = Math.min(Number(data?.radius), MAX_REMOTE_RADIUS_PX);
     const speaker = typeof data?.speaker === "string" && data.speaker ? data.speaker : undefined;
-    deliverLocal(String(data?.map ?? ""), data?.layerId ?? null, Number(data?.x), Number(data?.y), radius, fromWire(data?.packets), !!data?.bestEffort, speaker);
+    const hidden = data?.hidden === "stealth" || data?.hidden === "vanished" ? { as: data.hidden as Hidden, who: String(data?.who ?? "") } : undefined;
+    deliverLocal(String(data?.map ?? ""), data?.layerId ?? null, Number(data?.x), Number(data?.y), radius, fromWire(data?.packets), !!data?.bestEffort, speaker, hidden);
   });
 }
+
+/** How the one an event comes from is hidden: stealthed (admins see them) or vanished (admins and their party do). */
+type Hidden = "stealth" | "vanished";
+type ForwardOptions = { bestEffort?: boolean; speaker?: string; hidden?: Hidden; who?: string };
 
 export function detachAoiEvents(): void {
   state = null;
@@ -40,15 +45,31 @@ export function aoiEvent(map: string, layerId: string | null, x: number, y: numb
 /**
  * Only the neighbours' part, for callers that already sent to their own players (say chat translates per listener).
  * `speaker` is the username of whoever the event is heard from (chat only): the neighbour holds back from it the
- * listeners who ignore them, and keeps the ones that can see them.
+ * listeners who ignore them, and keeps the ones that can see them. `hidden` and `who` say that the one it comes from
+ * is stealthed or vanished, and their username: the neighbour sends it only to its listeners who may see them.
  */
-export function forwardAoiEvent(map: string, layerId: string | null, x: number, y: number, radius: number, packets: Uint8Array[], options: { bestEffort?: boolean; speaker?: string } = {}): void {
+export function forwardAoiEvent(map: string, layerId: string | null, x: number, y: number, radius: number, packets: Uint8Array[], options: ForwardOptions = {}): void {
   if (!state || packets.length === 0) return;
   const bare = map.replace(/\.json$/, "");
   const peers = nodesWithin(state.ownersOf(bare), x, y, radius, state.links.self);
   if (peers.size === 0) return;
-  const message = { map: bare, layerId, x, y, radius, packets: toWire(packets), bestEffort: !!options.bestEffort, ...(options.speaker ? { speaker: options.speaker } : {}) };
+  const message = { map: bare, layerId, x, y, radius, packets: toWire(packets), bestEffort: !!options.bestEffort,
+    ...(options.speaker ? { speaker: options.speaker } : {}),
+    ...(options.hidden ? { hidden: options.hidden, who: options.who ?? "" } : {}) };
   for (const peer of peers) if (state.links.isUp(peer)) state.links.send(peer, "AOI_EVENT", message);
+}
+
+/**
+ * forwardAoiEvent from where a player stands, for what their node sends the players around them (chat, typing).
+ * A stealthed player is seen by admins only and a vanished one by admins and their party: the neighbour is told
+ * which, and applies the same rule to its own listeners. The packets are built only when there are links to send them on.
+ */
+export function forwardFromPlayer(player: any, packets: () => Uint8Array[], options: { bestEffort?: boolean; speaker?: string } = {}): void {
+  if (!state) return;
+  const position = player.location.position;
+  const hidden: Hidden | undefined = player.isStealth ? "stealth" : player.isVanished ? "vanished" : undefined;
+  forwardAoiEvent(String(player.location.map), player.aoi?.layerId ?? null, Number(position.x), Number(position.y), MIRROR_RADIUS_PX, packets(),
+    hidden ? { ...options, hidden, who: String(player.username ?? "") } : options);
 }
 
 function send(player: any, packets: Uint8Array[], bestEffort: boolean): void {
@@ -64,10 +85,12 @@ function send(player: any, packets: Uint8Array[], bestEffort: boolean): void {
   }
 }
 
-function deliverLocal(map: string, layerId: string | null, x: number, y: number, radius: number, packets: Uint8Array[], bestEffort: boolean, speaker?: string): void {
+function deliverLocal(map: string, layerId: string | null, x: number, y: number, radius: number, packets: Uint8Array[], bestEffort: boolean, speaker?: string, hidden?: { as: Hidden; who: string }): void {
   if (!map || !Number.isFinite(x) || !Number.isFinite(y) || !(radius > 0)) return;
   // A null layer reaches every layer (as broadcastToAOIAtPosition treats it).
   let listeners = getPlayersNearPoint(x, y, map, radius, layerId ?? undefined);
+  // From a hidden player: only the listeners who may see them (as chat.ts and broadcastFishing keep it on their node).
+  if (hidden) listeners = listeners.filter((p) => p.isAdmin || (hidden.as === "vanished" && !!hidden.who && !!p.party?.includes(hidden.who)));
   if (!speaker) {
     for (const player of listeners) send(player, packets, bestEffort);
     return;

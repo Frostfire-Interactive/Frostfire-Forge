@@ -15,7 +15,8 @@ mock.module("../controllers/sqldatabase", () => databaseModule({
   default: async (sql: string, params?: any[]) =>
     sql === "SELECT ignored FROM ignores WHERE username = ?" && params?.[0] === "ignorer" ? [{ ignored: "speaker" }] : [],
 }));
-const { aoiEvent, attachAoiEvents, detachAoiEvents, forwardAoiEvent } = await import("../cluster/aoievent");
+const { aoiEvent, attachAoiEvents, detachAoiEvents, forwardAoiEvent, forwardFromPlayer } = await import("../cluster/aoievent");
+const { MIRROR_RADIUS_PX } = await import("../cluster/strip");
 const aoiReverse = await import("../services/aoiReverseIndex");
 const playerCache = (await import("../services/playermanager")).default;
 const spatialGrid = (await import("../services/spatialgrid")).default;
@@ -564,6 +565,43 @@ test("forwardAoiEvent carries the speaker only when it is given one", async () =
   }
 });
 
+test("forwardFromPlayer forwards from where the player stands, and builds the packets only when it sends", async () => {
+  const { a, b } = linkPair();
+  const got: any[] = [];
+  b.on("AOI_EVENT", (data) => got.push(data));
+  const packet = new Uint8Array([4, 2]);
+  let built = 0;
+  const packets = () => { built++; return [packet]; };
+  const player = (over: object = {}) => ({ location: { map: "main.json", position: { x: 4000, y: 100 } }, aoi: { layerId: "main:1" }, ...over });
+
+  // No links attached (cluster off): nothing is built.
+  forwardFromPlayer(player(), packets, { bestEffort: true });
+  expect(built).toBe(0);
+
+  attachAoiEvents(a, () => ({ "0,0": { nodeId: "a", epoch: 1, since: 0 }, "1,0": { nodeId: "b", epoch: 1, since: 0 } }));
+  try {
+    forwardFromPlayer(player(), packets, { bestEffort: true });
+    forwardFromPlayer(player(), packets, { speaker: "talker" });
+    await settle();
+    expect(got.length).toBe(2);
+    expect(got[0]).toMatchObject({ map: "main", layerId: "main:1", x: 4000, y: 100, radius: MIRROR_RADIUS_PX, bestEffort: true });
+    expect(fromWire(got[0].packets)).toEqual([packet]);
+    expect(got[1]).toMatchObject({ bestEffort: false, speaker: "talker" });
+
+    // A stealthed player is heard by admins only, a vanished one by admins and their party: the neighbour is told
+    // which, and whose party, and keeps the rule for its own listeners.
+    forwardFromPlayer(player({ username: "sneak", isStealth: true }), packets);
+    forwardFromPlayer(player({ username: "sneak", isVanished: true }), packets);
+    await settle();
+    expect(got.length).toBe(4);
+    expect(got[2]).toMatchObject({ hidden: "stealth", who: "sneak" });
+    expect(got[3]).toMatchObject({ hidden: "vanished", who: "sneak" });
+    expect("hidden" in got[0]).toBe(false);
+  } finally {
+    detachAoiEvents();
+  }
+});
+
 test("a line from a neighbour's speaker is held back from the listeners who ignore them, and from those who cannot see them", async () => {
   const { a, b } = linkPair();
   const map = "ghosts-aoi-chat";
@@ -604,6 +642,39 @@ test("a line from a neighbour's speaker is held back from the listeners who igno
     mirrorPlayers.delete("m1");
     aoiReverse.removeViewer("m1", "friend");
     aoiReverse.removeViewer("m1", "ignorer");
+    for (const name of names) {
+      spatialGrid.removePlayer(name);
+      playerCache.remove(name);
+    }
+  }
+});
+
+test("a neighbour's event from a stealthed player reaches admins only, and from a vanished one admins and their party", async () => {
+  const { a, b } = linkPair();
+  const map = "ghosts-aoi-hidden";
+  const names = ["admin", "member", "stranger"];
+  const received: Record<string, number> = { admin: 0, member: 0, stranger: 0 };
+  const extra: Record<string, object> = { admin: { isAdmin: true }, member: { party: ["sneak"] }, stranger: { party: ["other"] } };
+  for (const name of names) {
+    playerCache.add(name, {
+      id: name, username: name, aoi: {}, location: { map, position: { x: 100, y: 100, direction: "down" } }, ...extra[name],
+      wt: { readyState: 1, send: () => received[name]++, sendBestEffort: () => received[name]++ },
+    });
+    spatialGrid.addPlayer(name, 100, 100, map);
+  }
+  attachAoiEvents(b, () => ({}));
+  const message = (more: object) => ({ map, layerId: null, x: 120, y: 100, radius: 500, packets: toWire([new Uint8Array([1])]), bestEffort: true, ...more });
+  const reset = () => { for (const name of names) received[name] = 0; };
+  try {
+    a.send("b", "AOI_EVENT", message({ hidden: "stealth", who: "sneak" }));
+    await settle();
+    expect(received).toEqual({ admin: 1, member: 0, stranger: 0 });
+    reset();
+    a.send("b", "AOI_EVENT", message({ hidden: "vanished", who: "sneak" }));
+    await settle();
+    expect(received).toEqual({ admin: 1, member: 1, stranger: 0 });
+  } finally {
+    detachAoiEvents();
     for (const name of names) {
       spatialGrid.removePlayer(name);
       playerCache.remove(name);

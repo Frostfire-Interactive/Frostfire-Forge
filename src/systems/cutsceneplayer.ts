@@ -11,6 +11,8 @@
  * ends by itself even if every timer failed.
  */
 import { randomBytes } from "node:crypto";
+import { deliverToPlayer, registerPlayerAction, tryOnPlayer } from "../cluster/deliver";
+import { onPeerNews, tellPeers } from "../cluster/peernews";
 import query from "../controllers/sqldatabase";
 import log from "../modules/logger";
 import assetCache from "../services/assetCache";
@@ -576,9 +578,23 @@ export async function resetViews(sceneName: string, username: string): Promise<b
   const user = lower(username);
   if (!scene || !user) return false;
   await query("DELETE FROM cutscene_views WHERE username = ? AND cutscene = ?", [user, scene.name]);
-  seen.get(user)?.delete(lower(scene.name));
+  forgetView(user, scene.name);
+  void tellPeers("cutscene-views-reset", { username: user, scene: scene.name });
   return true;
 }
+
+/** What this node holds of a character's views no longer has the scene. */
+function forgetView(username: string, scene: string): void {
+  seen.get(lower(username))?.delete(lower(scene));
+}
+
+// Cluster mode: a reset on another node. The row is gone; a node that holds the character's views drops the scene too.
+onPeerNews("cutscene-views-reset", (news) => {
+  const username = news?.username;
+  const scene = news?.scene;
+  if (typeof username !== "string" || !username || typeof scene !== "string" || !scene) return;
+  forgetView(username, scene);
+});
 
 // ----------------------------------------------------------------- triggers
 
@@ -753,26 +769,21 @@ export async function runCommand(admin: any, args: string[]): Promise<string[]> 
     const target = args[2];
     if (target !== undefined && lower(target) === "map") {
       const here = bareMap(admin.location?.map);
-      let started = 0;
-      let refused = 0;
-      for (const id of [...mapIndex.getPlayersOnMap(here)]) {
-        const result = await begin(playerCache.get(id), scene.name);
-        if (result.ok) started++;
-        else refused++;
-      }
-      return [`Playing ${scene.name} to ${started} player${started === 1 ? "" : "s"} on ${here}${refused ? ` (${refused} could not watch it)` : ""}`];
+      const { started, refused } = await playToMapHere(here, scene.name);
+      const told = await tellPeers("cutscene-map", { map: here, scene: scene.name });
+      return [`Playing ${scene.name} to ${started} player${started === 1 ? "" : "s"} on ${here}${told ? " on this node" : ""}${refused ? ` (${refused} could not watch it)` : ""}${told ? "; the region's other nodes play it to theirs" : ""}`];
     }
-    const who = target === undefined ? admin : playerCache.getByUsername(target);
-    if (!who) return [`${target} is not online on this server`];
-    const result = await begin(who, scene.name, { force: true });
-    if (!result.ok) return [`${scene.name} could not be played to ${who === admin ? "you" : who.username}: ${result.reason}`];
-    return [`Playing ${scene.name} to ${who === admin ? "you" : who.username}`];
+    if (target === undefined) return [await playFor(admin, scene.name, true)];
+    const who = playerCache.getByUsername(target);
+    if (!who) return onTheirNode(admin, target, { play: scene.name });
+    return [await playFor(who, scene.name, false)];
   }
 
   if (sub === "stop") {
-    const who = args[1] === undefined ? admin : playerCache.getByUsername(args[1]);
-    if (!who) return [`${args[1]} is not online on this server`];
-    return [(await stop(who)) ? `Stopped the cutscene of ${who === admin ? "you" : who.username}` : `${who === admin ? "You are" : `${who.username} is`} not in a cutscene`];
+    if (args[1] === undefined) return [await stopFor(admin, true)];
+    const who = playerCache.getByUsername(args[1]);
+    if (!who) return onTheirNode(admin, args[1], { stop: true });
+    return [await stopFor(who, false)];
   }
 
   if (sub === "reset") {
@@ -783,6 +794,70 @@ export async function runCommand(admin: any, args: string[]): Promise<string[]> 
 
   return usage;
 }
+
+/** Plays the scene to a player of this node for an admin (`you`: the admin is the player). What to tell the admin. */
+async function playFor(who: any, sceneName: string, you: boolean): Promise<string> {
+  const result = await begin(who, sceneName, { force: true });
+  const name = you ? "you" : who.username;
+  return result.ok ? `Playing ${sceneName} to ${name}` : `${sceneName} could not be played to ${name}: ${result.reason}`;
+}
+
+/** Ends the scene of a player of this node for an admin (`you`: the admin is the player). What to tell the admin. */
+async function stopFor(who: any, you: boolean): Promise<string> {
+  if (await stop(who)) return `Stopped the cutscene of ${you ? "you" : who.username}`;
+  return `${you ? "You are" : `${who.username} is`} not in a cutscene`;
+}
+
+/** Plays the scene to this node's players on the map: how many began it, and how many could not watch it. */
+async function playToMapHere(map: string, sceneName: string): Promise<{ started: number; refused: number }> {
+  let started = 0;
+  let refused = 0;
+  for (const id of [...mapIndex.getPlayersOnMap(map)]) {
+    const result = await begin(playerCache.get(id), sceneName);
+    if (result.ok) started++;
+    else refused++;
+  }
+  return { started, refused };
+}
+
+// Cluster mode: a scene played to a map on another node. A map can be split between nodes; each plays it to its own.
+onPeerNews("cutscene-map", async (news) => {
+  const map = news?.map;
+  const scene = news?.scene;
+  if (typeof map !== "string" || !map || typeof scene !== "string" || !scene) return;
+  await playToMapHere(map, scene);
+});
+
+const CUTSCENE_ACTION = "cells-cutscene";
+type RemoteAsk = { play: string } | { stop: true };
+
+/**
+ * A player who is not on this node: their node plays the scene to them or ends theirs (the player action
+ * "cells-cutscene"), and tells the admin how it went. What to tell the admin now: nothing when it went there.
+ */
+async function onTheirNode(admin: any, username: string, ask: RemoteAsk): Promise<string[]> {
+  const reached = await tryOnPlayer(username, CUTSCENE_ACTION, { by: admin.username, ...ask });
+  if (reached === "sent") return [];
+  if (reached === "unreached") return ["That player could not be reached, so nothing was done. They may be online on another server node."];
+  return [`${username} is not online`];
+}
+
+registerPlayerAction(CUTSCENE_ACTION, async (target, args) => {
+  const by = typeof args?.by === "string" && args.by.trim() ? args.by : null;
+  if (!by) {
+    log.warn(`A /cutscene from another node for ${target?.username} was dropped: it names no admin`);
+    return;
+  }
+  let reply: string | null = null;
+  try {
+    if (typeof args?.play === "string" && args.play) reply = await playFor(target, args.play, false);
+    else if (args?.stop === true) reply = await stopFor(target, false);
+    else log.warn(`A /cutscene from ${by} for ${target?.username} was dropped: it asks for nothing`);
+  } catch (error) {
+    log.error(`A /cutscene from ${by} for ${target?.username} failed: ${error}`);
+  }
+  if (reply) void deliverToPlayer(by, packetManager.notify({ message: reply }));
+});
 
 // ---------------------------------------------------------------- wiring
 
@@ -800,7 +875,7 @@ export async function init(): Promise<void> {
   } catch (error) {
     log.warn(`[Cutscenes] The triggers could not be indexed: ${error}`);
   }
-  // This process's own writes of the list. A write by another node (a shared cache) is not heard, so it is read again on a timer too.
+  // A write of the list, here or (cluster mode) on another node; it is read again on a timer too.
   assetCache.onChange?.("cutscenes", () => {
     reindex().catch((error) => log.warn(`[Cutscenes] The triggers could not be indexed: ${error}`));
   });

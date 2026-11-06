@@ -174,6 +174,35 @@ async function syncMapsBeforeLoading(): Promise<void> {
   }
 }
 
+/**
+ * Brings this node's copy of one map up to date with the asset server's, as at start (for a save made in the map
+ * editor on another node of the region). True when a newer copy was fetched; false when this one is the asset
+ * server's, or there is no asset server.
+ */
+export async function syncMapFromAssetServer(mapName: string): Promise<boolean> {
+  const assetServerUrl = process.env.ASSET_SERVER_INTERNAL_URL || process.env.ASSET_SERVER_URL;
+  if (!assetServerUrl) return false;
+  const file = path.basename(getValidMapPath(mapName));
+  const { calculateAllMapChecksums, writeMapContent } = await import("./checksums.ts");
+  // Every local map's checksum, so that the answer holds only the maps that differ
+  const response = await serverFetch(`${assetServerUrl}/map-checksums`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      checksums: calculateAllMapChecksums(),
+      serverId: process.env.SERVER_ID || "game-server",
+      authKey: process.env.ASSET_SERVER_AUTH_KEY || process.env.GATEWAY_AUTH_KEY,
+    }),
+  });
+  if (!response.ok) throw new Error(`the asset server answered ${response.status}`);
+  const result = (await response.json()) as { success?: boolean; error?: string; outdatedMaps?: Array<{ name: string; data: unknown }> };
+  if (!result?.success) throw new Error(result?.error || "the asset server did not send the map");
+  const fresh = result.outdatedMaps?.find((map) => map.name === file);
+  if (!fresh) return false;
+  if (!writeMapContent(fresh.name, fresh.data)) throw new Error(`${file} could not be written`);
+  return true;
+}
+
 function loadAllMaps() {
   const now = performance.now();
   const maps: MapData[] = [];
@@ -258,8 +287,9 @@ function registerWorld(world: WorldMap, maps: MapData[]): void {
 
 /**
  * A map the asset server has just made from the map editor (CREATE_MAP, systems/mapcreate.ts), taken in without a
- * restart: a Tiled map from the data it answered with, written to the local maps folder like a synced one; a world
- * fetched from it as the worlds are at start. Afterwards it can be warped to like any map.
+ * restart: a Tiled map from the data it answered with, written to the local maps folder like a synced one (or, with no
+ * data, as the file already is there); a world fetched from it as the worlds are at start. Afterwards it can be warped
+ * to like any map.
  */
 export async function addCreatedMap(name: string, kind: "map" | "world", data?: any): Promise<void> {
   const maps = ((await assetCache.get("maps")) as MapData[] | null) ?? [];
@@ -268,7 +298,7 @@ export async function addCreatedMap(name: string, kind: "map" | "world", data?: 
     registerWorld(await addWorldMap(name), maps);
   } else {
     const { writeMapContent } = await import("./checksums.ts");
-    if (!data || !writeMapContent(name, data)) throw new Error(`${name}.json could not be written`);
+    if (data !== undefined && !writeMapContent(name, data)) throw new Error(`${name}.json could not be written`);
     const map = processMapFile(`${name}.json`);
     if (!map) throw new Error(`${name}.json could not be read back`);
     maps.push(map);
@@ -287,6 +317,18 @@ export async function addCreatedMap(name: string, kind: "map" | "world", data?: 
   }
   assetCache.add("maps", maps).catch((error) => log.error(`The map data ("maps") could not be written to the cache: ${error}`));
   assetCache.add("mapProperties", mapProperties).catch((error) => log.error(`The map data ("mapProperties") could not be written to the cache: ${error}`));
+}
+
+/**
+ * Cluster mode: a map made in the map editor on another node of the region (peer news "map-created"), taken in here:
+ * a Tiled map's file is fetched from the asset server first, then read as addCreatedMap reads one; a world is fetched
+ * by addCreatedMap itself.
+ */
+export async function adoptCreatedMap(name: string, kind: "map" | "world"): Promise<void> {
+  if (kind === "map" && !(await syncMapFromAssetServer(name)) && !fs.existsSync(path.join(mapDir, `${name}.json`))) {
+    throw new Error(`${name}.json could not be fetched from the asset server`);
+  }
+  await addCreatedMap(name, kind);
 }
 
 // Tiled stores "infinite" maps as per-layer `chunks` arrays instead of a flat

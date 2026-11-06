@@ -301,7 +301,7 @@ function statePacket(id: number): Uint8Array[] {
 await assetCache.set(CACHE_KEYS.templates, [normalizeTemplate({ id: 1, name: "Wolf", level_min: 5, level_max: 5, sprite_type: "none" })]);
 await creatures.init();
 
-test("a mirror is shown with its auras and never as lootable; relays and moves reach its viewers", () => {
+test("a mirror is shown with its auras, not lootable to one its owner names no looter; relays and moves reach its viewers", () => {
   const kind = (creatures as any).creatureGhostKind;
   const viewer = addViewer("cv1", 300, 300);
   const now = Date.now();
@@ -528,4 +528,42 @@ test("a data change refreshes local creatures only", async () => {
     await creatures.applyDataChange({});
     delete tableRows.creature_templates;
   }
+});
+
+// A corpse's loot stays with its owner node, but who may loot it is part of its shown state: a loot owner of this node
+// who comes into view of a neighbouring node's corpse after the kill is shown it as lootable (and nobody else is).
+test("a mirror corpse is shown lootable to its loot owner here, and to nobody else", () => {
+  const kind = (creatures as any).creatureGhostKind;
+  const owner = addViewer("cv3", 300, 300);
+  const other = addViewer("cv4", 300, 300);
+  expect(kind.spawn(record({ id: 777210, state: "dead", looters: ["cv3"] }), "a")).toBe(true);
+  const shownTo = (viewer: any) => viewer.wt.reliable
+    .find((p: any) => p.type === "CREATURE_SPAWN" && p.data.creatures.some((c: any) => c.id === 777210))
+    ?.data.creatures.find((c: any) => c.id === 777210);
+  expect(shownTo(owner).lootable).toBe(true);
+  expect(shownTo(other).lootable).toBe(false);
+
+  // Emptied on its owner: the owner here is told it is no longer lootable, the other viewer is sent nothing.
+  const lootablePackets = (viewer: any) => viewer.wt.reliable.filter((p: any) => p.type === "CREATURE_LOOTABLE" && p.data.id === 777210);
+  kind.update(777210, { looters: null });
+  expect(lootablePackets(owner).map((p: any) => p.data.lootable)).toEqual([false]);
+  expect(lootablePackets(other)).toEqual([]);
+  kind.despawn(777210, "left");
+  removeViewer(owner);
+  removeViewer(other);
+});
+
+test("the owner's state of a corpse names who may loot it, and a live creature's names nobody", () => {
+  const kind = (creatures as any).creatureGhostKind;
+  const corpse = makeCreature(777220, 300, 300, { state: "dead" });
+  creatures.registry.add(corpse as any);
+  corpseLoot.create(777220, [], 5, ["LT2"], ["LT2"]);
+  expect(kind.state(777220).looters).toEqual(["lt2"]);
+  corpseLoot.remove(777220);
+  expect(kind.state(777220).looters).toEqual([]);
+  const alive = makeCreature(777221, 300, 300);
+  creatures.registry.add(alive as any);
+  expect(kind.state(777221).looters).toEqual([]);
+  creatures.registry.remove(777220);
+  creatures.registry.remove(777221);
 });

@@ -1,6 +1,7 @@
 import AOI_CONFIG from "../../config/aoi.json";
 import { clusterBlocks, onBlocksChanged, reportCreaturesFrom, spawnsHere, usePeerDeathHandlers } from "../../cluster";
 import { blockAt } from "../../cluster/blocks";
+import { onPeerNews, tellPeers } from "../../cluster/peernews";
 import { registerCreatureSlots } from "../../cluster/kinds/creatureparts";
 import { onApplyEffect, sendEffect, type EffectResult } from "../../cluster/effects";
 import { creatureHandoff, type CreatureHandoffDeps, type SerializedCreature } from "../../cluster/creaturehandoff";
@@ -169,8 +170,10 @@ export const sync = new CreatureSync({
       : aurasPayload(creature.auras, Date.now(), spellIcon);
     snapshot.tap = tapStateFor(creature, playerId);
     const username = playerCache.get(playerId)?.username;
-    // A mirror's corpse loot stays with its owner (phase 5).
-    snapshot.lootable = !creature.remote && creature.state === AIState.DEAD && !!username && corpseLoot.canLoot(creature.id, username);
+    // A mirror's corpse loot stays with its owner (phase 5); who may loot it comes with its shown state.
+    snapshot.lootable = creature.state === AIState.DEAD && !!username && (creature.remote
+      ? (creature.mirrorLooters ?? []).includes(username.toLowerCase())
+      : corpseLoot.canLoot(creature.id, username));
   },
 });
 
@@ -652,6 +655,27 @@ export async function applyDataChange(change: CreatureDataChange): Promise<void>
   }
   log.info(`Creature data updated: ${refreshed} creature(s) refreshed, ${localCreatureCount()} live`);
 }
+
+/**
+ * A change made in the editor here: this node takes it, and the region's other nodes are told (cluster mode), as each
+ * spawns and runs the creatures of its own blocks.
+ */
+async function dataChanged(change: CreatureDataChange): Promise<void> {
+  await applyDataChange(change);
+  void tellPeers("creature-data", change);
+}
+
+/** The change another node told of, with only its lists of ids kept. */
+function creatureChangeOf(news: any): Required<CreatureDataChange> {
+  const ids = (list: unknown) => (Array.isArray(list) ? list.map(Number).filter((id) => Number.isInteger(id) && id > 0) : []);
+  return { templateIds: ids(news?.templateIds), spawnIds: ids(news?.spawnIds), patrolPathIds: ids(news?.patrolPathIds) };
+}
+
+// Cluster mode: a creature editor save on another node of the region. The tables are read again here, and this node's
+// own creatures the change touches respawn.
+onPeerNews("creature-data", async (news) => {
+  await applyDataChange(creatureChangeOf(news));
+});
 
 // ------------------------------------------------------------ tick profiling
 
@@ -1141,13 +1165,13 @@ export async function handleEditorPacket(player: any, type: string, data: any): 
       const errors = validateTemplate(data, await validationContext());
       if (errors.length) return fail(errors);
       const savedId = await repository.saveTemplate(data);
-      await applyDataChange({ templateIds: [savedId] });
+      await dataChanged({ templateIds: [savedId] });
       return done(savedId);
     }
     case "CREATURE_EDITOR_DELETE_TEMPLATE": {
       if (!id) return fail(["Nothing selected."]);
       await repository.deleteTemplate(id);
-      await applyDataChange({ templateIds: [id] });
+      await dataChanged({ templateIds: [id] });
       return done(id);
     }
     case "CREATURE_EDITOR_SAVE_ABILITY": {
@@ -1155,13 +1179,13 @@ export async function handleEditorPacket(player: any, type: string, data: any): 
       if (errors.length) return fail(errors);
       const savedId = await repository.saveAbility(data);
       // Abilities are read live; no respawn needed.
-      await applyDataChange({});
+      await dataChanged({});
       return done(savedId);
     }
     case "CREATURE_EDITOR_DELETE_ABILITY": {
       if (!id) return fail(["Nothing selected."]);
       await repository.deleteAbility(id);
-      await applyDataChange({});
+      await dataChanged({});
       return done(id);
     }
     case "CREATURE_EDITOR_SAVE_ABILITIES": {
@@ -1179,46 +1203,46 @@ export async function handleEditorPacket(player: any, type: string, data: any): 
       for (const ability of plan.upserts) await repository.saveAbility(ability);
       for (const abilityId of plan.deleteIds) await repository.deleteAbility(abilityId);
       // Abilities are read live; no respawn needed.
-      await applyDataChange({});
+      await dataChanged({});
       return done(templateId);
     }
     case "CREATURE_EDITOR_SAVE_SPAWN": {
       const errors = validateSpawn(data, await validationContext());
       if (errors.length) return fail(errors);
       const savedId = await repository.saveSpawn(data);
-      await applyDataChange({ spawnIds: [savedId] });
+      await dataChanged({ spawnIds: [savedId] });
       return done(savedId);
     }
     case "CREATURE_EDITOR_DELETE_SPAWN": {
       if (!id) return fail(["Nothing selected."]);
       await repository.deleteSpawn(id);
-      await applyDataChange({ spawnIds: [id] });
+      await dataChanged({ spawnIds: [id] });
       return done(id);
     }
     case "CREATURE_EDITOR_SAVE_PATH": {
       const errors = validatePatrolPath(data, await validationContext());
       if (errors.length) return fail(errors);
       const savedId = await repository.savePatrolPath(data);
-      await applyDataChange({ patrolPathIds: [savedId] });
+      await dataChanged({ patrolPathIds: [savedId] });
       return done(savedId);
     }
     case "CREATURE_EDITOR_DELETE_PATH": {
       if (!id) return fail(["Nothing selected."]);
       await repository.deletePatrolPath(id);
-      await applyDataChange({ patrolPathIds: [id] });
+      await dataChanged({ patrolPathIds: [id] });
       return done(id);
     }
     case "CREATURE_EDITOR_SAVE_LINKGROUP": {
       const errors = validateLinkGroup(data);
       if (errors.length) return fail(errors);
       const savedId = await repository.saveLinkGroup(data);
-      await applyDataChange({});
+      await dataChanged({});
       return done(savedId);
     }
     case "CREATURE_EDITOR_DELETE_LINKGROUP": {
       if (!id) return fail(["Nothing selected."]);
       await repository.deleteLinkGroup(id);
-      await applyDataChange({});
+      await dataChanged({});
       return done(id);
     }
     case "CREATURE_EDITOR_SAVE_POOL": {
@@ -1226,13 +1250,13 @@ export async function handleEditorPacket(player: any, type: string, data: any): 
       if (errors.length) return fail(errors);
       const savedId = await repository.saveSpawnPool(data);
       // Pool limits apply to the next spawn attempt.
-      await applyDataChange({});
+      await dataChanged({});
       return done(savedId);
     }
     case "CREATURE_EDITOR_DELETE_POOL": {
       if (!id) return fail(["Nothing selected."]);
       await repository.deleteSpawnPool(id);
-      await applyDataChange({});
+      await dataChanged({});
       return done(id);
     }
     case "CREATURE_EDITOR_ACTION":
@@ -1497,6 +1521,8 @@ function creatureShown(c: CreatureInstance) {
     casting: c.casting,
     // Absolute expiries: the field changes when the auras do, not on every scan.
     auras: aurasState(c.auras, Date.now()),
+    // Who may loot the corpse (sorted: the field changes only when they do). A viewer on another node is shown it from this.
+    looters: c.state === AIState.DEAD ? [...(corpseLoot.get(c.id)?.owners ?? [])].sort() : [],
   };
 }
 
@@ -1512,6 +1538,19 @@ function applyMirror(c: CreatureInstance, r: any, whole: boolean): void {
   if (whole || "tapper" in r) c.combat.tapper = r.tapper ?? null;
   if (whole || "auras" in r) c.mirrorAuras = Array.isArray(r.auras) ? r.auras : [];
   if (whole || "victimId" in r) c.combat.threat.victimId = r.victimId ?? null;
+  if (whole || "looters" in r) c.mirrorLooters = Array.isArray(r.looters) ? r.looters.map((name: unknown) => String(name).toLowerCase()) : [];
+}
+
+/** Tells the viewers here whose lootable flag on a mirror's corpse changed from `before` (per viewer, not relayed). */
+function sendLootableChanges(c: CreatureInstance, before: string[]): void {
+  const now = c.state === AIState.DEAD ? (c.mirrorLooters ?? []) : [];
+  for (const playerId of sync.viewersOf(c.id)) {
+    const player = playerCache.get(playerId);
+    const name = String(player?.username ?? "").toLowerCase();
+    if (!player?.wt || !name) continue;
+    const lootable = now.includes(name);
+    if (lootable !== before.includes(name)) send(player.wt, packetManager.creatureLootable({ id: c.id, lootable }));
+  }
 }
 
 /** Sends a mirror's shown state to its viewers here, after a full resend replaced it. */
@@ -1856,9 +1895,11 @@ export const creatureGhostKind: GhostKind = {
         existing.move = r.moving ? MIRROR_MOVING : null;
         existing.level = Number(r.level) || 1;
         existing.spawnId = Number(r.spawnId) || 0;
+        const looters = existing.state === AIState.DEAD ? (existing.mirrorLooters ?? []) : [];
         applyMirror(existing, r, true);
         movedMirrors.add(existing);
         resendMirror(existing);
+        sendLootableChanges(existing, looters);
         return true;
       }
     }
@@ -1880,7 +1921,9 @@ export const creatureGhostKind: GhostKind = {
     const c = registry.get(Number(id));
     if (!c?.remote) return;
     const tapper = c.combat.tapper;
+    const looters = c.state === AIState.DEAD ? (c.mirrorLooters ?? []) : [];
     applyMirror(c, changes, false);
+    if ("looters" in changes || "state" in changes) sendLootableChanges(c, looters);
     // Tap packets are per viewer and not relayed, so each node tells its own viewers.
     if (c.combat.tapper?.playerId !== tapper?.playerId) sendTapStates(c);
   },

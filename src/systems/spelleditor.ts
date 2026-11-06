@@ -11,6 +11,7 @@ import log from "../modules/logger";
 import { getSpriteUrl } from "../modules/spriteSheetManager";
 import { packetManager } from "../socket/packet_manager";
 import { refreshAuthSpells } from "../socket/authentication_pool";
+import { onPeerNews, tellPeers } from "../cluster/peernews";
 import { rowCache, tableCache } from "../services/datacache";
 import permissions from "./permissions";
 import spells from "./spells";
@@ -567,7 +568,8 @@ function sendSpellBook(target: any): void {
  * already apply; this brings the rest up to date: the login workers, which
  * build a spell book from their own copy of the list, and every online player
  * who knows the spell (spell book, hotbar and tooltips are drawn from what
- * the client was last sent).
+ * the client was last sent). In a cluster the region's other nodes are told
+ * which spell it was, for their own players.
  */
 async function spellChanged(name: string): Promise<void> {
   try {
@@ -575,6 +577,23 @@ async function spellChanged(name: string): Promise<void> {
   } catch (error) {
     log.error(`Could not hand the changed spells to the login workers: ${error}`);
   }
+  await spellBooksHere(name);
+  void tellPeers("spell-changed", { name });
+}
+
+/**
+ * Cluster mode: a spell saved or deleted in the editor on another node of the region. The list is shared, and this
+ * node's login workers are handed it when its write is heard (socket/authentication_pool.ts); this node's players who
+ * know the spell are sent their spell book again.
+ */
+onPeerNews("spell-changed", (news) => {
+  const name = news?.name;
+  if (typeof name !== "string" || !name) return;
+  return spellBooksHere(name);
+});
+
+/** Send the spell book again to this node's online players who know the spell `name`. */
+async function spellBooksHere(name: string): Promise<void> {
   for (const live of Object.values(playerCache.list() as Record<string, any>)) {
     if (!live?.wt || !live.username || !live.learnedSpells?.[name]) continue;
     try {

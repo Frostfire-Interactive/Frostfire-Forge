@@ -1,6 +1,7 @@
 // Achievements wired to the engine: the events they count (criteria.ts) handed to the service, progress written on
 // the save tick and when a player leaves, the list a player's window asks for, and the client brought up to date
 // after a reward through the receiver (setBridge). See types.ts for the request.
+import { onPeerNews, tellPeers } from "../../cluster/peernews";
 import log from "../../modules/logger";
 import { getIconUrl } from "../../modules/spriteSheetManager";
 import assetCache from "../../services/assetCache";
@@ -153,11 +154,22 @@ export async function handleEditorPacket(admin: any, type: string, data: any): P
   if (answer.denied) send(wt, packetManager.notify({ message: editor.DENIED }));
   send(wt, packetManager.achievementEditorResult({ ok: answer.ok, errors: answer.errors, fields: answer.fields, id: answer.id, notes: answer.notes, action: type, data: answer.data }));
   if (!answer.changed) return;
-  const updated = packetManager.achievementEditorUpdated({ by: admin.username });
+  achievementEditorsUpdatedHere(admin.username, admin.id);
+  void tellPeers("achievement-editor-updated", { by: admin.username });
+}
+
+/** Tells this node's open achievement editors, but the saver's (`exceptId`), that `by` saved. */
+function achievementEditorsUpdatedHere(by: string, exceptId?: string): void {
+  const updated = packetManager.achievementEditorUpdated({ by });
   for (const other of Object.values(playerCache.list()) as any[]) {
-    if (other?.wt && other.id !== admin.id && editor.mayHaveEditorOpen(other)) send(other.wt, updated);
+    if (other?.wt && other.id !== exceptId && editor.mayHaveEditorOpen(other)) send(other.wt, updated);
   }
 }
+
+/** Cluster mode: a save in the achievement editor on another node of the region. */
+onPeerNews("achievement-editor-updated", (news) => {
+  achievementEditorsUpdatedHere(typeof news?.by === "string" ? news.by : "");
+});
 
 export const canUseEditor = editor.canUseEditor;
 

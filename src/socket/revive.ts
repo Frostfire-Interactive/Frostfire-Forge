@@ -17,6 +17,8 @@ export interface ReviveDeps {
   send(viewer: any, packets: any[]): void;
   ghostPacket(target: any): any[];
   revivePacket(target: any): any[];
+  /** Cluster mode: the same packets to the viewers of the target's mirrors on neighbouring nodes. */
+  relay(target: any, packets: any[]): void;
   broadcastEffects(target: any): void;
   sendPartyStats(target: any): void;
   /** Emits PLAYER_REVIVED. */
@@ -52,6 +54,7 @@ export async function revivePlayer(target: any, deps: ReviveDeps, beforeRevived?
     deps.send(viewer, deps.ghostPacket(target));
     deps.send(viewer, deps.revivePacket(target));
   }
+  deps.relay(target, [...deps.ghostPacket(target), ...deps.revivePacket(target)]);
   deps.broadcastEffects(target);
   deps.sendPartyStats(target);
   beforeRevived?.();

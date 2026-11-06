@@ -92,7 +92,7 @@ test("remote skeletons are found in radius, on their layer", () => {
   expect(skeletons.getInRadius("main", 60, 60, 100).some((s) => s.id === "skeleton_9003")).toBe(false);
 });
 
-test("remote tornadoes are shown with the local ones, and never pull", async () => {
+test("remote tornadoes are shown with the local ones, hurt the players here, and are not taken as this node's own", async () => {
   tornadoes.resetTornadoes();
   const shows: any[] = [];
   const moved: any[] = [];
@@ -111,8 +111,9 @@ test("remote tornadoes are shown with the local ones, and never pull", async () 
   await tornadoes.pull(10_050);
   expect(shows.at(-1)).toEqual({ map: "main", ids: ["t9004"] });
   expect(tornadoes.tornadoesOn("main")).toEqual([]);
+  // The player stands in its eye: hurt, and not moved (the pull is tornadoes.test.ts's to show).
   expect(moved).toEqual([]);
-  expect(hurt).toEqual([]);
+  expect(hurt.map((h) => h.id)).toEqual(["p"]);
   tornadoes.removeRemoteTornado("t9004");
   await tornadoes.tick(20_000);
   expect(shows.at(-1)).toEqual({ map: "main", ids: [] });

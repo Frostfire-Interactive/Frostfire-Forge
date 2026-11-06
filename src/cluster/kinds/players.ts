@@ -49,6 +49,8 @@ function shown(player: any) {
     // Times the effects run out, not seconds left: the state is compared every scan, and a countdown
     // would send every timed effect to the neighbours once a second.
     effects: getEffectsState(player),
+    // The fishing line as it stands (receiver.ts broadcastFishing): a viewer who comes into view is sent it.
+    fishLine: player.fishLine ?? null,
   };
 }
 

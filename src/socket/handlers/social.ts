@@ -21,7 +21,7 @@ import { clearParty } from "../partystate";
 import { randomBytes } from "../../modules/hash";
 import { forgetLook } from "../looks";
 import { syncPartyLayers, queueSpawnPlayerPacket, broadcastPlayerUpdate } from "../aoi";
-import { answerTradeIfAcross, channelLineOk, chatHearing, chatLinksOf, getAnimationNameForDirection, guildDone, guildEditOk, isQuestRateLimited, kickedFromGuild, offerInvitation, officerChat, pushGuild, queueSpawnForReceivers, sendAnimationTo, sendIgnoreAnswer, sendPacket, sendReport, sendTradeState, shownName, subscriptionLocked, tradeRefusal, withSender } from "../receiver";
+import { answerTradeIfAcross, channelLineOk, chatHearing, chatLinksOf, getAnimationNameForDirection, guildDone, guildEditOk, isQuestRateLimited, kickedFromGuild, offerInvitation, officerChat, pushGuild, partyViewChanged, queueSpawnForReceivers, sendAnimationTo, sendIgnoreAnswer, sendPacket, sendReport, sendTradeState, shownName, subscriptionLocked, tradeRefusal, withSender } from "../receiver";
 import type { PacketContext } from "./context";
 
 // Packet handlers moved from receiver.ts's packetReceiver switch (phase 6, Task 1). The case bodies are unchanged.
@@ -194,9 +194,12 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
             wt,
             packetManager.notify({ message: "You have left the party" })
           );
-          if (clusterEnabled()) clearParty(currentPlayer);
-          else currentPlayer.party = [];
-          playerCache.set(currentPlayer.id, currentPlayer);
+          // and the hidden members of another node in view are no longer shown (cluster mode)
+          await partyViewChanged(currentPlayer, () => {
+            if (clusterEnabled()) clearParty(currentPlayer);
+            else currentPlayer.party = [];
+            playerCache.set(currentPlayer.id, currentPlayer);
+          });
           sendPacket(wt, packetManager.updateParty({ members: [] }));
           listener.emit(Events.PARTY_CHANGED, { type: "leave", username: currentPlayer.username, members: [currentPlayer.username] });
 

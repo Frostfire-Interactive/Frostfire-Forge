@@ -132,11 +132,14 @@ export async function kickedFromGuild(actor: any, guildId: number, kickedUsernam
 // What a party or guild change does to a member: their cached player is changed and their client told. Each runs on
 // the node that holds the member (cluster/deliver.ts), at once when that is this one.
 registerPlayerAction("guild-update", (p, { guildId, members, guildName, packet }) => {
+  // A join made on another node (the player editor): the guild name over their head changes for those who see them.
+  const joined = p.guild_id !== guildId || p.guild_name !== guildName;
   p.guild_id = guildId;
   p.guild = members;
   p.guild_name = guildName;
   playerCache.set(p.id, p);
   if (packet) sendPacket(p.wt, packetManager.updateGuild(packet));
+  if (joined) broadcastPlayerUpdate(p);
 });
 registerPlayerAction("guild-kicked", (p) => {
   sendPacket(p.wt, packetManager.updateGuild({ members: [] }));
@@ -145,6 +148,7 @@ registerPlayerAction("guild-kicked", (p) => {
   p.guild = [];
   p.guild_name = null;
   playerCache.set(p.id, p);
+  broadcastPlayerUpdate(p);
 });
 /** The guild was disbanded: `notice` for everyone but the leader who did it. */
 registerPlayerAction("guild-disbanded", (p, { notice }) => {
@@ -157,24 +161,28 @@ registerPlayerAction("guild-disbanded", (p, { notice }) => {
   broadcastPlayerUpdate(p);
 });
 /** The member is in no party now (disbanded, kicked), and told why. */
-registerPlayerAction("party-cleared", (p, { message }) => {
+registerPlayerAction("party-cleared", async (p, { message }) => {
   sendPacket(p.wt, packetManager.updateParty({ members: [] }));
   sendPacket(p.wt, packetManager.notify({ message }));
-  if (clusterEnabled()) clearParty(p);
-  else p.party = [];
-  playerCache.set(p.id, p);
+  await partyViewChanged(p, () => {
+    if (clusterEnabled()) clearParty(p);
+    else p.party = [];
+    playerCache.set(p.id, p);
+  });
 });
 /** The party's members as they now are, with a notice when there is one for this member. */
 registerPlayerAction("party-update", async (p, { members, notice }) => {
   sendPacket(p.wt, packetManager.updateParty({ members }));
   if (notice) sendPacket(p.wt, packetManager.notify({ message: notice }));
-  if (clusterEnabled()) {
-    await trackPacket(String(p.id), () => applyPartyMembers(p, Array.isArray(members) ? members : [], (username) => parties.getPartyId(username)));
-    cacheIfHeld(playerCache, p);
-  } else {
-    p.party = members;
-    playerCache.set(p.id, p);
-  }
+  await partyViewChanged(p, async () => {
+    if (clusterEnabled()) {
+      await trackPacket(String(p.id), () => applyPartyMembers(p, Array.isArray(members) ? members : [], (username) => parties.getPartyId(username)));
+      cacheIfHeld(playerCache, p);
+    } else {
+      p.party = members;
+      playerCache.set(p.id, p);
+    }
+  });
 });
 /** An admin disconnected (/kick) or banned (/ban) the player: their session ends and their connection is closed. */
 registerPlayerAction("admin-kick", (p) => player.kick(p.username, p.wt));
@@ -451,15 +459,45 @@ export async function sendIgnoreAnswer(wt: any, answer: moderation.IgnoreAnswer)
   await sendFriends(answer.unfriended.target, answer.unfriended.theirs);
 }
 
+/** Who a notice is for: the players on a map, its admins only, or the players who hold a permission. */
+export type NoticeAudience = { map?: string; admins?: boolean; permission?: string };
+
+/** Shows a notice to this node's players the audience names. */
+function noticeHere(message: string, audience: NoticeAudience): void {
+  const players = audience.map ? filterPlayersByMap(audience.map) : Object.values(playerCache.list() as Record<string, any>);
+  const packet = packetManager.notify({ message });
+  for (const player of players) {
+    if (!player?.wt) continue;
+    if (audience.admins && !player.isAdmin) continue;
+    if (audience.permission && !moderation.can(player, audience.permission)) continue;
+    sendPacket(player.wt, packet);
+  }
+}
+
+/** Shows a notice to the players the audience names, on this node and (cluster mode) the region's other nodes. */
+export function noticeRegion(message: string, audience: NoticeAudience): void {
+  noticeHere(message, audience);
+  void tellPeers("notice", { message, ...audience });
+}
+
+// Cluster mode: a notice sent from another node of the region, for this node's players it names.
+onPeerNews("notice", (news: { message?: unknown; map?: unknown; admins?: unknown; permission?: unknown }) => {
+  const message = typeof news?.message === "string" ? news.message : "";
+  const map = typeof news?.map === "string" && news.map ? news.map : undefined;
+  const permission = typeof news?.permission === "string" && news.permission ? news.permission : undefined;
+  // A notice for everyone goes by broadcastWorld, never by this news.
+  if (!message || (!map && !permission)) return;
+  noticeHere(message, { map, admins: news.admins === true, permission });
+});
+
 /** Files a report from a player and answers them. The staff online who handle reports are told of one that was filed. */
 export async function sendReport(wt: any, reporter: any, name: unknown, category: unknown, details: unknown): Promise<void> {
   const answer = await moderation.report(reporter, name, category, details);
   sendPacket(wt, packetManager.notify({ message: answer.message }));
   if (!answer.report) return;
+  // On every node of the region: the staff may be anywhere in it.
   const notice = moderation.staffNotice(answer.report);
-  for (const staff of Object.values(playerCache.list() as Record<string, any>)) {
-    if (staff?.wt && moderation.can(staff, "admin.reports")) sendPacket(staff.wt, packetManager.notify({ message: notice }));
-  }
+  noticeRegion(notice, { permission: "admin.reports" });
 }
 
 /**
@@ -1283,11 +1321,22 @@ function broadcastFishing(map: unknown, data: Parameters<typeof packetManager.fi
   const packets = packetManager.fishing(data);
   const angler = playerCache.get(data.id);
   const hidden = !!(angler?.isStealth || angler?.isVanished);
+  // The line as it stands, for a viewer across a block border who comes into view of the angler later: the
+  // angler's mirrors carry it (cluster/kinds/players.ts), and sendAnimationTo sends it from there.
+  if (angler) {
+    const line = angler.fishLine;
+    angler.fishLine = data.state === "cast" ? { x: data.x, y: data.y, bit: false, reeled: false }
+      : data.state === "bite" && line ? { ...line, bit: true }
+      : data.state === "reel" && line ? { ...line, reeled: true }
+      : null;
+  }
   for (const p of filterPlayersByMap(String(map ?? ""))) {
     if (!p?.wt || p.wt.readyState !== 1) continue;
     if (hidden && p.id !== data.id && !p.isAdmin && !p.party?.includes(angler.username)) continue;
     sendPacket(p.wt, packets);
   }
+  // Cluster mode: the viewers of the angler's mirrors see the line too (their node keeps the stealth rule above).
+  relayToMirrorViewers(angler, packets, false);
 }
 
 /** Takes a player's fishing cast off them (its session already ended): the flags, then the pose. */
@@ -1637,6 +1686,38 @@ export async function resendMapMarkers(): Promise<void> {
   }
 }
 
+/**
+ * An NPC edit, for the players of its map: the NPC as the client draws it (added or changed), or the id of one deleted.
+ * `markers`: it touched an inn or a shop, so everyone's map markers are sent again.
+ */
+export type NpcChange = { map: string; updated?: Record<string, any>; removed?: number; markers?: boolean };
+
+/** Shows this node's players of the map an NPC edit. */
+function npcChangeHere(change: NpcChange): void {
+  const packet = change.updated ? packetManager.npcUpdated(change.updated as any) : packetManager.npcRemoved(Number(change.removed));
+  for (const p of filterPlayersByMap(change.map)) {
+    if (p.wt && p.wt.readyState === 1) sendPacket(p.wt, packet);
+  }
+  if (change.markers) void resendMapMarkers();
+}
+
+/** Shows an NPC edit to the players of its map on this node and (cluster mode) the region's other nodes. */
+export function npcChanged(change: NpcChange): void {
+  npcChangeHere(change);
+  void tellPeers("npc", change);
+}
+
+// Cluster mode: an NPC edited on another node of the region. The list is shared and this node was told it was
+// written (services/assetCache.ts): its players of the map are shown the edit.
+onPeerNews("npc", (news: { map?: unknown; updated?: unknown; removed?: unknown; markers?: unknown }) => {
+  const map = typeof news?.map === "string" ? news.map : "";
+  if (!map) return;
+  const markers = news.markers === true;
+  const removed = Number(news.removed);
+  if (news.updated && typeof news.updated === "object") npcChangeHere({ map, updated: news.updated as Record<string, any>, markers });
+  else if (Number.isInteger(removed) && removed > 0) npcChangeHere({ map, removed, markers });
+});
+
 /** What is left of a player's item cooldowns, sent when they log in so their bags and hotbar show them. */
 async function sendItemCooldowns(wt: any, username: string): Promise<void> {
   const shared = consumables.cooldownLeft(username);
@@ -1781,6 +1862,8 @@ import "../systems/itemeditor";
 import "../systems/mounteditor";
 import "../systems/spelleditor";
 import * as weatherEditor from "../systems/weathereditor";
+import { TORNADO, nextCycleIn, settledPick } from "../systems/weathercycle";
+import { onPeerNews, tellPeers } from "../cluster/peernews";
 // Keeps the startup load order: the handler modules, which import these, load at the first packet.
 import "../systems/classeditor";
 import * as mailboxEditor from "../systems/mailboxeditor";
@@ -1800,7 +1883,7 @@ import { adopt as adoptCutscene, adoptChain as adoptCutsceneChain, setCutsceneBr
 import "../systems/creatures/editor";
 import { setCreatureEngineBridge } from "../systems/creatures/bridge";
 import { spellMissChance } from "../systems/creatures/combat";
-import { setPlayerDeathHandler, resyncZonesFor } from "../systems/groundaoe";
+import { setPlayerDeathHandler, setMirrorZoneHitHandler, resyncZonesFor } from "../systems/groundaoe";
 import bags from "../systems/bags";
 import currencySystem from "../systems/currency";
 // Keeps the startup load order: the handler modules, which import these, load at the first packet.
@@ -1824,7 +1907,7 @@ import spatialGrid from "../services/spatialgrid";
 import { randomBytes } from "../modules/hash";
 import { equipmentSheetsToken, getPlayerSpriteSheetData, isSpriteSheetSystemAvailable, getIconUrl, getSpriteUrl, getMountSpriteUrl, getNpcSpriteLayers } from "../modules/spriteSheetManager";
 import { notePoseCall, notePoseSelf } from "./posestats";
-import { setLayerChangeHandler, initializePlayerAOI, updatePlayerAOI, shouldUpdateAOI, broadcastToAOI, broadcastPoseToAOI, broadcastToAOIBestEffort, broadcastStatsUpdateToAOI, broadcastToAOIBestEffortAtPosition, broadcastCastToAOI, clearGroundPreviewForAOI, getPlayersNearPoint, handleMapChangeAOI, syncPartyLayers, queueSpawnPlayerPacket, broadcastPlayerUpdate, sendLoadPlayersChunked, cleanupKickedSession, findPlayersWithTargetInAOI, aoiProf, updateMirrorViewers } from "./aoi";
+import { setLayerChangeHandler, initializePlayerAOI, updatePlayerAOI, shouldUpdateAOI, broadcastToAOI, broadcastPoseToAOI, broadcastToAOIBestEffort, broadcastStatsUpdateToAOI, broadcastToAOIBestEffortAtPosition, broadcastCastToAOI, clearGroundPreviewForAOI, getPlayersNearPoint, handleMapChangeAOI, syncPartyLayers, queueSpawnPlayerPacket, broadcastPlayerUpdate, sendLoadPlayersChunked, cleanupKickedSession, findPlayersWithTargetInAOI, aoiProf, updateMirrorViewers, relayToMirrorViewers, canSee } from "./aoi";
 // Keeps the startup load order: the handler modules, which import these, load at the first packet.
 import "./server.ts";
 import { realmWhitelist, isWhitelistEnabled } from "../services/whitelist";
@@ -1861,7 +1944,6 @@ import { forgetVictim, recordAttack } from "../cluster/attackers";
 import type { EffectResult } from "../cluster/effects";
 // Keeps the startup load order: the handler modules, which import these, load at the first packet.
 import "../cluster/aoievent";
-import "../cluster/strip";
 import { playerGhostKind } from "../cluster/kinds/players";
 export const defaultMap = (settings as any).default_map?.replace(".json", "") || "main";
 /** The largest frame the server takes (webtransport.maxPayloadMB), and whether it is a benchmark server, which takes it from anyone. */
@@ -1902,7 +1984,8 @@ async function resolveWorldWeather(worldName: string): Promise<{ weather: string
     const cached = resolvedWeatherCache.get(normalized);
     if (cached) return cached;
 
-    const randomWeather = randomPick(await assetCache.get("weather") as WeatherData[]);
+    // The weather of the stretch (systems/weathercycle.ts): the one every node holding part of the world settles on.
+    const randomWeather = settledPick(await assetCache.get("weather") as WeatherData[], normalized);
     if (randomWeather) {
       const resolved = { weather: randomWeather.name, weatherData: randomWeather };
       resolvedWeatherCache.set(normalized, resolved);
@@ -1920,20 +2003,10 @@ async function resolveWorldWeather(worldName: string): Promise<{ weather: string
   return { weather: weatherName, weatherData };
 }
 
-/**
- * USER REQUEST 2026-10-17 (tornadoes, systems/tornadoes.ts): "tornado" is a thunderstorm with tornadoes. The client
- * draws it as a thunderstorm (rain, dark sky, lightning) and a world on it always has a tornado. Like "clear" it is a
- * word of /weather that needs no row of the weather table: without one it carries the thunderstorm's values. It is
- * never picked at random: a random world gets tornadoes by the rare chance every thunderstorm has.
- */
-export const TORNADO = "tornado";
+// "tornado" is a thunderstorm with tornadoes, a word of /weather that needs no row of the table (systems/weathercycle.ts).
+export { TORNADO };
 /** The name the client draws a weather by. */
 const lookOf = (weather: string) => (weather === TORNADO ? "thunderstorm" : weatherApi.shownAs(weather));
-/** A weather of the table picked at random for a "random" world (never "tornado"); null when there is none. */
-export const randomPick = (all: WeatherData[] | null | undefined): WeatherData | null => {
-  const pool = (all || []).filter((w) => w.name !== TORNADO);
-  return pool.length ? pool[Math.floor(Math.random() * pool.length)] : null;
-};
 /** A weather's row, a "tornado" without one taking the thunderstorm's. */
 export const rowOf = (all: WeatherData[] | null | undefined, name: string): WeatherData | null =>
   all?.find((w) => w.name === name) || (name === TORNADO ? all?.find((w) => w.name === "thunderstorm") || null : null);
@@ -1957,8 +2030,22 @@ export const weatherShown = async (weather: string, weatherData: WeatherData | n
   return { weather: look, weatherData: data };
 };
 
+/** Shows a world's players on this node the weather it shows now. A "random" world has settled on it. */
+async function showWeatherHere(worldName: string, weatherName: string, weatherData: WeatherData | null): Promise<void> {
+  // Only a "random" world has settled on a weather: it has settled on this one now.
+  if (resolvedWeatherCache.has(worldName)) resolvedWeatherCache.set(worldName, { weather: weatherName, weatherData });
+  const shown = await weatherShown(weatherName, weatherData);
+  for (const playerId of mapIndex.getPlayersOnMap(worldName)) {
+    const player = playerCache.get(playerId);
+    if (player?.wt && player.wt.readyState === 1) {
+      sendPacket(player.wt, packetManager.changeWeather(shown));
+    }
+  }
+}
+
 // What the weather editor (systems/weathereditor.ts) needs from the socket
 // layer: which weather each world shows, and the players to show a change to.
+// Cluster mode: the region's other nodes are told of each, for their players of the world (the news below).
 const weatherBridge: weatherEditor.WeatherEditorBridge = {
   worlds: async () => (await getLiveWorlds()).map((world) => ({
     name: world.name,
@@ -1972,27 +2059,40 @@ const weatherBridge: weatherEditor.WeatherEditorBridge = {
     await worlds.update({ name: worldName, weather: weatherName, players: existingWorld?.players || 0 });
     if (existingWorld) existingWorld.weather = weatherName;
     resolvedWeatherCache.delete(worldName);
+    void tellPeers("weather", { world: worldName, set: weatherName });
   },
   show: async (worldName, weatherName, weatherData) => {
-    // Only a "random" world has settled on a weather: it has settled on this one now.
-    if (resolvedWeatherCache.has(worldName)) resolvedWeatherCache.set(worldName, { weather: weatherName, weatherData });
-    const shown = await weatherShown(weatherName, weatherData);
-    for (const playerId of mapIndex.getPlayersOnMap(worldName)) {
-      const player = playerCache.get(playerId);
-      if (player?.wt && player.wt.readyState === 1) {
-        sendPacket(player.wt, packetManager.changeWeather(shown));
-      }
-    }
+    await showWeatherHere(worldName, weatherName, weatherData);
+    void tellPeers("weather", { world: worldName, shown: weatherName });
   },
 };
 weatherEditor.setWeatherEditorBridge(weatherBridge);
+
+// Cluster mode: a weather set (/weather, the weather editor) or shown (an edited row) on another node of the region.
+// The worlds table and the weather rows are shared, and already hold it: this node takes the setting into what it keeps
+// of the world, and shows its own players of the world what it shows now.
+onPeerNews("weather", async (news: { world?: unknown; set?: unknown; shown?: unknown }) => {
+  const world = typeof news?.world === "string" ? news.world : "";
+  if (!world) return;
+  if (typeof news.set === "string") {
+    const existingWorld = worldsCache.find((w) => w.name === world);
+    if (existingWorld) existingWorld.weather = news.set;
+    resolvedWeatherCache.delete(world);
+  }
+  if (typeof news.shown === "string" && resolvedWeatherCache.has(world)) {
+    resolvedWeatherCache.set(world, { weather: news.shown, weatherData: rowOf(await assetCache.get("weather") as WeatherData[], news.shown) });
+  }
+  const { weather, weatherData } = await resolveWorldWeather(world);
+  await showWeatherHere(world, weather, weatherData);
+});
 
 // A world on "weather_api" follows a real place (systems/weatherapi.ts): a
 // reading that differs from the last is shown at once on every such world.
 void weatherApi.startWeatherApi(async (row) => {
   try {
     for (const world of await weatherBridge.worlds()) {
-      if (world.weather === weatherApi.WEATHER_API) weatherBridge.show(world.name, weatherApi.WEATHER_API, row);
+      // Here only: every node reads the real weather for itself.
+      if (world.weather === weatherApi.WEATHER_API) void showWeatherHere(world.name, weatherApi.WEATHER_API, row);
     }
   } catch (error) {
     log.error(`Weather API: the reading could not be shown: ${error}`);
@@ -2653,6 +2753,44 @@ export function queueSpawnForReceivers(spawnedPlayer: any, receivers: any[], spr
   }
 }
 
+/**
+ * Runs `change`, a change of the player's party, and then shows or hides the hidden (stealthed, vanished) players in
+ * their view to match: a party member is shown them (canSee). Visibility is checked only when a player enters a view
+ * or their hidden flag flips (socket/aoi.ts, and cluster/kinds/players.ts for the players of other nodes), so nothing
+ * else would. Covers both the players of this node and the mirrors of other nodes' players.
+ */
+export async function partyViewChanged(p: any, change: () => unknown): Promise<void> {
+  const hidden: { other: any; held: () => any }[] = [];
+  for (const id of p?.aoi?.playersInAOI ?? []) {
+    const mirror = mirrorPlayers.get(String(id));
+    const local = !mirror && String(id) !== String(p.id) ? playerCache.get(id) : undefined;
+    const other = mirror || local;
+    if (other && (other.isStealth || other.isVanished)) {
+      hidden.push({ other, held: mirror ? () => mirrorPlayers.get(String(id)) : () => playerCache.get(id) });
+    }
+  }
+  const before = hidden.map(({ other }) => canSee(p, other));
+  await change();
+  if (!p?.wt) return;
+  hidden.forEach(({ other: mirror, held }, i) => {
+    // Gone, or out of view, while the change ran.
+    if (held() !== mirror || !p.aoi?.playersInAOI?.has(mirror.id)) return;
+    const shown = canSee(p, mirror);
+    if (shown === before[i]) return;
+    if (shown) {
+      const spawnData = queueSpawnPlayerPacket(mirror);
+      if (!spawnData) return;
+      despawnBatchQueue.get(p.id)?.delete(mirror.id);
+      if (!spawnBatchQueue.has(p.id)) spawnBatchQueue.set(p.id, new Map());
+      spawnBatchQueue.get(p.id)!.set(mirror.id, spawnData);
+    } else {
+      spawnBatchQueue.get(p.id)?.delete(mirror.id);
+      if (!despawnBatchQueue.has(p.id)) despawnBatchQueue.set(p.id, new Set());
+      despawnBatchQueue.get(p.id)!.add(mirror.id);
+    }
+  });
+}
+
 async function flushSpawnBatches() {
   if (spawnBatchQueue.size === 0) return;
 
@@ -3305,12 +3443,13 @@ export function releaseDraggedBy(adminId: string | number) {
 
     const draggedPlayer = playerCache.get(draggedId.toString());
     if (!draggedPlayer) continue;
-    const dragStopData = { id: draggedId, adminId };
+    const dragStopPacket = packetManager.dragPlayerStop({ id: draggedId, adminId });
     for (const p of filterPlayersByMap(draggedPlayer.location.map)) {
       if (p.wt && p.wt.readyState === 1) {
-        sendPacket(p.wt, packetManager.dragPlayerStop(dragStopData));
+        sendPacket(p.wt, dragStopPacket);
       }
     }
+    relayToMirrorViewers(draggedPlayer, dragStopPacket, false);
   }
 }
 
@@ -4335,10 +4474,12 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
       if (relogPlayer?.isDead) {
         sendPacket(wt, packetManager.playerDied({ id: relogPlayer.id }));
       } else if (relogPlayer?.isGhost) {
+        const ghostPacket = packetManager.playerGhost({ id: relogPlayer.id, ghost: true });
         const viewersInMap = filterPlayersByMap(relogPlayer.location.map);
         viewersInMap.forEach((p) => {
-          sendPacket(p.wt, packetManager.playerGhost({ id: relogPlayer.id, ghost: true }));
+          sendPacket(p.wt, ghostPacket);
         });
+        relayToMirrorViewers(relogPlayer, ghostPacket, false);
       }
     }), 200);
 
@@ -4922,20 +5063,19 @@ export async function handlePlayerDeath(target: any, killer: any, info: { damage
   }
 
   globalStateRevision++;
+  const deathPacket = packetManager.updateStats({
+    id: killer?.id,
+    target: target.id,
+    stats: deathStats,
+    isCrit: info.isCrit,
+    damage: info.damage,
+  });
   const playersInMap = filterPlayersByMap(target.location.map);
   playersInMap.forEach((p) => {
-
-    sendPacket(
-      p.wt,
-      packetManager.updateStats({
-        id: killer?.id,
-        target: target.id,
-        stats: deathStats,
-        isCrit: info.isCrit,
-        damage: info.damage,
-      })
-    );
+    sendPacket(p.wt, deathPacket);
   });
+  // Cluster mode: the viewers of the target's mirrors on neighbouring nodes see them fall, with the killing number.
+  relayToMirrorViewers(target, deathPacket, false);
 
   // The victim stays a corpse at 0 HP until they release. No teleport, no
   // revive yet — the client shows the Release Spirit popup from this.
@@ -5179,6 +5319,7 @@ export async function castSpellOnCreature(wt: any, currentPlayer: any, spell: Sp
   });
   if (projectile.length) {
     for (const p of filterPlayersByMap(after.location.map)) sendPacketBestEffort(p.wt, projectile);
+    relayToMirrorViewers(after, projectile, true);
   }
 
   if (travelMs > 0) {
@@ -5262,6 +5403,12 @@ setCreatureEngineBridge({
   },
 });
 setPlayerDeathHandler(handlePlayerDeath);
+// Cluster mode: a ground AoE zone's tick on a player of a neighbouring node goes to that player's owner, which applies it.
+setMirrorZoneHitHandler((caster, mirror, zone, damage) => hitRemotePlayer(caster, mirror, remoteHit(caster, zone.spell ? { ...zone.spell, effects: zone.effects ?? [] } : null, damage, false, {
+  skipEffects: !zone.spell || !zone.effects?.length,
+  showsDamage: damage !== 0,
+  harmful: zone.damageType !== "heal",
+})));
 
 // What the cutscene sessions (systems/cutsceneplayer.ts) need of the socket layer: packets to a player, a walk stopped and a
 // cast interrupted for a scene that holds them, and a player moved when a chain of scenes or a scene's end places them.
@@ -5818,18 +5965,14 @@ export async function hitRemotePlayer(caster: any, target: any, hit: PlayerHit):
   caster.last_attack = performance.now();
   if (hit.showsDamage && result.stats) {
     const packets = packetManager.updateStats({ id: caster.id, target: target.id, stats: result.stats, isCrit: hit.isCrit, damage: hit.damage, absorb: result.absorb || 0 });
-    if (result.outcome === "killed") {
-      // The owner's death flow shows nothing to the viewers here, so the number goes to everyone.
-      broadcastStatsUpdateToAOI(target, caster, packets);
-    } else {
-      // The owner showed the same number to the target's viewers, and its relay (ghosts.relay) already
-      // reached those on this node, the caster among them. Only the receivers it did not reach are sent it.
-      const relayed = new Set(findPlayersWithTargetInAOI(target.id).map((viewer: any) => String(viewer.id)));
-      const receivers = new Map<string, any>();
-      if (caster.wt) receivers.set(String(caster.id), caster);
-      for (const viewer of findPlayersWithTargetInAOI(caster.id)) if (viewer.wt) receivers.set(String(viewer.id), viewer);
-      for (const [id, receiver] of receivers) if (!relayed.has(id)) sendPacketBestEffort(receiver.wt, packets);
-    }
+    // The owner showed the same number to the target's viewers (on a kill, its death flow did), and its relay
+    // (relayToMirrorViewers) already reached those on this node, the caster among them when they see the target.
+    // Only the receivers it did not reach are sent it.
+    const relayed = new Set(findPlayersWithTargetInAOI(target.id).map((viewer: any) => String(viewer.id)));
+    const receivers = new Map<string, any>();
+    if (caster.wt) receivers.set(String(caster.id), caster);
+    for (const viewer of findPlayersWithTargetInAOI(caster.id)) if (viewer.wt) receivers.set(String(viewer.id), viewer);
+    for (const [id, receiver] of receivers) if (!relayed.has(id)) sendPacketBestEffort(receiver.wt, packets);
   }
   if (result.outcome === "killed") listener.emit(Events.PLAYER_DEATH, { player: target, killer: caster });
   return true;
@@ -6099,12 +6242,11 @@ resurrection.setOnSicknessExpiry(async (p) => {
   p.stats = synced;
   playerCache.set(p.id, p);
   globalStateRevision++;
+  const statsPacket = packetManager.updateStats({ id: p.id, target: p.id, stats: p.stats });
   filterPlayersByMap(p.location.map).forEach((v) => {
-    sendPacket(
-      v.wt,
-      packetManager.updateStats({ id: p.id, target: p.id, stats: p.stats })
-    );
+    sendPacket(v.wt, statsPacket);
   });
+  relayToMirrorViewers(p, statsPacket, false);
   spellEffects.broadcastEffectsUpdate(p);
   sendStatsToPartyMembers(p.username, p.id, p.stats);
 });
@@ -6143,6 +6285,7 @@ export function reviveDeps(): ReviveDeps {
     send: (viewer, packets) => sendPacket(viewer.wt, packets),
     ghostPacket: (target) => packetManager.playerGhost({ id: target.id, ghost: false }),
     revivePacket: (target) => packetManager.revive({ id: target.id, target: target.id, stats: target.stats }),
+    relay: (target, packets) => relayToMirrorViewers(target, packets, false),
     broadcastEffects: (target) => spellEffects.broadcastEffectsUpdate(target),
     sendPartyStats: (target) => { void sendStatsToPartyMembers(target.username, target.id, target.stats); },
     revived: (target) => { listener.emit(Events.PLAYER_REVIVED, { player: target }); },
@@ -6421,11 +6564,14 @@ export async function sendAnimationTo(targetWs: any, name: string, playerId?: st
     noteLook(targetWs, String(targetPlayer.id), lookSignature(spriteSheetPacketData));
   }
   // a player who comes into view while fishing comes with their line (castFish)
-  const line = castingFish(targetPlayer) ? fishing.session(targetPlayer.id) : undefined;
+  // A mirror (cluster mode) has no session here: its line comes with its state (broadcastFishing keeps it).
+  const session = !targetPlayer.remote && castingFish(targetPlayer) ? fishing.session(targetPlayer.id) : undefined;
+  const line = targetPlayer.remote ? targetPlayer.fishLine
+    : session ? { x: session.x, y: session.y, bit: !!session.bitAt, reeled: !!(session.bitAt && session.reeledAt) } : null;
   if (line && targetWs !== targetPlayer.wt) {
     sendPacket(targetWs, packetManager.fishing({ id: targetPlayer.id, state: "cast", x: line.x, y: line.y }));
-    if (line.bitAt) sendPacket(targetWs, packetManager.fishing({ id: targetPlayer.id, state: "bite" }));
-    if (line.bitAt && line.reeledAt) sendPacket(targetWs, packetManager.fishing({ id: targetPlayer.id, state: "reel" }));
+    if (line.bit) sendPacket(targetWs, packetManager.fishing({ id: targetPlayer.id, state: "bite" }));
+    if (line.bit && line.reeled) sendPacket(targetWs, packetManager.fishing({ id: targetPlayer.id, state: "reel" }));
   }
 }
 
@@ -6465,24 +6611,27 @@ function scheduleLightning() {
 
 scheduleLightning();
 
+/** How far past the turn of a stretch the cycle runs: a timer that fires a little early still settles on the new one. */
+const WEATHER_CYCLE_SLACK_MS = 1000;
+
+// A "random" world settles again at the turn of each stretch (systems/weathercycle.ts), on every node of a cluster at
+// the same moment and on the same weather: each shows its own players of the world.
 function scheduleWeatherCycle() {
   setTimeout(async () => {
     try {
+      const all = await assetCache.get("weather") as WeatherData[];
       for (const world of worldsCache) {
         if (world.weather !== "random") continue;
 
-        const randomWeather = randomPick(await assetCache.get("weather") as WeatherData[]);
-        if (!randomWeather) continue;
-        resolvedWeatherCache.set(world.name, { weather: randomWeather.name, weatherData: randomWeather });
+        const settled = settledPick(all, world.name);
+        if (!settled) continue;
+        resolvedWeatherCache.set(world.name, { weather: settled.name, weatherData: settled });
 
-        const playerIds = mapIndex.getPlayersOnMap(world.name);
-        for (const playerId of playerIds) {
+        const shown = await weatherShown(settled.name, settled);
+        for (const playerId of mapIndex.getPlayersOnMap(world.name)) {
           const player = playerCache.get(playerId);
           if (player?.wt && player.wt.readyState === 1) {
-            sendPacket(
-              player.wt,
-              packetManager.changeWeather(await weatherShown(randomWeather.name, randomWeather))
-            );
+            sendPacket(player.wt, packetManager.changeWeather(shown));
           }
         }
       }
@@ -6490,7 +6639,7 @@ function scheduleWeatherCycle() {
       // silently ignore
     }
     scheduleWeatherCycle();
-  }, 30 * 60 * 1000);
+  }, nextCycleIn() + WEATHER_CYCLE_SLACK_MS);
 }
 
 // What the tornadoes (systems/tornadoes.ts) need from the socket layer, and their tick.

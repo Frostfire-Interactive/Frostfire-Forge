@@ -9,7 +9,7 @@ mock.module("../controllers/sqldatabase", () => databaseModule({
 }));
 
 const playerCache = (await import("../services/playermanager")).default;
-const { default: layerManager, blockOf } = await import("../services/layermanager");
+const { default: layerManager, blockOf, MAX_PLAYERS_PER_LAYER } = await import("../services/layermanager");
 const mapIndex = (await import("../services/mapindex")).default;
 const spatialGrid = (await import("../services/spatialgrid")).default;
 const aoiReverse = await import("../services/aoiReverseIndex");
@@ -51,7 +51,7 @@ beforeEach(() => {
 // layer manager, so the next player to arrive lands on layer_2.
 function fillFirstLayer(mapName: string, x: number, y: number): void {
   const block = blockOf(x, y);
-  for (let i = 0; layerManager.countInBlock(`${mapName}:layer_1`, block) < 50; i++) {
+  for (let i = 0; layerManager.countInBlock(`${mapName}:layer_1`, block) < MAX_PLAYERS_PER_LAYER; i++) {
     layerManager.assignPlayerToLayer(`filler_${mapName}_${i}`, mapName, x, y);
   }
 }

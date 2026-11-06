@@ -18,7 +18,7 @@ import { credit as creditObjective } from "../../systems/quests/objectives";
 import { listSpriteSheets, listIcons } from "../../systems/creatures/editor";
 import { listener } from "../../modules/event_bus";
 import { packetManager } from "../packet_manager";
-import { NPC_INTERACT_RADIUS, filterPlayersByMap, getInventorySlots, isQuestRateLimited, patchInventoryBagSlots, resendMapMarkers, sendPacket, sendQuestMarkersFor, sendVendorAnswer, sendVendorStock, subscriptionLocked, vendorFor, vendorStockFrom } from "../receiver";
+import { NPC_INTERACT_RADIUS, getInventorySlots, isQuestRateLimited, npcChanged, patchInventoryBagSlots, resendMapMarkers, sendPacket, sendQuestMarkersFor, sendVendorAnswer, sendVendorStock, subscriptionLocked, vendorFor, vendorStockFrom } from "../receiver";
 import type { PacketContext } from "./context";
 
 // Packet handlers moved from receiver.ts's packetReceiver switch (phase 6, Task 1). The case bodies are unchanged.
@@ -485,7 +485,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           await npcSystem.add(newNpc);
           const updatedNpcs = await npcSystem.list();
           await assetCache.set("npcs", updatedNpcs);
-          if (newNpc.innkeeper || vendors.isVendor(newNpc)) void resendMapMarkers();
 
           const createdNpc = updatedNpcs
             .filter((n: Npc) => n.map === mapName)
@@ -515,15 +514,9 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
             }
           }
 
+          // The players of the map see it on every node of the region; an inn or a shop is marked on everyone's map.
           if (createdNpc) {
-            const resolvedNpc = await resolveNpcForClient(createdNpc);
-            const updatePacket = packetManager.npcUpdated(resolvedNpc);
-            const playersInMap = filterPlayersByMap(mapName);
-            for (const p of playersInMap) {
-              if (p.wt && p.wt.readyState === 1) {
-                sendPacket(p.wt, updatePacket);
-              }
-            }
+            npcChanged({ map: mapName, updated: await resolveNpcForClient(createdNpc), markers: !!(newNpc.innkeeper || vendors.isVendor(newNpc)) });
           }
 
           log.info(`NPC added by ${currentPlayer.username} on map ${mapName}`);
@@ -602,19 +595,13 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           }
 
           const updatedNpc = updatedNpcs.find((n: Npc) => n.id === npcData.id);
+          // On every node of the region. It may have become an innkeeper or a vendor, or stopped being one.
           if (updatedNpc) {
             const resolvedNpc = await resolveNpcForClient(updatedNpc);
-            const updatePacket = packetManager.npcUpdated(resolvedNpc);
-            const playersInMap = filterPlayersByMap(resolvedNpc.map);
-            for (const p of playersInMap) {
-              if (p.wt && p.wt.readyState === 1) {
-                sendPacket(p.wt, updatePacket);
-              }
-            }
+            npcChanged({ map: resolvedNpc.map, updated: resolvedNpc, markers: true });
+          } else {
+            void resendMapMarkers();
           }
-
-          // It may have become an innkeeper or a vendor, or stopped being one.
-          void resendMapMarkers();
           sendPacket(wt, packetManager.notify({ message: "NPC saved successfully." }));
           log.info(`NPC ${npcData.id} saved by ${currentPlayer.username}`);
         } catch (error: any) {
@@ -666,13 +653,7 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           const updatedNpc = updatedNpcs.find((n: Npc) => n.id === id);
           if (updatedNpc) {
             const resolvedNpc = await resolveNpcForClient(updatedNpc);
-            const updatePacket = packetManager.npcUpdated(resolvedNpc);
-            const playersInMap = filterPlayersByMap(resolvedNpc.map);
-            for (const p of playersInMap) {
-              if (p.wt && p.wt.readyState === 1) {
-                sendPacket(p.wt, updatePacket);
-              }
-            }
+            npcChanged({ map: resolvedNpc.map, updated: resolvedNpc });
           }
 
           log.info(`NPC ${id} moved by ${currentPlayer.username}`);
@@ -715,16 +696,8 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           await assetCache.set("npcs", updatedNpcs);
           // Nobody's home is at an innkeeper that is gone.
           if (existingNpc.innkeeper) await homes.innGone(id).catch((error) => log.error(`The homes at NPC ${id} could not be cleared: ${error}`));
-          // Its inn or its shop is no longer marked on anyone's map.
-          if (existingNpc.innkeeper || vendors.isVendor(existingNpc)) void resendMapMarkers();
-
-          const removePacket = packetManager.npcRemoved(id);
-          const playersInMap = filterPlayersByMap(mapName);
-          for (const p of playersInMap) {
-            if (p.wt && p.wt.readyState === 1) {
-              sendPacket(p.wt, removePacket);
-            }
-          }
+          // Gone for the players of its map on every node of the region; its inn or its shop is no longer marked on anyone's map.
+          npcChanged({ map: mapName, removed: id, markers: !!(existingNpc.innkeeper || vendors.isVendor(existingNpc)) });
 
           sendPacket(wt, packetManager.notify({ message: "NPC deleted successfully." }));
           log.info(`NPC ${id} deleted by ${currentPlayer.username}`);

@@ -347,7 +347,7 @@ test("on a hit that landed, every viewer here gets the damage number once: the o
   expect([caster, seesBoth, seesCasterOnly, seesMirrorOnly].map(numbersSeen)).toEqual([1, 1, 1, 1]);
 });
 
-test("on a kill nothing was relayed, so every viewer is sent the damage number here", async () => {
+test("on a kill too, every viewer here gets the damage number once: the owner relays the fall to the mirror's viewers", async () => {
   const { caster, mirror } = casterNode();
   const seesBoth = viewer("v1");
   const seesCasterOnly = viewer("v2");
@@ -357,6 +357,11 @@ test("on a kill nothing was relayed, so every viewer is sent the damage number h
   sees(seesBoth, "c1");
   sees(seesCasterOnly, "c1");
   sees(seesMirrorOnly, "t1");
+  // The owner's death handler shows its viewers the number and relays it to the viewers of the mirror here.
+  ownerSees = (hit) => {
+    const packets = [new TextEncoder().encode(JSON.stringify({ type: "UPDATESTATS", data: { id: hit.casterId, target: "t1", damage: hit.damage } }))];
+    broadcastToAOIBestEffort(mirror, packets as any, false);
+  };
   ownerAnswer = { outcome: "killed", stats: { health: 0 }, absorb: 0 };
   await helpers().hitRemotePlayer(caster, mirror, hitOf());
   expect([caster, seesBoth, seesCasterOnly, seesMirrorOnly].map(numbersSeen)).toEqual([1, 1, 1, 1]);

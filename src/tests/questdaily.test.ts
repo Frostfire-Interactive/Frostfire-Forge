@@ -109,6 +109,7 @@ mock.module("../controllers/sqldatabase", () => databaseModule({
 
 mock.module("../services/assetCache", () => ({
   default: {
+    onChange: () => {},
     get: async (_key: string) => null,
     set: async (_key: string, _value: any) => {},
     add: async (_key: string, _value: any) => {},

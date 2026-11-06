@@ -982,6 +982,15 @@ export function broadcastStatsUpdateToAOI(
 }
 
 /**
+ * Cluster mode: what a sender loop of its own (the map's players here, a player's viewers here) told this node's
+ * players about `player` reaches the viewers of the player's mirrors on neighbouring nodes too. A mirror relays nothing.
+ */
+export function relayToMirrorViewers(player: any, packetData: any[], bestEffort: boolean): void {
+  if (!player || player.remote || player.id == null || !packetData?.length) return;
+  ghosts.relay("player", String(player.id), packetData, bestEffort);
+}
+
+/**
  * Broadcast a packet as datagrams to players on a map whose AOI radius covers
  * the given position. Used for entity-targeted stats broadcasts (entities are
  * not tracked in playersInAOI, so position distance stands in for visibility).

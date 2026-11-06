@@ -50,6 +50,7 @@ const npcs: Npc[] = [
 
 mock.module("../services/assetCache", () => ({
   default: {
+    onChange: () => {},
     get: async (key: string) => (key === "npcs" ? npcs : null),
     set: async (_key: string, _value: any) => {},
     add: async (_key: string, _value: any) => {},

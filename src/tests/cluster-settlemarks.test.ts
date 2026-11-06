@@ -32,7 +32,10 @@ const assetItems = [item("Iron Ore"), item("Health Potion")];
 const assetValues = new Map<string, any>([["items", assetItems]]);
 const assetNested = new Map<string, Map<string, any>>();
 mock.module("../services/assetCache", () => ({
+  onWrite: () => () => {},
+  changedElsewhere: () => {},
   default: {
+    onChange: () => {},
     get: async (key: string) => assetValues.get(key) ?? null,
     set: async (key: string, value: any) => { assetValues.set(key, value); },
     add: async (key: string, value: any) => { assetValues.set(key, value); },

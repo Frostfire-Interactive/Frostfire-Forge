@@ -6,6 +6,7 @@ import spellEffects from "../../systems/spelleffects";
 import { Events } from "../../systems/events";
 import { listener } from "../../modules/event_bus";
 import { packetManager } from "../packet_manager";
+import { relayToMirrorViewers } from "../aoi";
 import { GHOST_TELEPORT_DELAY_MS, REVIVE_OFFER_RADIUS, bumpStateRevision, filterPlayersByMap, findGraveyardSpawn, forceStopPlayerMovement, resyncNpcChunks, sendPacket, sendStatsToPartyMembers, stateRevision } from "../receiver";
 import type { PacketContext } from "./context";
 
@@ -57,12 +58,12 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         bumpStateRevision();
         const releaseMap = currentPlayer.location.map;
         const releaseId = currentPlayer.id;
+        const releasePacket = packetManager.playerGhost({ id: releaseId, ghost: true, x: spawn.x, y: spawn.y, map: releaseMap, pendingTeleport: true });
         filterPlayersByMap(releaseMap).forEach((p) => {
-          sendPacket(
-            p.wt,
-            packetManager.playerGhost({ id: releaseId, ghost: true, x: spawn.x, y: spawn.y, map: releaseMap, pendingTeleport: true })
-          );
+          sendPacket(p.wt, releasePacket);
         });
+        // Cluster mode: the viewers of the player's mirrors on neighbouring nodes see the release too.
+        relayToMirrorViewers(currentPlayer, releasePacket, false);
         listener.emit(Events.PLAYER_GHOST_RELEASED, { player: currentPlayer });
 
         setTimeout(() => {
@@ -72,22 +73,19 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           playerCache.set(p.id, p);
           void resyncNpcChunks(p, p.wt); // the graveyard's NPCs
           bumpStateRevision();
-          filterPlayersByMap(p.location.map).forEach((v) => {
-            sendPacket(
-              v.wt,
-              packetManager.moveXY({
-                i: p.id,
-                d: { x: spawn.x, y: spawn.y, dr: "down" },
-                r: stateRevision(),
-                s: p.isStealth ? 1 : 0
-              })
-            );
-            // Ghost spawn signal: render from here, at the graveyard.
-            sendPacket(
-              v.wt,
-              packetManager.playerGhost({ id: p.id, ghost: true, x: spawn.x, y: spawn.y, map: p.location.map })
-            );
+          const arrivalMove = packetManager.moveXY({
+            i: p.id,
+            d: { x: spawn.x, y: spawn.y, dr: "down" },
+            r: stateRevision(),
+            s: p.isStealth ? 1 : 0
           });
+          // Ghost spawn signal: render from here, at the graveyard.
+          const arrivalGhost = packetManager.playerGhost({ id: p.id, ghost: true, x: spawn.x, y: spawn.y, map: p.location.map });
+          filterPlayersByMap(p.location.map).forEach((v) => {
+            sendPacket(v.wt, arrivalMove);
+            sendPacket(v.wt, arrivalGhost);
+          });
+          relayToMirrorViewers(p, [...arrivalMove, ...arrivalGhost], false);
         }, GHOST_TELEPORT_DELAY_MS);
         break;
       }
@@ -133,21 +131,14 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         }
 
         bumpStateRevision();
+        const ghostPacket = packetManager.playerGhost({ id: currentPlayer.id, ghost: false });
+        const revivePacket = packetManager.revive({ id: currentPlayer.id, target: currentPlayer.id, stats: currentPlayer.stats });
         const playersInMap = filterPlayersByMap(currentPlayer.location.map);
         playersInMap.forEach((p) => {
-          sendPacket(
-            p.wt,
-            packetManager.playerGhost({ id: currentPlayer.id, ghost: false })
-          );
-          sendPacket(
-            p.wt,
-            packetManager.revive({
-              id: currentPlayer.id,
-              target: currentPlayer.id,
-              stats: currentPlayer.stats,
-            })
-          );
+          sendPacket(p.wt, ghostPacket);
+          sendPacket(p.wt, revivePacket);
         });
+        relayToMirrorViewers(currentPlayer, [...ghostPacket, ...revivePacket], false);
         sendStatsToPartyMembers(currentPlayer.username, currentPlayer.id, currentPlayer.stats);
         listener.emit(Events.PLAYER_REVIVED, { player: currentPlayer });
         break;
@@ -180,20 +171,13 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         }
 
         bumpStateRevision();
+        const ghostPacket = packetManager.playerGhost({ id: currentPlayer.id, ghost: false });
+        const revivePacket = packetManager.revive({ id: currentPlayer.id, target: currentPlayer.id, stats: currentPlayer.stats });
         filterPlayersByMap(currentPlayer.location.map).forEach((p) => {
-          sendPacket(
-            p.wt,
-            packetManager.playerGhost({ id: currentPlayer.id, ghost: false })
-          );
-          sendPacket(
-            p.wt,
-            packetManager.revive({
-              id: currentPlayer.id,
-              target: currentPlayer.id,
-              stats: currentPlayer.stats,
-            })
-          );
+          sendPacket(p.wt, ghostPacket);
+          sendPacket(p.wt, revivePacket);
         });
+        relayToMirrorViewers(currentPlayer, [...ghostPacket, ...revivePacket], false);
         spellEffects.broadcastEffectsUpdate(currentPlayer);
         sendStatsToPartyMembers(currentPlayer.username, currentPlayer.id, currentPlayer.stats);
         sendPacket(

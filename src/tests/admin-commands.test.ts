@@ -49,7 +49,7 @@ const NAMES = [
   "defaultMap", "resurrection", "resyncNpcChunks", "filterPlayersByMap", "spellEffects", "canGrant", "outranks",
   "runOnPlayer", "tryOnPlayer", "isOnline", "whetherOnline", "broadcastWorld", "panelHears", "clearShared", "heldInScene",
   "restartState", "toggleRestart", "shutdownEverywhere", "sendServerOrder",
-  "resetCooldowns", "assetCache", "inventory", "getIconUrl", "settleStoreAttached", "settleForAdmin", "settlingNotice",
+  "resetCooldowns", "assetCache", "inventory", "getIconUrl", "settleStoreAttached", "settleForAdmin", "settlingNotice", "noticeRegion",
 ];
 /** Functions beside the commands that they call, which use the same names. */
 const HELPERS = ["serverOrderDeps", "respawnPlayer", "endCooldowns", "killRefusal", "giveItem", "notSent"];
@@ -107,6 +107,8 @@ let storeOut: boolean;
 /** Each action run on a player, and each world broadcast. */
 let ran: any[][];
 let broadcasts: any[][];
+/** Each notice shown to an audience in the region (receiver.ts noticeRegion). */
+let regionNotices: any[][];
 /** Each item added, what reached an admin on another node, and each death. */
 let added: any[][];
 let answers: string[][];
@@ -244,6 +246,7 @@ function names(name: string, args: string[], over: Row = {}): Row {
     runOnPlayer: async (username: string, action: string, args?: unknown) => (await tryOnPlayer(username, action, args)) === "sent",
     tryOnPlayer,
     broadcastWorld: async (packets: any[]) => { broadcasts.push(packets); },
+    noticeRegion: (message: string, audience: any) => { regionNotices.push([message, audience]); },
     panelHears: () => {},
     heldInScene: () => false,
     restartState,
@@ -319,6 +322,7 @@ beforeEach(async () => {
   storeOut = false;
   ran = [];
   broadcasts = [];
+  regionNotices = [];
   added = [];
   answers = [];
   deaths = [];
@@ -816,13 +820,14 @@ describe("a player on another node", () => {
     expect(ran).toEqual([]);
   });
 
-  test("/broadcast to all is one world broadcast; to a map it stays on this node", async () => {
+  test("/broadcast to all is one world broadcast; to a map or its admins it is a notice to that audience in the region", async () => {
     await run("BROADCAST", ["ALL", "Hello", "world"]);
     expect(broadcasts).toEqual([[{ type: "NOTIFY", data: { message: "Hello world" } }]]);
     expect(told(hero)).toEqual([]);
     await run("BROADCAST", ["MAP", "Near"]);
+    await run("BROADCAST", ["ADMINS", "Staff"]);
     expect(broadcasts.length).toBe(1);
-    expect(told(hero)).toEqual(["Near"]);
+    expect(regionNotices).toEqual([["Near", { map: "main" }], ["Staff", { map: "main", admins: true }]]);
   });
 });
 

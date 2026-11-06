@@ -173,6 +173,8 @@ export interface CreatureInstance {
   remote?: boolean;
   /** A mirror's auras as its owner shows them, with absolute expiries (AuraState); decorate turns them into remainingMs. */
   mirrorAuras?: unknown[];
+  /** A mirror's corpse: who may loot it on its owner (lowercase usernames), from its shown state. */
+  mirrorLooters?: string[];
   /** A handoff of this creature to another node is in progress (cluster/creaturehandoff.ts): no second one starts. */
   handoff?: boolean;
 }

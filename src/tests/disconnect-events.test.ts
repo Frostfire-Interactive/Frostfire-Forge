@@ -32,6 +32,9 @@ function withNames(names: string[], code: string): (given: Row) => any {
 
 let online: Record<string, any>;
 let sent: Array<{ to: any; packets: any[] }>;
+/** What was relayed to the viewers of a player's mirrors on neighbouring nodes (aoi.ts relayToMirrorViewers). */
+let relays: Array<{ of: string; packets: any[]; bestEffort: boolean }>;
+const relayToMirrorViewers = (of: any, packets: any[], bestEffort: boolean) => { relays.push({ of: String(of.id), packets, bestEffort }); };
 let emitted: any[][];
 /** What a disconnect did, in order. */
 let order: string[];
@@ -60,6 +63,7 @@ const sendPacket = (to: any, packets: any[]) => { sent.push({ to, packets }); };
 beforeEach(() => {
   online = {};
   sent = [];
+  relays = [];
   emitted = [];
   order = [];
 });
@@ -67,7 +71,7 @@ beforeEach(() => {
 // ------------------------------------------------------------ dragged players
 
 const dragRelease = withNames(
-  ["draggedPlayersMap", "playerCache", "filterPlayersByMap", "sendPacket", "packetManager"],
+  ["draggedPlayersMap", "playerCache", "filterPlayersByMap", "sendPacket", "packetManager", "relayToMirrorViewers"],
   `${cut(receiver, "export function releaseDraggedBy(", /\r?\n}\r?\n/).replace("export ", "")}\n}\nreturn releaseDraggedBy;`,
 );
 
@@ -78,6 +82,7 @@ function releaser(draggedPlayersMap: Map<any, any>): (adminId: string | number) 
     filterPlayersByMap: (map: string) => Object.values(online).filter((live) => live.location.map === map),
     sendPacket,
     packetManager: { dragPlayerStop: (data: Row) => [{ type: "DRAG_PLAYER_STOP", data }] },
+    relayToMirrorViewers,
   });
 }
 
@@ -98,6 +103,8 @@ describe("an admin who leaves", () => {
     expect(stops(watcher)).toEqual([{ id: 11, adminId: "1" }]);
     expect(stops(elsewhere)).toEqual([{ id: 13, adminId: "1" }]);
     expect(stops(gone)).toEqual([]);
+    // and the viewers of their mirrors on neighbouring nodes
+    expect(relays.map((r) => [r.of, r.packets[0].data, r.bestEffort])).toEqual([["11", { id: 11, adminId: "1" }, false], ["13", { id: 13, adminId: "1" }, false]]);
   });
 
   test("holding nobody, nothing is sent", () => {
@@ -114,7 +121,7 @@ describe("an admin who leaves", () => {
 // ----------------------------------------------------------------- admin drag
 
 const dragCases = withNames(
-  ["type", "data", "currentPlayer", "wt", "playerCache", "player", "log", "updatePlayerAOI", "spawnBatchQueue", "despawnBatchQueue", "packetManager", "broadcastToAOI", "draggedPlayersMap", "sendPacket", "filterPlayersByMap"],
+  ["type", "data", "currentPlayer", "wt", "playerCache", "player", "log", "updatePlayerAOI", "spawnBatchQueue", "despawnBatchQueue", "packetManager", "broadcastToAOI", "draggedPlayersMap", "sendPacket", "filterPlayersByMap", "relayToMirrorViewers"],
   `return (async () => { let globalStateRevision = 0; const bumpStateRevision = () => ++globalStateRevision; const stateRevision = () => globalStateRevision; switch (type) {${cut(receiver, '\n      case "DRAG_PLAYER_STOP": {', /\r?\n {6}}\r?\n/)}\n      }${cut(receiver, '\n      case "DRAG_UPDATE": {', /\r?\n {6}}\r?\n/)}\n      }\n} })();`,
 );
 
@@ -151,6 +158,7 @@ function drag(admin: any, data: Row, type = "DRAG_UPDATE"): Promise<void> {
       dragPlayerStop: (stopped: Row) => [{ type: "DRAG_PLAYER_STOP", data: stopped }],
     },
     broadcastToAOI: (of: any, packets: any[]) => { shown.push({ of, packets }); },
+    relayToMirrorViewers,
   });
 }
 
@@ -178,6 +186,8 @@ describe("an admin dragging a player", () => {
     expect(shown).toHaveLength(1);
     expect(shown[0].of).toBe(held);
     expect(shown[0].packets[0].data).toMatchObject({ i: "11", d: { x: 40.4, y: 50.6, dr: "down" } });
+    // The stop reaches the viewers of their mirrors on neighbouring nodes too.
+    expect(relays.filter((r) => r.packets[0].type === "DRAG_PLAYER_STOP").map((r) => r.of)).toEqual(["11"]);
   });
 
   test("is for admins who may drag: anyone else moves and saves nothing", async () => {

@@ -99,8 +99,8 @@ function hydrateQuest(
   };
 }
 
-/** Load every quest fully hydrated (objectives, rewards, prerequisites). */
-export async function list(): Promise<Quest[]> {
+/** Every quest fully hydrated (objectives, rewards, prerequisites), and the NPCs that give and end them, from the database. */
+async function read(): Promise<{ quests: Quest[]; npcLinks: Array<{ npc_id: number; quest_id: number; role: string }>; objectiveCount: number; rewardCount: number }> {
   const questRows = ((await query("SELECT * FROM quests ORDER BY sort_order, id")) as any[]) || [];
   const objectiveRows = ((await query("SELECT * FROM quest_objectives ORDER BY quest_id, sort_order, id")) as any[]) || [];
   const rewardRows = ((await query("SELECT * FROM quest_rewards ORDER BY quest_id, sort_order, id")) as any[]) || [];
@@ -155,14 +155,30 @@ export async function list(): Promise<Quest[]> {
   }
 
   const quests = questRows.map((row) => hydrateQuest(row, objectivesByQuest, rewardsByQuest, prereqsByQuest));
+  return { quests, npcLinks, objectiveCount: objectiveRows.length, rewardCount: rewardRows.length };
+}
+
+/** Load every quest fully hydrated (objectives, rewards, prerequisites), into the shared list and this node's indexes. */
+export async function list(): Promise<Quest[]> {
+  const { quests, npcLinks, objectiveCount, rewardCount } = await read();
   await assetCache.set("quests", quests);
   setCachedQuestsSync(quests);
   cachedIndexes = buildIndexes(quests, npcLinks);
-  const objectiveCount = objectiveRows.length;
-  const rewardCount = rewardRows.length;
   log.success(`Loaded ${quests.length} quest(s) with ${objectiveCount} objective(s) and ${rewardCount} reward(s) from the database`);
   return quests;
 }
+
+// Cluster mode: a save on another node of the region (the quest or NPC editor) wrote the shared list. This node reads
+// the definitions again for what it holds of them, and leaves the list as that node wrote it.
+assetCache.onChange("quests", (elsewhere) => {
+  if (!elsewhere) return;
+  read()
+    .then(({ quests, npcLinks }) => {
+      setCachedQuestsSync(quests);
+      cachedIndexes = buildIndexes(quests, npcLinks);
+    })
+    .catch((error) => log.warn(`The quests saved on another node could not be read again here: ${error}`));
+});
 
 /** Synchronous read from the in-memory mirror (populated at asset-load time). */
 export function find(id: number): Quest | undefined {

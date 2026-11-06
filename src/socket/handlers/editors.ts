@@ -10,7 +10,8 @@ import * as playerEditor from "../../systems/playereditor";
 import * as questEditor from "../../systems/quests/editor";
 import * as spellEditor from "../../systems/spelleditor";
 import * as weatherEditor from "../../systems/weathereditor";
-import { clusterDebugSource } from "../../cluster/index";
+import { clusterDebugSource, clusterMapAdded } from "../../cluster/index";
+import { onPeerNews, tellPeers } from "../../cluster/peernews";
 import { buildClusterDebug, debugRateLimit } from "../../cluster/nodedebug";
 import achievements from "../../systems/achievements";
 import assetCache from "../../services/assetCache";
@@ -25,17 +26,307 @@ import particles, { renameInList } from "../../systems/particles";
 import permissions from "../../systems/permissions";
 import player, { clearMapCache } from "../../systems/player.ts";
 import playerCache from "../../services/playermanager.ts";
-import { addCreatedMap } from "../../modules/assetloader";
+import { addCreatedMap, adoptCreatedMap } from "../../modules/assetloader";
 import { getWorldMap, refreshWorldMap } from "../../modules/worldmaps";
-import { mayCreateMaps, readCreateMap, requestCreateMap } from "../../systems/mapcreate";
+import { MAP_NAME_RE, mayCreateMaps, readCreateMap, requestCreateMap } from "../../systems/mapcreate";
 import { mayEditTileSounds, readTileSoundChanges, saveTileSounds } from "../../systems/tilesounds";
 import { packetManager } from "../packet_manager";
-import { saveMapChunks, saveMapProperties, applyChunksWithRebase } from "../../modules/assetloader";
+import { saveMapChunks, saveMapProperties, applyChunksWithRebase, reloadMap, syncMapFromAssetServer } from "../../modules/assetloader";
 import { serverFetch } from "../../modules/https_servers.ts";
 import { activeEditorsByMap, despawnBatchQueue, editorEditHistory, filterPlayersByMap, mailboxEditorWorld, mapPropertiesCache, maps, placePlayer, runForControlPanel, sendMailboxes, sendPacket, spawnBatchQueue, transitionPlayerToMap } from "../receiver";
 import type { PacketContext } from "./context";
 
 // Packet handlers moved from receiver.ts's packetReceiver switch (phase 6, Task 1). The case bodies are unchanged.
+
+/** A save in the map editor's Sounds, Footprints or Fishing tab: what every player online is sent. */
+export type TileDataChange =
+  | { kind: "sounds"; tilesets: Record<string, any> }
+  | { kind: "footprints"; tilesets: Record<string, any> }
+  | { kind: "fishing" };
+
+/** Sends the tiles as they are now to every player online on this node. The fishing tiles are read again first: a cast is worked out from them here. */
+async function tileDataHere(change: TileDataChange): Promise<void> {
+  let packet: any;
+  if (change.kind === "sounds") packet = packetManager.tileSounds({ tilesets: change.tilesets });
+  else if (change.kind === "footprints") packet = packetManager.tileFootprints({ tilesets: change.tilesets });
+  else {
+    await fishing.refreshTiles();
+    packet = packetManager.fishingTiles({ tilesets: fishing.publicTiles() });
+  }
+  for (const online of Object.values(playerCache.list()) as any[]) {
+    if (online?.wt) sendPacket(online.wt, packet);
+  }
+}
+
+/** Every player online in the region is sent the tiles: here, and in a cluster on the region's other nodes. */
+async function tileDataChanged(change: TileDataChange): Promise<void> {
+  await tileDataHere(change);
+  void tellPeers("tile-data", change);
+}
+
+/** Sends a saved particle to every player online on this node whose connection is open. */
+function particleSavedHere(particle: Particle): void {
+  const updatePacket = packetManager.particleUpdated(particle);
+  for (const player of Object.values(playerCache.list()) as any[]) {
+    if (player?.wt && player.wt.readyState === 1) sendPacket(player.wt, updatePacket); // readyState 1 = OPEN
+  }
+}
+
+/** The particle NPCs of the maps held here that name `from` are made to name `to`. Returns how many there were. */
+function particleRenamedHere(from: string, to: string): number {
+  let mapRefs = 0;
+  for (const n of npcSystem.getMapNpcs()) {
+    if (typeof n.particles === "string" && (n.particles as string).split(",").some((x) => x.trim() === from)) {
+      (n as any).particles = renameInList(n.particles as string, from, to);
+      mapRefs++;
+    }
+  }
+  return mapRefs;
+}
+
+/** Shows a particle test to the players of `map` on this node. */
+function testParticleHere(map: string, event: Record<string, unknown>): void {
+  const packet = packetManager.custom({ type: "TEST_PARTICLE_EVENT", data: event });
+  for (const player of filterPlayersByMap(map)) {
+    if (player?.wt) sendPacket(player.wt, packet);
+  }
+}
+
+/** Cluster mode: a particle saved or renamed in the particle editor on another node of the region. The list is shared. */
+onPeerNews("particle", (news) => {
+  const saved = news?.saved;
+  if (saved && typeof saved === "object" && typeof saved.name === "string" && saved.name) return particleSavedHere(saved);
+  const from = news?.renamed?.from, to = news?.renamed?.to;
+  if (typeof from === "string" && typeof to === "string" && from && to) particleRenamedHere(from, to);
+});
+
+/** Cluster mode: a particle tested by an admin on another node of the region. */
+onPeerNews("test-particle", (news) => {
+  const map = news?.map, event = news?.event;
+  if (typeof map === "string" && map && event && typeof event === "object") testParticleHere(map, event);
+});
+
+/** Cluster mode: tiles saved in the map editor on another node of the region. */
+onPeerNews("tile-data", (news) => {
+  const kind = news?.kind;
+  if (kind === "fishing") return tileDataHere({ kind });
+  const tilesets = news?.tilesets;
+  if ((kind === "sounds" || kind === "footprints") && tilesets && typeof tilesets === "object" && !Array.isArray(tilesets)) {
+    return tileDataHere({ kind, tilesets });
+  }
+});
+
+/**
+ * The editors that tell their other open copies of a save, so they ask for the list again: the packet, and who may
+ * have the editor open. The lists are cached per process and shared by the nodes of a cluster through the cache.
+ */
+const editorNudges = {
+  creature: {
+    packet: (by: string) => packetManager.creatureEditorUpdated({ by }),
+    mayHaveOpen: () => {
+      const open = new Set(creatures.editorViewerIds());
+      return (other: any) => open.has(other.id);
+    },
+  },
+  item: { packet: (by: string) => packetManager.itemEditorUpdated({ by }), mayHaveOpen: () => (other: any) => itemEditor.canUseEditor(other) },
+  mount: { packet: (by: string) => packetManager.mountEditorUpdated({ by }), mayHaveOpen: () => (other: any) => mountEditor.canUseEditor(other) },
+  cutscene: { packet: (by: string) => packetManager.cutsceneEditorUpdated({ by }), mayHaveOpen: () => (other: any) => cutsceneEditor.canUseEditor(other) },
+  spell: { packet: (by: string) => packetManager.spellEditorUpdated({ by }), mayHaveOpen: () => (other: any) => spellEditor.mayHaveEditorOpen(other) },
+  weather: { packet: (by: string) => packetManager.weatherEditorUpdated({ by }), mayHaveOpen: () => (other: any) => weatherEditor.mayHaveEditorOpen(other) },
+  class: { packet: (by: string) => packetManager.classEditorUpdated({ by }), mayHaveOpen: () => (other: any) => classEditor.mayHaveEditorOpen(other) },
+  quest: { packet: (by: string) => packetManager.questEditorUpdated({ by }), mayHaveOpen: () => (other: any) => other.wt.readyState === 1 && questEditor.canUseEditor(other) },
+};
+export type EditorKind = keyof typeof editorNudges;
+
+/** Tells this node's open editors of the kind, but the saver's (`exceptId`), that `by` saved. */
+function editorsUpdatedHere(kind: EditorKind, by: string, exceptId?: string): void {
+  const nudge = editorNudges[kind];
+  const updated = nudge.packet(by);
+  const mayHaveOpen = nudge.mayHaveOpen();
+  for (const other of Object.values(playerCache.list()) as any[]) {
+    if (!other?.wt || other.id === exceptId) continue;
+    if (mayHaveOpen(other)) sendPacket(other.wt, updated);
+  }
+}
+
+/** A save in an editor: its other open copies in the region are told. */
+function editorsUpdated(kind: EditorKind, admin: any): void {
+  editorsUpdatedHere(kind, admin.username, admin.id);
+  void tellPeers("editor-updated", { kind, by: admin.username });
+}
+
+/** Cluster mode: a save in an editor on another node of the region. */
+onPeerNews("editor-updated", (news) => {
+  const kind = news?.kind;
+  if (typeof kind !== "string" || !Object.hasOwn(editorNudges, kind)) return;
+  editorsUpdatedHere(kind as EditorKind, typeof news?.by === "string" ? news.by : "");
+});
+
+/** The mailboxes of a map changed: its players here see them where they now stand, and the open editors but the saver's are told. */
+async function mailboxesChangedHere(map: string, by: string, exceptId?: string): Promise<void> {
+  const updated = packetManager.mailboxEditorUpdated({ by });
+  for (const other of Object.values(playerCache.list()) as any[]) {
+    if (!other?.wt) continue;
+    if (String(other.location?.map ?? "").replaceAll(".json", "") === map) await sendMailboxes(other.wt, map);
+    if (other.id !== exceptId && mailboxEditor.mayHaveEditorOpen(other)) sendPacket(other.wt, updated);
+  }
+}
+
+/** Cluster mode: the mailboxes of a map saved on another node. A map can be split between nodes; each shows its own players. */
+onPeerNews("mailboxes", (news) => {
+  const map = news?.map;
+  if (typeof map !== "string" || !map) return;
+  return mailboxesChangedHere(map, typeof news?.by === "string" ? news.by : "");
+});
+
+type ChunkAt = { chunkX: number; chunkY: number };
+
+/**
+ * A world saved in the map editor: the chunks the asset server changed, and the graveyards and warps saved with them.
+ * `mapName` is the editor's name of it, which keys its unsaved edits.
+ */
+type WorldSave = { world: string; mapName: string; changed: ChunkAt[]; graveyards?: any[]; warps?: any[] };
+
+/**
+ * A world saved in the map editor, which the asset server now holds: this node fetches its new collision and no-pvp
+ * bits and takes its graveyards and warps, its unsaved edits are dropped, and its players on it but the saver
+ * (`exceptId`), who already shows the edits, fetch the changed chunks again. A world this node does not hold is left
+ * alone.
+ */
+async function worldSavedHere(save: WorldSave, exceptId?: unknown): Promise<void> {
+  const world = getWorldMap(save.world);
+  if (!world) return;
+  const { changed, graveyards, warps } = save;
+  editorEditHistory.delete(save.mapName);
+  if (graveyards || warps) {
+    if (world.properties) {
+      if (graveyards) world.properties.graveyards = graveyards;
+      if (warps) world.properties.warps = warps;
+    }
+    // movement reads the warps from its own cache
+    clearMapCache(save.world);
+  }
+  if (changed.length > 0) fishing.forgetMap(save.world);
+  if (changed.length > 0 || graveyards || warps) await refreshWorldMap(save.world);
+  if (changed.length === 0) return;
+  const update = packetManager.updateChunks({ chunks: changed });
+  for (const other of filterPlayersByMap(save.world)) if (other.id !== exceptId) sendPacket(other.wt, update);
+}
+
+/** Cluster mode: a world saved in the map editor on another node. A map can be split between nodes; each shows its own players. */
+onPeerNews("world-saved", (news) => {
+  const world = news?.world;
+  if (typeof world !== "string" || !world || !Array.isArray(news?.changed)) return;
+  const listed = (value: unknown) => (Array.isArray(value) && value.length > 0 ? value : undefined);
+  return worldSavedHere({ world, mapName: typeof news?.mapName === "string" ? news.mapName : world, changed: news.changed, graveyards: listed(news.graveyards), warps: listed(news.warps) });
+});
+
+/** A plain map saved in the map editor, as its players are shown it: the move of its origin in px when it grew left or up, its size in tiles, and the saved chunks. */
+type MapSaveView = { shiftX: number; shiftY: number; width: number; height: number; chunks: ChunkAt[] };
+
+/**
+ * Shows a plain map's save to this node's players on it. One that grew left or up moved its origin: they all move with
+ * it and are re-synced. Otherwise all take its new bounds (which drops trimmed-away chunks), and all but the saver
+ * (`exceptId`), who already shows the edits, fetch the saved chunks again.
+ */
+function showMapSaveHere(map: string, view: MapSaveView, exceptId?: unknown): void {
+  const onMap = filterPlayersByMap(map);
+  const { shiftX, shiftY, width, height } = view;
+  if (shiftX > 0 || shiftY > 0) {
+    for (const p of onMap) {
+      if (!p.location?.position) continue;
+      p.location.position.x = (Number(p.location.position.x) || 0) + shiftX;
+      p.location.position.y = (Number(p.location.position.y) || 0) + shiftY;
+      playerCache.set(p.id, p);
+    }
+    const rebase = packetManager.mapRebase({ shiftX, shiftY, width, height });
+    for (const p of onMap) sendPacket(p.wt, rebase);
+    return;
+  }
+  const bounds = packetManager.mapRebase({ shiftX: 0, shiftY: 0, width, height });
+  for (const p of onMap) sendPacket(p.wt, bounds);
+  const update = packetManager.updateChunks({ chunks: view.chunks });
+  for (const p of onMap) if (p.id !== exceptId) sendPacket(p.wt, update);
+}
+
+/**
+ * Cluster mode: a plain map saved in the map editor on another node, which the asset server now holds. This node's
+ * copy of the map file is brought up to date from it and the map read again, so that a reload here keeps the save; its
+ * unsaved edits are dropped, and its players on it are shown the save.
+ */
+async function mapSavedElsewhere(mapName: string, view: MapSaveView): Promise<void> {
+  await syncMapFromAssetServer(mapName);
+  await reloadMap(mapName);
+  clearMapCache(mapName);
+  editorEditHistory.delete(mapName);
+  showMapSaveHere(mapName, view);
+}
+
+/**
+ * Cluster mode: a map made in the map editor, here or on another node, and loaded here, joins the region's maps (its
+ * size published for the coordinator to split, its block table kept here). Nothing outside cluster mode.
+ */
+async function mapJoinsCluster(name: string): Promise<void> {
+  const props = mapPropertiesCache.find((m: any) => m.name === `${name}.json`);
+  if (!props) return;
+  await clusterMapAdded(name, props.width * props.tileWidth, props.height * props.tileHeight);
+}
+
+/** Cluster mode: a map made in the map editor on another node is taken in here too, and joins the cluster here. */
+onPeerNews("map-created", async (news) => {
+  const name = news?.name;
+  const kind = news?.kind === "world" ? "world" : news?.kind === "map" ? "map" : null;
+  if (typeof name !== "string" || !MAP_NAME_RE.test(name) || !kind) return;
+  if (!(maps as any[]).some((m: any) => m.name === `${name}.json`)) await adoptCreatedMap(name, kind);
+  await mapJoinsCluster(name);
+});
+
+onPeerNews("map-saved", (news) => {
+  const mapName = news?.mapName;
+  const view = news?.view;
+  if (typeof mapName !== "string" || !mapName || !view || typeof view !== "object" || !Array.isArray(view.chunks)) return;
+  return mapSavedElsewhere(mapName, { shiftX: Number(view.shiftX) || 0, shiftY: Number(view.shiftY) || 0, width: view.width, height: view.height, chunks: view.chunks });
+});
+
+/** Live tile edits, relayed to the admins editing the map on this node but their sender (`exceptId`). */
+function tileEditsHere(map: string, relay: { senderId: unknown; mapName: unknown; edits: unknown[] }, exceptId?: unknown): void {
+  const targets = filterPlayersByMap(map).filter((p) => p.isAdmin && p.id !== exceptId && p.wt?.readyState === 1);
+  if (targets.length === 0) return;
+  const packet = packetManager.editorTileEdit(relay);
+  for (const p of targets) sendPacket(p.wt, packet);
+}
+
+/**
+ * Cluster mode: live tile edits on another node. While an editor is open on the map here they are kept too, as their
+ * node keeps them, for an editor that opens here before the map is saved; with none open, none here would drop them.
+ */
+onPeerNews("editor-tile-edit", (news) => {
+  const map = news?.map;
+  const edits = news?.edits;
+  if (typeof map !== "string" || !map || !Array.isArray(edits)) return;
+  const mapName = typeof news?.mapName === "string" ? news.mapName : map;
+  if (activeEditorsByMap.has(map)) {
+    if (!editorEditHistory.has(mapName)) editorEditHistory.set(mapName, []);
+    // no player of this node sent them
+    editorEditHistory.get(mapName)!.push({ senderId: -1, mapName, edits });
+  }
+  tileEditsHere(map, { senderId: news?.senderId ?? null, mapName, edits });
+});
+
+/** A layer lock or unlock, relayed to the admins editing the map on this node but its sender (`exceptId`). */
+function layerLockHere(map: string, relay: { mapName: unknown; layerName: unknown; locked: unknown }, exceptId?: unknown): void {
+  const targets = filterPlayersByMap(map).filter((p) => p.isAdmin && p.id !== exceptId && p.wt?.readyState === 1);
+  if (targets.length === 0) return;
+  const packet = packetManager.editorLayerLock(relay);
+  for (const p of targets) sendPacket(p.wt, packet);
+}
+
+/** Cluster mode: a layer locked or unlocked in the map editor on another node. */
+onPeerNews("editor-layer-lock", (news) => {
+  const map = news?.map;
+  if (typeof map !== "string" || !map || typeof news?.layerName !== "string") return;
+  layerLockHere(map, { mapName: news.mapName ?? map, layerName: news.layerName, locked: news.locked });
+});
 
 export const handles: ReadonlySet<string> = new Set(["EDITOR_TILE_EDIT", "EDITOR_LAYER_LOCK", "EDITOR_OPEN", "EDITOR_CLOSE", "CREATURE_EDITOR_LIST", "CREATURE_EDITOR_CLOSE", "CREATURE_EDITOR_SAVE_TEMPLATE", "CREATURE_EDITOR_DELETE_TEMPLATE", "CREATURE_EDITOR_SAVE_ABILITY", "CREATURE_EDITOR_DELETE_ABILITY", "CREATURE_EDITOR_SAVE_ABILITIES", "CREATURE_EDITOR_SAVE_SPAWN", "CREATURE_EDITOR_DELETE_SPAWN", "CREATURE_EDITOR_SAVE_PATH", "CREATURE_EDITOR_DELETE_PATH", "CREATURE_EDITOR_SAVE_LINKGROUP", "CREATURE_EDITOR_DELETE_LINKGROUP", "CREATURE_EDITOR_SAVE_POOL", "CREATURE_EDITOR_DELETE_POOL", "CREATURE_EDITOR_ACTION", "ITEM_EDITOR_LIST", "ITEM_EDITOR_SEARCH", "ITEM_EDITOR_SAVE", "ITEM_EDITOR_DELETE", "MOUNT_EDITOR_LIST", "MOUNT_EDITOR_SAVE", "MOUNT_EDITOR_DELETE", "CUTSCENE_EDITOR_LIST", "CUTSCENE_EDITOR_SAVE", "CUTSCENE_EDITOR_DELETE", "CUTSCENE_EDITOR_RESOLVE", "CUTSCENE_EDITOR_PLAY", "CUTSCENE_EDITOR_GOTO", "SPELL_EDITOR_LIST", "SPELL_EDITOR_SEARCH", "SPELL_EDITOR_SAVE", "SPELL_EDITOR_DELETE", "SPELL_EDITOR_LEARN", "WEATHER_EDITOR_LIST", "WEATHER_EDITOR_SAVE", "WEATHER_EDITOR_DELETE", "CLASS_EDITOR_LIST", "CLASS_EDITOR_SAVE", "CLASS_EDITOR_DELETE", "LOOT_EDITOR_CREATE_TABLE", "LOOT_EDITOR_DELETE_TABLE", "LOOT_EDITOR_ADD_ITEM", "LOOT_EDITOR_REMOVE_ITEM", "LOOT_EDITOR_UPDATE_ITEM", "PLAYER_EDITOR_LOAD", "PLAYER_EDITOR_SEARCH", "PLAYER_EDITOR_ACTION", "CONTROL_PANEL_LOAD", "CONTROL_PANEL_QUERY", "CONTROL_PANEL_ACTION", "CREATURE_DEBUG_SUBSCRIBE", "CLUSTER_DEBUG", "TOGGLE_QUEST_EDITOR", "QUEST_EDITOR_DATA", "QUEST_EDITOR_SEARCH", "QUEST_EDITOR_SAVE", "QUEST_EDITOR_DELETE", "QUEST_EDITOR_CLOSE", "CREATE_MAP", "SAVE_TILE_SOUNDS", "SAVE_TILE_FOOTPRINTS", "SAVE_MAP", "SAVE_PARTICLE", "DELETE_PARTICLE", "RENAME_PARTICLE", "LIST_PARTICLES", "TEST_PARTICLE", "FISHING_EDITOR_LIST", "FISHING_EDITOR_SAVE", "MAILBOX_EDITOR_LIST", "MAILBOX_EDITOR_SAVE", "MAILBOX_EDITOR_DELETE", "ACHIEVEMENT_EDITOR_LIST", "ACHIEVEMENT_EDITOR_SAVE", "ACHIEVEMENT_EDITOR_DELETE", "GATHERING_EDITOR_LIST", "GATHERING_EDITOR_SAVE", "GATHERING_EDITOR_DELETE", "GATHERING_EDITOR_PREVIEW", "LIST_LOOT_TABLES"]);
 
@@ -59,14 +350,10 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           editorEditHistory.get(mapName)!.push({ senderId: wt.data.id, mapName, edits: editData.edits });
         }
 
-        const targets = filterPlayersByMap(currentPlayer.location.map).filter(
-          (p) => p.isAdmin && p.id !== wt.data.id && p.wt?.readyState === 1
-        );
-        if (targets.length === 0) break;
+        // to the admins editing the map here, and (cluster mode) on the region's other nodes
         const relay = { senderId: wt.data.id, mapName: editData.mapName, edits: editData.edits };
-        targets.forEach((player) => {
-          sendPacket(player.wt, packetManager.editorTileEdit(relay));
-        });
+        tileEditsHere(currentPlayer.location.map, relay, wt.data.id);
+        void tellPeers("editor-tile-edit", { map: currentPlayer.location.map, ...relay });
         break;
       }
 
@@ -75,14 +362,10 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         if (!currentPlayer || !currentPlayer.isAdmin) return;
         const lockData = data as any;
         if (!lockData || lockData.mapName !== currentPlayer.location.map) return;
-        const targets = filterPlayersByMap(currentPlayer.location.map).filter(
-          (p) => p.isAdmin && p.id !== wt.data.id && p.wt?.readyState === 1
-        );
-        if (targets.length === 0) break;
+        // to the admins editing the map here, and (cluster mode) on the region's other nodes
         const relay = { mapName: lockData.mapName, layerName: lockData.layerName, locked: lockData.locked };
-        targets.forEach((player) => {
-          sendPacket(player.wt, packetManager.editorLayerLock(relay));
-        });
+        layerLockHere(currentPlayer.location.map, relay, wt.data.id);
+        void tellPeers("editor-layer-lock", { map: currentPlayer.location.map, ...relay });
         break;
       }
 
@@ -170,14 +453,7 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         }
         if (result.kind === "result") {
           sendPacket(wt, packetManager.creatureEditorResult({ ok: result.ok, errors: result.errors, id: result.id, action: type }));
-          if (result.ok) {
-            const updated = packetManager.creatureEditorUpdated({ by: currentPlayer.username });
-            for (const viewerId of creatures.editorViewerIds()) {
-              if (viewerId === currentPlayer.id) continue;
-              const viewer = playerCache.get(viewerId);
-              if (viewer?.wt) sendPacket(viewer.wt, updated);
-            }
-          }
+          if (result.ok) editorsUpdated("creature", currentPlayer);
         }
         break;
       }
@@ -203,12 +479,8 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         }
         sendPacket(wt, packetManager.itemEditorResult({ ok: result.ok, errors: result.errors, name: result.name, action: type }));
         if (result.ok) {
-          // Items are cached per process; tell every other editor to reload.
-          const updated = packetManager.itemEditorUpdated({ by: currentPlayer.username });
-          for (const other of Object.values(playerCache.list()) as any[]) {
-            if (!other?.wt || other.id === currentPlayer.id) continue;
-            if (itemEditor.canUseEditor(other)) sendPacket(other.wt, updated);
-          }
+          // Tell every other open editor to reload.
+          editorsUpdated("item", currentPlayer);
         }
         break;
       }
@@ -226,12 +498,8 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         if (result.denied) sendPacket(wt, packetManager.notify({ message: mountEditor.DENIED }));
         sendPacket(wt, packetManager.mountEditorResult({ ok: result.ok, errors: result.errors, fields: result.fields, name: result.name, action: type, data: result.data }));
         if (result.changed) {
-          // Mounts are cached per process; tell every other editor to reload.
-          const updated = packetManager.mountEditorUpdated({ by: currentPlayer.username });
-          for (const other of Object.values(playerCache.list()) as any[]) {
-            if (!other?.wt || other.id === currentPlayer.id) continue;
-            if (mountEditor.canUseEditor(other)) sendPacket(other.wt, updated);
-          }
+          // Tell every other open editor to reload.
+          editorsUpdated("mount", currentPlayer);
         }
         break;
       }
@@ -254,12 +522,8 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         if (result.denied) sendPacket(wt, packetManager.notify({ message: cutsceneEditor.DENIED }));
         sendPacket(wt, packetManager.cutsceneEditorResult({ ok: result.ok, errors: result.errors, fields: result.fields, name: result.name, action: type, doc: result.doc }));
         if (result.changed) {
-          // Scenes are cached per process (and shared by the nodes of a cluster through the cache); tell every other editor to reload.
-          const updated = packetManager.cutsceneEditorUpdated({ by: currentPlayer.username });
-          for (const other of Object.values(playerCache.list()) as any[]) {
-            if (!other?.wt || other.id === currentPlayer.id) continue;
-            if (cutsceneEditor.canUseEditor(other)) sendPacket(other.wt, updated);
-          }
+          // Tell every other open editor to reload.
+          editorsUpdated("cutscene", currentPlayer);
         }
         break;
       }
@@ -315,12 +579,8 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           ok: result.ok, errors: result.errors, fields: result.fields, name: result.name, action: type,
         }));
         if (result.ok && result.changed) {
-          // Spells are cached per process; tell every other editor to reload.
-          const updated = packetManager.spellEditorUpdated({ by: currentPlayer.username });
-          for (const other of Object.values(playerCache.list()) as any[]) {
-            if (!other?.wt || other.id === currentPlayer.id) continue;
-            if (spellEditor.mayHaveEditorOpen(other)) sendPacket(other.wt, updated);
-          }
+          // Tell every other open editor to reload.
+          editorsUpdated("spell", currentPlayer);
         }
         break;
       }
@@ -342,11 +602,7 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         }));
         if (result.changed) {
           // Tell every other open editor to ask for the weathers again.
-          const updated = packetManager.weatherEditorUpdated({ by: currentPlayer.username });
-          for (const other of Object.values(playerCache.list()) as any[]) {
-            if (!other?.wt || other.id === currentPlayer.id) continue;
-            if (weatherEditor.mayHaveEditorOpen(other)) sendPacket(other.wt, updated);
-          }
+          editorsUpdated("weather", currentPlayer);
         }
         break;
       }
@@ -367,11 +623,7 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         }));
         if (result.changed) {
           // Tell every other open editor to ask for the classes again.
-          const updated = packetManager.classEditorUpdated({ by: currentPlayer.username });
-          for (const other of Object.values(playerCache.list()) as any[]) {
-            if (!other?.wt || other.id === currentPlayer.id) continue;
-            if (classEditor.mayHaveEditorOpen(other)) sendPacket(other.wt, updated);
-          }
+          editorsUpdated("class", currentPlayer);
         }
         break;
       }
@@ -461,14 +713,7 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         } else {
           sendPacket(wt, packetManager.questEditorResult({ ok: outcome.ok, errors: outcome.errors, id: outcome.id }));
           if (outcome.ok && (type === "QUEST_EDITOR_SAVE" || type === "QUEST_EDITOR_DELETE")) {
-            const viewers = Object.values(playerCache.list() as Record<string, any>).filter(
-              (p) => p?.wt?.readyState === 1 && questEditor.canUseEditor(p)
-            );
-            for (const viewer of viewers) {
-              if (viewer.id !== wt.data.id) {
-                sendPacket(viewer.wt, packetManager.questEditorUpdated({ by: currentPlayer.username }));
-              }
-            }
+            editorsUpdated("quest", currentPlayer);
           }
         }
         break;
@@ -505,6 +750,9 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         try {
           const made = await requestCreateMap(request);
           await addCreatedMap(request.name, made.kind, made.data);
+          // Cluster mode: the other nodes take it in too, and it is split between the region's nodes like any map.
+          void tellPeers("map-created", { name: request.name, kind: made.kind });
+          await mapJoinsCluster(request.name);
           log.info(`Map ${request.name} created by ${currentPlayer.username} (${request.kind}, ${request.width} x ${request.height} tiles${request.infinite ? ", infinite" : ""})`);
         } catch (error: any) {
           log.error(`Error creating map ${request.name}: ${error.message}`);
@@ -544,9 +792,7 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         try {
           const tilesets = await saveTileSounds(read.changes);
           log.info(`Tile sounds saved by ${currentPlayer.username}: ${read.changes.reduce((n, c) => n + c.ids.length, 0)} tiles`);
-          for (const online of Object.values(playerCache.list()) as any[]) {
-            if (online?.wt) sendPacket(online.wt, packetManager.tileSounds({ tilesets }));
-          }
+          await tileDataChanged({ kind: "sounds", tilesets });
         } catch (error: any) {
           log.error(`Error saving tile sounds: ${error.message}`);
           sendPacket(wt, packetManager.notify({ message: `Error saving tile sounds: ${error.message}` }));
@@ -571,9 +817,7 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         try {
           const tilesets = await footprints.saveFootprints(read.changes);
           log.info(`Tile footprints saved by ${currentPlayer.username}: ${read.changes.reduce((n, c) => n + c.ids.length, 0)} tiles`);
-          for (const online of Object.values(playerCache.list()) as any[]) {
-            if (online?.wt) sendPacket(online.wt, packetManager.tileFootprints({ tilesets }));
-          }
+          await tileDataChanged({ kind: "footprints", tilesets });
         } catch (error: any) {
           log.error(`Error saving tile footprints: ${error.message}`);
           sendPacket(wt, packetManager.notify({ message: `Error saving tile footprints: ${error.message}` }));
@@ -630,32 +874,23 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
             }
             if (graveyards || warps) {
               await post("/save-map-properties", { graveyards, warps });
-              // held here as for any map; movement reads the warps from its own cache, cleared below
+              // held for any map in the shared map properties; each node's world, and its movement cache, take them below
               const propsList = await assetCache.get("mapProperties");
               const props = propsList?.find((m: any) => m.name === `${worldName}.json`);
-              const world = getWorldMap(worldName);
-              for (const target of [props, world?.properties]) {
-                if (!target) continue;
-                if (graveyards) target.graveyards = graveyards;
-                if (warps) target.warps = warps;
+              if (props) {
+                if (graveyards) props.graveyards = graveyards;
+                if (warps) props.warps = warps;
               }
               if (propsList) await assetCache.add("mapProperties", propsList);
-              clearMapCache(worldName);
             }
-            if (changed.length > 0) fishing.forgetMap(worldName);
-            if (changed.length > 0 || graveyards || warps) await refreshWorldMap(worldName);
+            // Every node of the region takes the save (cluster mode), and this one; the saver already shows its edits
+            const save: WorldSave = { world: worldName, mapName: saveData.mapName, changed, graveyards, warps };
+            void tellPeers("world-saved", save);
+            await worldSavedHere(save, wt.data.id);
 
             sendPacket(wt, packetManager.notify({
               message: `Map saved successfully! ${changed.length} chunks updated.`
             }));
-            // The saver already shows its edits: the others on the map fetch the changed chunks again
-            if (changed.length > 0) {
-              filterPlayersByMap(currentPlayer.location.map)
-                .filter((p) => p.id !== wt.data.id)
-                .forEach((player) => {
-                  sendPacket(player.wt, packetManager.updateChunks({ chunks: changed }));
-                });
-            }
           } catch (error: any) {
             log.error(`Error saving world ${worldName}: ${error.message}`);
             sendPacket(wt, packetManager.notify({
@@ -814,55 +1049,21 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
             message: `Map saved successfully! ${saveData.chunks.length} chunks updated.`
           }));
 
-          // Propagate the save to everyone on the map. Bounds (incl. trimmed empty
-          // expansion) go to ALL players so the saver's view shrinks too; chunk
-          // refreshes go only to OTHER players.
-          const onMapPlayers = filterPlayersByMap(currentPlayer.location.map);
+          // Shown to everyone on the map, on every node of the region (cluster mode). The SERVER-computed shift is
+          // used (empty expansion is trimmed away, so the real shift may be 0 even if the client claimed a negative
+          // expansion), and the persisted dims (what a reload will show), so live matches reload.
           const updatedMapData = cachedMaps[mapIndex]?.data;
-          // Use the SERVER-computed shift (empty expansion is trimmed away, so the
-          // real shift may be 0 even if the client claimed a negative expansion) and
-          // the persisted dims (what a reload will show), so live matches reload.
-          const shiftTilesX = rebaseResult?.shiftX ?? 0;
-          const shiftTilesY = rebaseResult?.shiftY ?? 0;
-          const newMapWidth = updatedMapData?.width ?? rebaseResult?.width;
-          const newMapHeight = updatedMapData?.height ?? rebaseResult?.height;
           const tw = updatedMapData?.tilewidth || 32;
           const th = updatedMapData?.tileheight || 32;
-          const shiftPxX = shiftTilesX * tw;
-          const shiftPxY = shiftTilesY * th;
-
-          if (shiftTilesX > 0 || shiftTilesY > 0) {
-            // Left/up expansion re-based the origin to (0,0). Shift every on-map
-            // player's authoritative position and fully re-sync each client.
-            for (const p of onMapPlayers) {
-              if (p.location?.position) {
-                p.location.position.x = (Number(p.location.position.x) || 0) + shiftPxX;
-                p.location.position.y = (Number(p.location.position.y) || 0) + shiftPxY;
-                playerCache.set(p.id, p);
-              }
-            }
-            const rebasePayload = { shiftX: shiftPxX, shiftY: shiftPxY, width: newMapWidth, height: newMapHeight };
-            onMapPlayers.forEach((player) => {
-              sendPacket(player.wt, packetManager.mapRebase(rebasePayload));
-            });
-          } else {
-            // No re-base (grew or trimmed): update EVERYONE's bounds (shiftX/Y = 0 is
-            // a bounds-only update that drops trimmed-away chunks without re-fetching),
-            // and refresh the saved chunks for OTHER players only.
-            const boundsPayload = { shiftX: 0, shiftY: 0, width: newMapWidth, height: newMapHeight };
-            onMapPlayers.forEach((player) => {
-              sendPacket(player.wt, packetManager.mapRebase(boundsPayload));
-            });
-            const chunkCoords = saveData.chunks.map((chunk: any) => ({
-              chunkX: chunk.chunkX,
-              chunkY: chunk.chunkY
-            }));
-            onMapPlayers
-              .filter((p) => p.id !== wt.data.id)
-              .forEach((player) => {
-                sendPacket(player.wt, packetManager.updateChunks({ chunks: chunkCoords }));
-              });
-          }
+          const view: MapSaveView = {
+            shiftX: (rebaseResult?.shiftX ?? 0) * tw,
+            shiftY: (rebaseResult?.shiftY ?? 0) * th,
+            width: updatedMapData?.width ?? rebaseResult?.width,
+            height: updatedMapData?.height ?? rebaseResult?.height,
+            chunks: saveData.chunks.map((chunk: any) => ({ chunkX: chunk.chunkX, chunkY: chunk.chunkY })),
+          };
+          showMapSaveHere(saveData.mapName, view, wt.data.id);
+          void tellPeers("map-saved", { mapName: saveData.mapName, view });
         } catch (error: any) {
           log.error(`Error saving map: ${error.message}`);
           sendPacket(wt, packetManager.notify({
@@ -911,16 +1112,10 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           const updatedParticles = await particles.list();
           const updatedParticleData = updatedParticles.find(p => p.name === particleData.name);
 
-          // Broadcast particle update to all connected players
+          // Broadcast particle update to all connected players, on every node of the region
           if (updatedParticleData) {
-            const updatePacket = packetManager.particleUpdated(updatedParticleData);
-            const allPlayers = playerCache.list();
-            for (const playerId in allPlayers) {
-              const player = allPlayers[playerId];
-              if (player.wt && player.wt.readyState === 1) { // readyState 1 = OPEN
-                sendPacket(player.wt, updatePacket);
-              }
-            }
+            particleSavedHere(updatedParticleData);
+            void tellPeers("particle", { saved: updatedParticleData });
           }
 
           sendPacket(wt, packetManager.notify({
@@ -997,13 +1192,7 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           }
 
           const counts = await particles.rename(oldName, newName);
-          let mapRefs = 0;
-          for (const n of npcSystem.getMapNpcs()) {
-            if (typeof n.particles === "string" && (n.particles as string).split(",").some((x) => x.trim() === oldName)) {
-              (n as any).particles = renameInList(n.particles as string, oldName, newName);
-              mapRefs++;
-            }
-          }
+          const mapRefs = particleRenamedHere(oldName, newName);
           await assetCache.set("npcs", await npcSystem.list());
           for (const key of ["spells", "mounts"]) {
             const list = (await assetCache.get(key)) as any[] | null;
@@ -1011,6 +1200,7 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
             for (const row of list) if (typeof row?.particles === "string") row.particles = renameInList(row.particles, oldName, newName);
             await assetCache.set(key, list);
           }
+          void tellPeers("particle", { renamed: { from: oldName, to: newName } });
           log.info(`Particle renamed by ${currentPlayer.username}: ${oldName} -> ${newName} (npcs ${counts.npcs}, spells ${counts.spells}, mounts ${counts.mounts}, map objects ${mapRefs})`);
 
           const parts = [`Renamed ${oldName} to ${newName}`];
@@ -1060,19 +1250,15 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           const { testType, data: testData } = data as { testType: string; data: any };
           log.info(`Particle test by ${currentPlayer.username}: type=${testType}`);
 
-          // Broadcast test particle event to all players in the map
-          const playersInMap = filterPlayersByMap(currentPlayer.location.map);
-          playersInMap.forEach((player) => {
-            sendPacket(player.wt, packetManager.custom({
-              type: "TEST_PARTICLE_EVENT",
-              data: {
-                testType,
-                particle: testData.particle,
-                position: testData.position || currentPlayer.location,
-                npcId: testData.npcId
-              }
-            }));
-          });
+          // Broadcast test particle event to all players in the map, on every node of the region
+          const event = {
+            testType,
+            particle: testData.particle,
+            position: testData.position || currentPlayer.location,
+            npcId: testData.npcId
+          };
+          testParticleHere(currentPlayer.location.map, event);
+          void tellPeers("test-particle", { map: currentPlayer.location.map, event });
         } catch (error: any) {
           log.error(`Error testing particle: ${error.message}`);
         }
@@ -1105,10 +1291,7 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
             return;
           }
           // every player is told which tiles are fishable now
-          const tiles = packetManager.fishingTiles({ tilesets: fishing.publicTiles() });
-          for (const online of Object.values(playerCache.list()) as any[]) {
-            if (online?.wt) sendPacket(online.wt, tiles);
-          }
+          await tileDataChanged({ kind: "fishing" });
         }
         sendPacket(wt, packetManager.fishingEditorData(await fishing.editorData()));
         break;
@@ -1129,14 +1312,9 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           ok: result.ok, errors: result.errors, fields: result.fields, name: result.name, notes: result.notes, action: type, data: result.data,
         }));
         if (result.changed) {
-          const map = result.changed;
-          // Everyone on the map sees the mailboxes where they now stand, and every other open editor asks for the maps again.
-          const updated = packetManager.mailboxEditorUpdated({ by: currentPlayer.username });
-          for (const other of Object.values(playerCache.list()) as any[]) {
-            if (!other?.wt) continue;
-            if (String(other.location?.map ?? "").replaceAll(".json", "") === map) await sendMailboxes(other.wt, map);
-            if (other.id !== currentPlayer.id && mailboxEditor.mayHaveEditorOpen(other)) sendPacket(other.wt, updated);
-          }
+          // Everyone on the map sees the mailboxes where they now stand, on every node, and every other open editor asks for the maps again.
+          await mailboxesChangedHere(result.changed, currentPlayer.username, currentPlayer.id);
+          void tellPeers("mailboxes", { map: result.changed, by: currentPlayer.username });
         }
         break;
       }

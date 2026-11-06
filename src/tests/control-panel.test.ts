@@ -49,7 +49,10 @@ const assets = new Map<string, any>([
   ["weather", [{ name: "rain" }, { name: "snow" }]],
 ]);
 mock.module("../services/assetCache", () => ({
+  onWrite: () => () => {},
+  changedElsewhere: () => {},
   default: {
+    onChange: () => {},
     get: async (key: string) => assets.get(key),
     set: async (key: string, value: any) => assets.set(key, value),
     add: async (key: string, value: any) => assets.set(key, value),

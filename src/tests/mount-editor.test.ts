@@ -16,6 +16,7 @@ await standInFor("../services/assetCache", () => ({
     get: async (key: string) => cache.get(key),
     set: async (key: string, value: any) => cache.set(key, value),
     add: async (key: string, value: any) => cache.set(key, value),
+    onChange: () => {},
   },
 }));
 

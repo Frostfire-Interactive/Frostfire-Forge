@@ -51,6 +51,13 @@ export function useSnapshotMaps(maps: Iterable<SnapshotMap> | Map<string, Snapsh
   return previous;
 }
 
+/** A map made while the node runs (cluster/index.ts clusterMapAdded): a snapshot may be on it too. */
+export function addSnapshotMap(map: SnapshotMap): void {
+  if (!knownMaps) return;
+  const name = map.name.replace(/.json$/, "");
+  knownMaps.set(name, { ...map, name });
+}
+
 /** Whether `x`,`y` is a point inside `map` as this node knows it. */
 function inside(map: SnapshotMap | undefined, x: number, y: number): boolean {
   return !!map && finite(map.widthPx) && finite(map.heightPx) && x >= 0 && y >= 0 && x <= map.widthPx && y <= map.heightPx;

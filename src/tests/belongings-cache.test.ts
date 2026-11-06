@@ -177,6 +177,7 @@ const assets = new Map<string, any>([
 ]);
 mock.module("../services/assetCache", () => ({
   default: {
+    onChange: () => {},
     get: async (key: string) => assets.get(key) ?? null,
     set: async (key: string, value: any) => assets.set(key, value),
     add: async (key: string, value: any) => assets.set(key, value),

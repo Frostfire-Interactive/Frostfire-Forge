@@ -1,12 +1,10 @@
 import language from "../../systems/language";
 import log from "../../modules/logger";
 import { Events } from "../../systems/events";
-import { MIRROR_RADIUS_PX } from "../../cluster/strip";
 import { audience as chatAudience } from "../../systems/chatgate";
-import { clusterEnabled } from "../../cluster/config";
 import { decryptPrivateKey, decryptRsa, _privateKey } from "../../modules/cipher";
 import { findPlayersWithTargetInAOI } from "../aoi";
-import { forwardAoiEvent } from "../../cluster/aoievent";
+import { forwardFromPlayer } from "../../cluster/aoievent";
 import { listener } from "../../modules/event_bus";
 import { packetManager } from "../packet_manager";
 import { protectLinks, restoreLinks, type ChatLink } from "../../systems/itemlinks";
@@ -74,6 +72,8 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           findPlayersWithTargetInAOI(currentPlayer.id).forEach((player) => {
             sendMessageToPlayer(player.wt, "");
           });
+          // Listeners across a block border heard the line from the neighbour, so it is cleared there too.
+          forwardFromPlayer(currentPlayer, () => packetManager.chat({ id: wt.data.id, message: "", username: currentPlayer.username }), { speaker: currentPlayer.username });
           return;
         }
 
@@ -128,19 +128,13 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
 
         // Cluster mode: listeners across a block border hear the line too, even when no one here does (so
         // before the return below). Their node sends it as written: translation needs the listener's
-        // language, which only their node knows. A stealthed or vanished speaker is heard by admins only,
-        // and the other node cannot tell its admins apart for this, so the line stays here. Cluster off,
-        // the packet is not even built.
-        if (clusterEnabled() && !currentPlayer.isStealth && !currentPlayer.isVanished) {
-          forwardAoiEvent(
-            String(currentPlayer.location.map), currentPlayer.aoi?.layerId ?? null,
-            Number(currentPlayer.location.position.x), Number(currentPlayer.location.position.y),
-            MIRROR_RADIUS_PX,
-            packetManager.chat({ id: wt.data.id, message: sentMessage, username: currentPlayer.username, ...(sentLinks.length > 0 ? { links: sentLinks } : {}) }),
-            // The other node holds the line back from listeners who ignore the speaker or cannot see them.
-            { speaker: currentPlayer.username }
-          );
-        }
+        // language, which only their node knows.
+        forwardFromPlayer(
+          currentPlayer,
+          () => packetManager.chat({ id: wt.data.id, message: sentMessage, username: currentPlayer.username, ...(sentLinks.length > 0 ? { links: sentLinks } : {}) }),
+          // The other node holds the line back from listeners who ignore the speaker or cannot see them.
+          { speaker: currentPlayer.username }
+        );
 
         listener.emit(Events.PLAYER_CHAT, { player: currentPlayer, message: decryptedMessage || data?.toString(), mapName: currentPlayer.location.map });
 
@@ -194,6 +188,8 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         playersInMap.forEach((player) => {
           sendPacketBestEffort(player.wt, packetManager.typing(typingData));
         });
+        // Viewers across a block border see the speaker's mirror, so they see the bubble too.
+        forwardFromPlayer(currentPlayer, () => packetManager.typing(typingData), { bestEffort: true });
         break;
       }
 
@@ -209,6 +205,7 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         playersInMap.forEach((player) => {
           sendPacketBestEffort(player.wt, packetManager.stopTyping(stopTypingData));
         });
+        forwardFromPlayer(currentPlayer, () => packetManager.stopTyping(stopTypingData), { bestEffort: true });
         break;
       }
   }

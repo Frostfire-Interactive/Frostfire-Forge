@@ -14,6 +14,7 @@ function fakeDeps(over: Partial<ReviveDeps> = {}) {
     send: (viewer, packets) => { steps.push(`send:${viewer.name}:${packets[0]}`); },
     ghostPacket: () => ["ghost"],
     revivePacket: () => ["revive"],
+    relay: (target, packets) => { steps.push(`relay:${target.id}:${packets.join(",")}`); },
     broadcastEffects: () => { steps.push("effects"); },
     sendPartyStats: () => { steps.push("party"); },
     revived: () => { steps.push("revived"); },
@@ -40,7 +41,7 @@ test("a dead player is revived in place at full health, and the map is told", as
   expect(hero.stats.stamina).toBe(80);
   expect(steps).toEqual([
     "sickness", "sync", "keep", "dead-state:hero", "revision", "viewers:main.json",
-    "send:v1:ghost", "send:v1:revive", "send:v2:ghost", "send:v2:revive",
+    "send:v1:ghost", "send:v1:revive", "send:v2:ghost", "send:v2:revive", "relay:7:ghost,revive",
     "effects", "party", "revived",
   ]);
 });
@@ -120,5 +121,7 @@ test("the REVIVE command and the cells-revive action both call revivePlayer", as
   const body = receiver.slice(depsStart, receiver.indexOf("\n}\n", depsStart));
   expect(body).toContain("player.setDeadState(username, 0, null)");
   expect(body).toContain("filterPlayersByMap(map)");
+  // The viewers of the player's mirrors on neighbouring nodes see the revive as well.
+  expect(body).toContain("relay: (target, packets) => relayToMirrorViewers(target, packets, false)");
   expect(body).toContain("listener.emit(Events.PLAYER_REVIVED, { player: target })");
 });

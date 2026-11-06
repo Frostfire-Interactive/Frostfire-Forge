@@ -5,6 +5,7 @@ import { atomically, type Batch } from "../../services/batch";
 import log from "../../modules/logger";
 import { listener } from "../../modules/event_bus";
 import { Events } from "../events";
+import { onPeerNews, tellPeers } from "../../cluster/peernews";
 import { find, questsGivenBy, questsEndedBy, isGiver, isEnder } from "./definitions";
 
 export const MAX_ACTIVE_QUESTS = 25;
@@ -582,6 +583,7 @@ async function refreshRadiusTracking(username: string): Promise<void> {
  * the tables did, and so does the log each of them carries; the rest are
  * forgotten, to be read when next asked for. If a statement fails, all are
  * forgotten and each online player's log is put back in step with the tables.
+ * In a cluster the region's other nodes are told, for the logs their players carry.
  */
 export async function removeFromEveryLog(questId: number): Promise<void> {
   const qid = Number(questId);
@@ -601,19 +603,34 @@ export async function removeFromEveryLog(questId: number): Promise<void> {
       await logRows.set(uname, rows.log.filter((row) => !ofQuest(qid)(row)));
       await progressRows.set(uname, rows.progress.filter((row) => !ofQuest(qid)(row)));
     }
-
-    for (const player of Object.values((playerCache.list() as Record<string, any>) || {})) {
-      const data = player?.questlog as QuestLogData | undefined;
-      if (!data || !Array.isArray(data.active)) continue;
-      const completed = Array.isArray(data.completed) ? data.completed : [];
-      if (!data.active.some((e) => e.quest_id === qid) && !completed.includes(qid)) continue;
-      data.active = data.active.filter((e) => e.quest_id !== qid);
-      data.completed = completed.filter((id) => id !== qid);
-      setCachedLog(player.username, data);
-      await refreshRadiusTracking(player.username);
-    }
+    await dropFromLogsHere(qid);
   });
+  void tellPeers("quest-removed", { questId: qid });
 }
+
+/** The logs this node's online players carry lose the quest `qid`. */
+async function dropFromLogsHere(qid: number): Promise<void> {
+  for (const player of Object.values((playerCache.list() as Record<string, any>) || {})) {
+    const data = player?.questlog as QuestLogData | undefined;
+    if (!data || !Array.isArray(data.active)) continue;
+    const completed = Array.isArray(data.completed) ? data.completed : [];
+    if (!data.active.some((e) => e.quest_id === qid) && !completed.includes(qid)) continue;
+    data.active = data.active.filter((e) => e.quest_id !== qid);
+    data.completed = completed.filter((id) => id !== qid);
+    setCachedLog(player.username, data);
+    await refreshRadiusTracking(player.username);
+  }
+}
+
+/**
+ * Cluster mode: a quest deleted in the editor on another node of the region. Its rows went there, and every player's
+ * shared rows were forgotten; the logs this node's players carry lose it here.
+ */
+onPeerNews("quest-removed", (news) => {
+  const qid = news?.questId;
+  if (!Number.isInteger(qid) || qid <= 0) return;
+  return forEveryone(() => dropFromLogsHere(qid));
+});
 
 /** Thrown inside a hand-in's batch to leave it unsent: what the player is told instead. */
 class Refused extends Error {

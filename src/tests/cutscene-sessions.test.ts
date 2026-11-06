@@ -865,7 +865,7 @@ describe("/cutscene", () => {
   test("says why a scene could not be played, and what there is not", async () => {
     install(makeScene("Intro"));
     expect(await sessions.runCommand(admin(), ["play", "Nope"])).toEqual(["There is no cutscene called Nope"]);
-    expect(await sessions.runCommand(admin(), ["play", "Intro", "ghosty"])).toEqual(["ghosty is not online on this server"]);
+    expect(await sessions.runCommand(admin(), ["play", "Intro", "ghosty"])).toEqual(["ghosty is not online"]);
     expect(await sessions.runCommand(admin(), ["play"])).toEqual([expect.stringContaining("Use /cutscene")]);
     expect(await sessions.runCommand(admin(), [])).toEqual([expect.stringContaining("Use /cutscene")]);
     const away = admin();
@@ -884,7 +884,7 @@ describe("/cutscene", () => {
     const other = enter(makePlayer());
     await sessions.play(other, "Intro");
     expect(await sessions.runCommand(me, ["stop", other.username])).toEqual([`Stopped the cutscene of ${other.username}`]);
-    expect(await sessions.runCommand(me, ["stop", "ghosty"])).toEqual(["ghosty is not online on this server"]);
+    expect(await sessions.runCommand(me, ["stop", "ghosty"])).toEqual(["ghosty is not online"]);
   });
 
   test("resets what a character has seen, online or not", async () => {
@@ -1176,5 +1176,158 @@ describe("the events", () => {
     expect(Events.CUTSCENE_STARTED).toBe("onCutsceneStarted");
     expect(Events.CUTSCENE_ENDED).toBe("onCutsceneEnded");
     expect(Events.CUTSCENE_MARK).toBe("onCutsceneMark");
+  });
+});
+
+describe("/cutscene in a cluster", () => {
+  // Each node of a region plays scenes to its own players. `play <name> map` is told to the other nodes (peer news
+  // "cutscene-map") and each plays it to its own players on that map. A player named who is on another node is played
+  // to or stopped there (the player action "cells-cutscene"), and that node tells the admin how it went. A reset is
+  // told to every node (peer news "cutscene-views-reset"), so none goes on taking the scene for seen.
+  const admin = () => enter(makePlayer({ isAdmin: true, permissions: [] }));
+  const BUS_KEY = "cutscene-test-key";
+  async function region() {
+    const { ClusterBus } = await import("../cluster/bus");
+    const { MemoryStore } = await import("../cluster/memorystore");
+    const { PEER_NEWS, peerNews } = await import("../cluster/peernews");
+    const store = new MemoryStore();
+    const here = new ClusterBus(store, "here", BUS_KEY);
+    peerNews.attach(here, "here", "r");
+    await here.start();
+    const other = new ClusterBus(store, "other", BUS_KEY);
+    const told: any[] = [];
+    other.on(PEER_NEWS, (data, from) => { if (from === "here") told.push(data); });
+    await other.start();
+    return {
+      told,
+      tell: (name: string, data: unknown) => other.toWorld(PEER_NEWS, { name, region: "r", data }),
+      close: async () => { peerNews.detach(); await other.stop(); await here.stop(); },
+    };
+  }
+  /** This node's delivery on a bus that records what goes to other nodes, and a directory with `far` on node "b". */
+  async function directoryWith(far: string[] | "broken") {
+    const { delivery } = await import("../cluster/deliver");
+    const sentTo: any[] = [];
+    const bus: any = { nodeId: "a", on: () => {}, toNode: async (node: string, kind: string, data: any) => { sentTo.push({ node, kind, data }); } };
+    const directory: any = {
+      get: async (name: string) => {
+        if (far === "broken") throw new Error("the store is down");
+        return far.includes(name.toLowerCase()) ? { nodeId: "b", epoch: 1 } : null;
+      },
+    };
+    delivery.attach(bus, directory);
+    return { sentTo, close: () => delivery.detach() };
+  }
+  const until = async (done: () => boolean) => { for (let i = 0; i < 200 && !done(); i++) await tick(5); };
+
+  test("play map plays to this node's players on the map and tells the other nodes", async () => {
+    install(makeScene("Intro"));
+    const me = admin();
+    const cluster = await region();
+    try {
+      expect(await sessions.runCommand(me, ["play", "Intro", "map"])).toEqual(["Playing Intro to 1 player on main on this node; the region's other nodes play it to theirs"]);
+      expect(me.cutscene?.name).toBe("Intro");
+      await until(() => cluster.told.length > 0);
+      expect(cluster.told.map((t) => [t.name, t.data])).toEqual([["cutscene-map", { map: "main", scene: "Intro" }]]);
+    } finally {
+      await cluster.close();
+    }
+  });
+
+  test("a scene played to a map on another node is played to this node's players on that map", async () => {
+    install(makeScene("Intro"), makeScene("Cave", { map: "cave" }));
+    const watcher = enter(makePlayer());
+    const caver = enter(makePlayer({ location: { map: "cave", position: { x: 10, y: 10, direction: "down" } } }));
+    const cluster = await region();
+    try {
+      await cluster.tell("cutscene-map", { map: "main", scene: "Intro" });
+      await until(() => !!watcher.cutscene);
+      expect(watcher.cutscene?.name).toBe("Intro");
+      expect(caver.cutscene).toBeUndefined();
+
+      // News that names no map or no scene plays nothing; the news after it shows it was heard.
+      const late = enter(makePlayer());
+      await cluster.tell("cutscene-map", { map: "main" });
+      await cluster.tell("cutscene-map", { scene: "Intro" });
+      await cluster.tell("cutscene-map", null);
+      await cluster.tell("cutscene-map", { map: "cave", scene: "Cave" });
+      await until(() => !!caver.cutscene);
+      expect(caver.cutscene?.name).toBe("Cave");
+      expect(late.cutscene).toBeUndefined();
+    } finally {
+      await cluster.close();
+    }
+  });
+
+  test("a player on another node is played the scene, or has it stopped, there", async () => {
+    install(makeScene("Intro"));
+    const me = admin();
+    const cluster = await directoryWith(["farhero"]);
+    try {
+      expect(await sessions.runCommand(me, ["play", "Intro", "FarHero"])).toEqual([]);
+      expect(await sessions.runCommand(me, ["stop", "farhero"])).toEqual([]);
+      expect(cluster.sentTo).toEqual([
+        { node: "b", kind: "player-action", data: { username: "FarHero", action: "cells-cutscene", args: { by: me.username, play: "Intro" }, epoch: 1 } },
+        { node: "b", kind: "player-action", data: { username: "farhero", action: "cells-cutscene", args: { by: me.username, stop: true }, epoch: 1 } },
+      ]);
+      expect(await sessions.runCommand(me, ["play", "Intro", "ghosty"])).toEqual(["ghosty is not online"]);
+      expect(await sessions.runCommand(me, ["stop", "ghosty"])).toEqual(["ghosty is not online"]);
+    } finally {
+      cluster.close();
+    }
+  });
+
+  test("a player who could not be looked for is not called offline", async () => {
+    install(makeScene("Intro"));
+    const cluster = await directoryWith("broken");
+    try {
+      expect(await sessions.runCommand(admin(), ["play", "Intro", "ghosty"])).toEqual(["That player could not be reached, so nothing was done. They may be online on another server node."]);
+    } finally {
+      cluster.close();
+    }
+  });
+
+  test("a scene an admin on another node asked for is played or stopped here, and the admin is told", async () => {
+    install(makeScene("Intro"));
+    const { tryOnPlayer } = await import("../cluster/deliver");
+    const target = enter(makePlayer());
+    const told: string[] = [];
+    enter(makePlayer({ username: "boss", wt: { readyState: 1, send: (p: any) => told.push(JSON.parse(packet.decode(p)).data?.message) } }));
+
+    expect(await tryOnPlayer(target.username, "cells-cutscene", { by: "boss", play: "Intro" })).toBe("sent");
+    expect(target.cutscene?.name).toBe("Intro");
+    expect(await tryOnPlayer(target.username, "cells-cutscene", { by: "boss", stop: true })).toBe("sent");
+    expect(target.cutscene).toBeUndefined();
+    await tryOnPlayer(target.username, "cells-cutscene", { by: "boss", stop: true });
+    // One that names no admin, or asks for nothing, is dropped.
+    await tryOnPlayer(target.username, "cells-cutscene", { play: "Intro" });
+    await tryOnPlayer(target.username, "cells-cutscene", { by: "boss" });
+    expect(target.cutscene).toBeUndefined();
+    expect(told).toEqual([`Playing Intro to ${target.username}`, `Stopped the cutscene of ${target.username}`, `${target.username} is not in a cutscene`]);
+  });
+
+  test("a reset is told to the region, and one from another node lets this node's triggers play the scene again", async () => {
+    install(makeScene("Greeting", { triggers: [trigger({ on: "npc", npcId: 7, once: true })] }));
+    const player = enter(makePlayer());
+    expect(await sessions.onNpcInteract(player, 7)).toBe(true);
+    await sessions.onEnd(player, tokenOf(player), false);
+    expect(await sessions.onNpcInteract(player, 7)).toBe(false);
+    const cluster = await region();
+    try {
+      await sessions.runCommand(admin(), ["reset", "Greeting", "Somebody"]);
+      await until(() => cluster.told.length > 0);
+      expect(cluster.told.map((t) => [t.name, t.data])).toEqual([["cutscene-views-reset", { username: "somebody", scene: "Greeting" }]]);
+
+      await cluster.tell("cutscene-views-reset", { username: player.username });
+      await cluster.tell("cutscene-views-reset", { username: player.username, scene: "Greeting" });
+      let again = false;
+      for (let i = 0; i < 200 && !again; i++) {
+        again = await sessions.onNpcInteract(player, 7);
+        if (!again) await tick(5);
+      }
+      expect(again).toBe(true);
+    } finally {
+      await cluster.close();
+    }
   });
 });

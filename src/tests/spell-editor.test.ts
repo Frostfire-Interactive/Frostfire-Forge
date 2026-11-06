@@ -975,3 +975,73 @@ describe("editor packets", () => {
     expect(result.ok).toBe(false);
   });
 });
+
+describe("in a cluster", () => {
+  // Every node of a region holds its own online players, each with the spell book it was last sent. The spell list
+  // is shared; which spell changed is told to the other nodes (peer news "spell-changed"), and each sends the spell
+  // book again to its own players who know it.
+  const BUS_KEY = "spell-editor-test-key";
+  async function region() {
+    const { ClusterBus } = await import("../cluster/bus");
+    const { MemoryStore } = await import("../cluster/memorystore");
+    const { PEER_NEWS, peerNews } = await import("../cluster/peernews");
+    const store = new MemoryStore();
+    const here = new ClusterBus(store, "here", BUS_KEY);
+    peerNews.attach(here, "here", "r");
+    await here.start();
+    const other = new ClusterBus(store, "other", BUS_KEY);
+    const told: any[] = [];
+    other.on(PEER_NEWS, (data, from) => { if (from === "here") told.push(data); });
+    await other.start();
+    return {
+      told,
+      tell: (name: string, data: unknown) => other.toWorld(PEER_NEWS, { name, region: "r", data }),
+      close: async () => { peerNews.detach(); await other.stop(); await here.stop(); },
+    };
+  }
+  const until = async (done: () => boolean) => { for (let i = 0; i < 200 && !done(); i++) await new Promise((r) => setTimeout(r, 5)); };
+
+  test("a save tells the region's other nodes which spell changed", async () => {
+    const cluster = await region();
+    try {
+      await act(ADMIN, "SPELL_EDITOR_SAVE", spell({ name: "frost_bolt", originalName: "frost_bolt", damage: 30, icon: "frost_bolt" }));
+      await until(() => cluster.told.length > 0);
+      expect(cluster.told.map((t) => [t.name, t.data])).toEqual([["spell-changed", { name: "frost_bolt" }]]);
+    } finally {
+      await cluster.close();
+    }
+  });
+
+  test("a spell saved on another node is sent again to this node's players who know it", async () => {
+    const hero = login("se-hero", "hero", { frost_bolt: { icon: "frost_bolt", damage: 10, cooldown: 1 } });
+    const bystander = login("se-2", "builder", {});
+    // The other node wrote the shared list.
+    cache.set("spells", (cache.get("spells") as any[]).map((s) => (s.name === "frost_bolt" ? { ...s, damage: 30 } : s)));
+    const cluster = await region();
+    try {
+      await cluster.tell("spell-changed", { name: "frost_bolt" });
+      await until(() => hero.sent.length > 0);
+      expect(hero.sent.map((p) => p.type)).toEqual(["SPELLS"]);
+      expect(hero.sent[0].data.frost_bolt).toMatchObject({ damage: 30 });
+      expect(hero.live.learnedSpells.frost_bolt).toMatchObject({ damage: 30 });
+      expect(bystander.sent).toEqual([]);
+      // This node's login workers are handed the list when its write is heard (socket/authentication_pool.ts).
+      expect(handedToLoginWorkers).toBe(0);
+    } finally {
+      await cluster.close();
+    }
+  });
+
+  test("news without a spell's name sends nothing", async () => {
+    const hero = login("se-hero", "hero", { frost_bolt: { icon: "frost_bolt", damage: 10, cooldown: 1 } });
+    const cluster = await region();
+    try {
+      await cluster.tell("spell-changed", {});
+      await cluster.tell("spell-changed", { name: 5 });
+      await new Promise((r) => setTimeout(r, 50));
+      expect(hero.sent).toEqual([]);
+    } finally {
+      await cluster.close();
+    }
+  });
+});

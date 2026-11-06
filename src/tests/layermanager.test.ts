@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { LayerManager, blockOf } from "../services/layermanager";
+import { LayerManager, MAX_PLAYERS_PER_LAYER, blockOf } from "../services/layermanager";
 
 // Small cap and 100 px blocks keep the arithmetic readable; the first and
-// last tests use the real defaults (50 per block, 4096 px blocks).
+// last tests use the real defaults (MAX_PLAYERS_PER_LAYER per block, from config/aoi.json; 4096 px blocks).
 const make = () => new LayerManager({ maxPlayersPerBlock: 3, blockSizePx: 100 });
 
 // x positions inside block 0 and block 1 for the 100 px blocks above
@@ -99,10 +99,10 @@ describe("assignPlayerToLayer", () => {
     expect(lm.countInBlock("main:layer_1", blockOf(B, 0, 100))).toBe(1);
   });
 
-  test("50 players in one default block fill layer_1 and the 51st goes to layer_2", () => {
+  test("a default block's cap of players fills layer_1 and the next one goes to layer_2", () => {
     const lm = new LayerManager();
-    for (let i = 0; i < 50; i++) lm.assignPlayerToLayer(`p${i}`, "main", 100, 100);
-    expect(lm.assignPlayerToLayer("p50", "main", 200, 200)).toBe("main:layer_2");
+    for (let i = 0; i < MAX_PLAYERS_PER_LAYER; i++) lm.assignPlayerToLayer(`p${i}`, "main", 100, 100);
+    expect(lm.assignPlayerToLayer("next", "main", 200, 200)).toBe("main:layer_2");
     // a block over 4096 px away is still layer_1
     expect(lm.assignPlayerToLayer("far", "main", 5000, 100)).toBe("main:layer_1");
   });

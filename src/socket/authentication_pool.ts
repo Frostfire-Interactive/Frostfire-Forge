@@ -96,3 +96,20 @@ export async function refreshAuthMounts(): Promise<void> {
     const mounts = await assetCache.get("mounts");
     pool.refresh("mounts", mounts ? JSON.stringify(mounts) : null);
 }
+
+/**
+ * Cluster mode: a list the workers hold, saved in its editor on another node of the region. The editor there handed
+ * it to that node's workers; these are handed it as well. A save here hands it on itself.
+ */
+export function followListsSavedElsewhere(
+    cache: { onChange(key: string, listener: (elsewhere: boolean) => void): void },
+    lists: Record<string, () => Promise<void>>,
+): void {
+    for (const [key, refresh] of Object.entries(lists)) {
+        cache.onChange(key, (elsewhere) => {
+            if (!elsewhere) return;
+            refresh().catch((error) => log.error(`Could not hand the ${key} saved on another node to the login workers: ${error}`));
+        });
+    }
+}
+followListsSavedElsewhere(assetCache, { spells: refreshAuthSpells, items: refreshAuthItems, mounts: refreshAuthMounts });

@@ -36,6 +36,8 @@ import { audience as chatAudience } from "../../systems/chatgate";
 import { broadcastWorld, deliverToPlayer, isOnline, registerPlayerAction, runOnPlayer, tryOnPlayer, whetherOnline, type PlayerReach } from "../../cluster/deliver";
 import { clearShared } from "../../cluster/clearguard";
 import { followServerOrders, sendServerOrder, serverOrdersKept } from "../../cluster/index";
+import { onPeerNews, tellPeers } from "../../cluster/peernews";
+import { settledPick } from "../../systems/weathercycle";
 import { greetContacts, tellContactsOffline } from "../contacts";
 import { decryptPrivateKey, decryptRsa, _privateKey } from "../../modules/cipher";
 import { drainQueries } from "../../controllers/sqldatabase";
@@ -44,14 +46,14 @@ import { ghosts } from "../../cluster/ghosts";
 import { gracefulShutdown } from "../server.ts";
 import { followWhitelist, isWhitelistEnabled, setWhitelistEnabled, shareWhitelistChanges } from "../../services/whitelist";
 import { listener } from "../../modules/event_bus";
-import { notifyLayerChanged, updatePlayerAOI, broadcastToAOI, findPlayersWithTargetInAOI } from "../aoi";
+import { notifyLayerChanged, updatePlayerAOI, broadcastToAOI, findPlayersWithTargetInAOI, relayToMirrorViewers } from "../aoi";
 import { packetManager } from "../packet_manager";
 import { randomBytes } from "../../modules/hash";
 import { reloadMap } from "../../modules/assetloader";
 import { resetCooldowns } from "../../systems/cooldowns";
 import { setLock as setSubscriptionLock, isLockId as isSubscriptionLock, subscriptionState } from "../../systems/subscriptions";
 import { forgetLook } from "../looks";
-import { MAX_COMMAND_LENGTH, TORNADO, bumpStateRevision, busyNote, channelLineOk, chatHearing, chatLinksOf, chatRateOk, constructMapMetadata, defaultMap, despawnBatchQueue, destinationLayerFor, draggedPlayersMap, filterPlayersByMap, getAnimationNameForDirection, guardedAction, guildDone, guildEditOk, handlePlayerDeath, isCiphertext, kickedFromGuild, mapPropertiesCache, maps, offerInvitation, officerChat, panelCommands, panelHears, pushGuild, queueSpawnForReceivers, randomPick, resolvedWeatherCache, reviveDeps, resyncNpcChunks, rowOf, sendAnimationTo, sendIgnoreAnswer, sendPacket, sendReport, sendToWholeMap, spawnBatchQueue, stateRevision, subscriptionLocked, transitionPlayerToMap, weatherShown, withSender, worldsCache } from "../receiver";
+import { MAX_COMMAND_LENGTH, TORNADO, bumpStateRevision, busyNote, channelLineOk, chatHearing, chatLinksOf, chatRateOk, constructMapMetadata, defaultMap, despawnBatchQueue, destinationLayerFor, draggedPlayersMap, filterPlayersByMap, getAnimationNameForDirection, guardedAction, guildDone, guildEditOk, handlePlayerDeath, isCiphertext, kickedFromGuild, mapPropertiesCache, maps, noticeRegion, offerInvitation, officerChat, panelCommands, panelHears, pushGuild, queueSpawnForReceivers, resolvedWeatherCache, reviveDeps, resyncNpcChunks, rowOf, sendAnimationTo, sendIgnoreAnswer, sendPacket, sendReport, sendToWholeMap, spawnBatchQueue, stateRevision, subscriptionLocked, transitionPlayerToMap, weatherShown, withSender, worldsCache } from "../receiver";
 import { remoteAdminOf } from "../arrival";
 import { revivePlayer } from "../revive";
 import { trackPacket } from "../../cluster/inflight";
@@ -343,6 +345,41 @@ registerPlayerAction("cells-permissions", guardedAction("cells-permissions", asy
   playerCache.set(target.id, target);
 }));
 
+/**
+ * Reads a plain map again from this node's copy of its file, and has this node's players on it load it again. False
+ * when this node does not hold the map, or it could not be read.
+ */
+async function reloadMapHere(mapName: string): Promise<boolean> {
+  const map = (maps as any[]).find((m) => m.name === `${mapName}.json`);
+  if (!map) return false;
+  const result = (await reloadMap(mapName)) as MapData | null;
+  if (!result) return false;
+  map.compressed = result.compressed;
+  map.data = result.data;
+  for (const player of filterPlayersByMap(mapName)) {
+    const mapMetadata = constructMapMetadata(
+      mapName,
+      player.location.position?.x || 0,
+      player.location.position?.y || 0,
+      player.location.position?.direction || "down",
+      maps,
+      mapPropertiesCache
+    );
+    sendPacket(player.wt, packetManager.loadMap(mapMetadata));
+    // loading a map clears the client's creatures and gathering nodes
+    creatures.resyncPlayer(player.id);
+    gathering.resyncPlayer(player.id);
+  }
+  return true;
+}
+
+// Cluster mode: a map reloaded with /reloadmap on another node. A map can be split between nodes; each reloads its own.
+onPeerNews("map-reloaded", async (news) => {
+  const map = news?.map;
+  if (typeof map !== "string" || !map) return;
+  await reloadMapHere(map);
+});
+
 export async function handle(ctx: PacketContext): Promise<unknown> {
   const { currentPlayer, data, parsedMessage, type, wt } = ctx;
   switch (type) {
@@ -480,15 +517,18 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           id: targetPlayerId,
           adminId: wt.data.id,
         };
-        sendPacket(wt, packetManager.dragPlayerStart(dragStartData));
+        const dragStartPacket = packetManager.dragPlayerStart(dragStartData);
+        sendPacket(wt, dragStartPacket);
 
         // Notify all players on the map that drag started
         const playersInMap = filterPlayersByMap(targetPlayer.location.map);
         playersInMap.forEach((p) => {
           if (p.wt && p.wt.readyState === 1) {
-            sendPacket(p.wt, packetManager.dragPlayerStart(dragStartData));
+            sendPacket(p.wt, dragStartPacket);
           }
         });
+        // Cluster mode: and the viewers of the player's mirrors on neighbouring nodes.
+        relayToMirrorViewers(targetPlayer, dragStartPacket, false);
         break;
       }
 
@@ -516,15 +556,17 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           id: targetPlayerId,
           adminId: wt.data.id,
         };
-        sendPacket(wt, packetManager.dragPlayerStop(dragStopData));
+        const dragStopPacket = packetManager.dragPlayerStop(dragStopData);
+        sendPacket(wt, dragStopPacket);
 
         // Notify all players on the map that drag stopped
         const playersInMap = filterPlayersByMap(targetPlayer.location.map);
         playersInMap.forEach((p) => {
           if (p.wt && p.wt.readyState === 1) {
-            sendPacket(p.wt, packetManager.dragPlayerStop(dragStopData));
+            sendPacket(p.wt, dragStopPacket);
           }
         });
+        relayToMirrorViewers(targetPlayer, dragStopPacket, false);
 
         // Save where they were put down. Once, here: the updates while they
         // are carried arrive twenty a second.
@@ -1742,31 +1784,13 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
                 panelHears(wt, announcement);
                 break;
               }
+              // A map's players (or its admins) on every node that holds part of the map.
               case "ADMINS": {
-                const playersInMap = filterPlayersByMap(
-                  currentPlayer.location.map
-                );
-                const playersInMapAdmins = playersInMap.filter(
-                  (p) => p.isAdmin
-                );
-                playersInMapAdmins.forEach((player) => {
-                  const notifyData = {
-                    message: message,
-                  };
-                  sendPacket(player.wt, packetManager.notify(notifyData));
-                });
+                noticeRegion(message, { map: currentPlayer.location.map, admins: true });
                 break;
               }
               case "MAP": {
-                const playersInMap = filterPlayersByMap(
-                  currentPlayer.location.map
-                );
-                playersInMap.forEach((player) => {
-                  const notifyData = {
-                    message: message,
-                  };
-                  sendPacket(player.wt, packetManager.notify(notifyData));
-                });
+                noticeRegion(message, { map: currentPlayer.location.map });
                 break;
               }
             }
@@ -3009,32 +3033,10 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
               break;
             }
 
-            const result = (await reloadMap(mapName)) as MapData | null;
-            if (result) {
-              const notifyData = {
-                message: `Map ${mapName} reloaded successfully`,
-              };
-              sendPacket(wt, packetManager.notify(notifyData));
-
-              map.compressed = result.compressed;
-              map.data = result.data;
-
-              const playersInMap = filterPlayersByMap(mapName);
-
-              playersInMap.forEach((player) => {
-                const mapMetadata = constructMapMetadata(
-                  mapName,
-                  player.location.position?.x || 0,
-                  player.location.position?.y || 0,
-                  player.location.position?.direction || "down",
-                  maps,
-                  mapPropertiesCache
-                );
-                sendPacket(player.wt, packetManager.loadMap(mapMetadata));
-                // loading a map clears the client's creatures and gathering nodes
-                creatures.resyncPlayer(player.id);
-                gathering.resyncPlayer(player.id);
-              });
+            if (await reloadMapHere(mapName)) {
+              sendPacket(wt, packetManager.notify({ message: `Map ${mapName} reloaded successfully` }));
+              // and on the region's other nodes (cluster mode)
+              void tellPeers("map-reloaded", { map: mapName });
             } else {
               log.error(`Failed to reload map ${mapName}`);
               const notifyData = {
@@ -3195,7 +3197,8 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
             let weatherData = null;
             let resolvedWeatherName = weatherName;
             if (weatherName === "random") {
-              const randomWeather = randomPick(await assetCache.get("weather") as WeatherData[]);
+              // The weather of the stretch, as every node holding part of the world settles on (systems/weathercycle.ts).
+              const randomWeather = settledPick(await assetCache.get("weather") as WeatherData[], currentMapName);
               if (randomWeather) {
                 weatherData = randomWeather;
                 resolvedWeatherName = randomWeather.name;
@@ -3219,6 +3222,9 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
                 );
               }
             }
+
+            // Cluster mode: the region's other nodes show it to their players of the world too.
+            void tellPeers("weather", { world: currentMapName, set: weatherName });
 
             sendPacket(
               wt,

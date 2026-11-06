@@ -177,6 +177,7 @@ const assets = new Map<string, any>([
 ]);
 mock.module("../services/assetCache", () => ({
   default: {
+    onChange: () => {},
     get: async (key: string) => assets.get(key) ?? null,
     set: async (key: string, value: any) => assets.set(key, value),
     add: async (key: string, value: any) => assets.set(key, value),
@@ -1342,5 +1343,77 @@ describe("what a hand-in takes", () => {
 
   test("a quest with nothing to collect takes nothing", () => {
     expect(questLog.collectedFor(quest([{ type: "talk", target: "7", required_count: 1 }])).size).toBe(0);
+  });
+});
+
+describe("in a cluster", () => {
+  // The quest rows are shared (CACHE=redis), and a delete there forgets every player's; the log each online player
+  // carries is held by the node they play on. A quest deleted in the editor on one node is told to the region's other
+  // nodes (peer news "quest-removed"), and each takes it out of the logs its own players carry.
+  const BUS_KEY = "quest-cache-test-key";
+  async function region() {
+    const { ClusterBus } = await import("../cluster/bus");
+    const { MemoryStore } = await import("../cluster/memorystore");
+    const { PEER_NEWS, peerNews } = await import("../cluster/peernews");
+    const store = new MemoryStore();
+    const here = new ClusterBus(store, "here", BUS_KEY);
+    peerNews.attach(here, "here", "r");
+    await here.start();
+    const other = new ClusterBus(store, "other", BUS_KEY);
+    const told: any[] = [];
+    other.on(PEER_NEWS, (data, from) => { if (from === "here") told.push(data); });
+    await other.start();
+    return {
+      told,
+      tell: (name: string, data: unknown) => other.toWorld(PEER_NEWS, { name, region: "r", data }),
+      close: async () => { peerNews.detach(); await other.stop(); await here.stop(); },
+    };
+  }
+  const until = async (done: () => boolean) => { for (let i = 0; i < 200 && !done(); i++) await new Promise((r) => setTimeout(r, 5)); };
+
+  test("a quest deleted here is told to the region", async () => {
+    everyone();
+    await login("hero");
+    const cluster = await region();
+    try {
+      await questLog.removeFromEveryLog(1);
+      await until(() => cluster.told.length > 0);
+      expect(cluster.told.map((t) => [t.name, t.data])).toEqual([["quest-removed", { questId: 1 }]]);
+    } finally {
+      await cluster.close();
+    }
+  });
+
+  test("a quest deleted on another node leaves the logs this node's players carry, and nothing is written here", async () => {
+    const hero = await login();
+    await questLog.accept("hero", 20, NPC);
+    expect(objectives.getRadiusPlayers()).toEqual(["hero"]);
+    // The other node deleted its rows.
+    tables.quest_log = tables.quest_log.filter((row) => row.quest_id !== 20);
+    tables.quest_objective_progress = tables.quest_objective_progress.filter((row) => row.quest_id !== 20);
+    const cluster = await region();
+    const asked = queries.length;
+    try {
+      await cluster.tell("quest-removed", { questId: 20 });
+      await until(() => hero.questlog.active.length === 0);
+      expect(hero.questlog.active).toEqual([]);
+      expect(objectives.getRadiusPlayers()).toEqual([]);
+      expect(queries.slice(asked).filter(([sql]) => /^(INSERT|UPDATE|DELETE)/.test(sql))).toEqual([]);
+    } finally {
+      await cluster.close();
+    }
+  });
+
+  test("news without a quest's id changes nothing", async () => {
+    const hero = await login();
+    await questLog.accept("hero", 20, NPC);
+    const cluster = await region();
+    try {
+      for (const questId of [undefined, "x", 0, -1, 1.5]) await cluster.tell("quest-removed", { questId });
+      await new Promise((r) => setTimeout(r, 50));
+      expect(hero.questlog.active.map((entry: Row) => entry.quest_id)).toEqual([20]);
+    } finally {
+      await cluster.close();
+    }
   });
 });

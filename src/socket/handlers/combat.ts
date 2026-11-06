@@ -18,7 +18,7 @@ import { packetManager } from "../packet_manager";
 import { rollHeal, spellManaCost } from "../../systems/spellmath";
 import { spawnZone } from "../../systems/groundaoe";
 import { forgetLook } from "../looks";
-import { updatePlayerAOI, shouldUpdateAOI, broadcastToAOI, broadcastToAOIBestEffort, broadcastStatsUpdateToAOI, broadcastCastToAOI, broadcastGroundPreviewToAOI, clearGroundPreviewForAOI, findPlayersWithTargetInAOI } from "../aoi";
+import { updatePlayerAOI, shouldUpdateAOI, broadcastToAOI, broadcastToAOIBestEffort, broadcastStatsUpdateToAOI, broadcastCastToAOI, broadcastGroundPreviewToAOI, clearGroundPreviewForAOI, findPlayersWithTargetInAOI, relayToMirrorViewers } from "../aoi";
 import { bumpStateRevision, castSpellOnCreature, despawnBatchQueue, directionToward, faceToward, filterPlayersByMap, handlePlayerDeath, hitRemotePlayer, playersAndMirrorsNear, remoteHit, resolveSpellParticles, resumeWalkingFacing, routeSplashToMirror, sendPacket, sendPositionAnimation, sendStatsToPartyMembers, spawnBatchQueue, splashCreatures, stateRevision, subscriptionLocked, withMirrors } from "../receiver";
 import type { PacketContext } from "./context";
 
@@ -1354,9 +1354,9 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
               if (p.isVanished && !pl.isAdmin && !pl.party?.includes(p.username)) return false;
               return true;
             });
-            pls.forEach((pl: any) =>
-              sendPacket(pl.wt, packetManager.updateStats({ id: p.id, target: p.id, stats: p.stats }))
-            );
+            const statsPacket = packetManager.updateStats({ id: p.id, target: p.id, stats: p.stats });
+            pls.forEach((pl: any) => sendPacket(pl.wt, statsPacket));
+            relayToMirrorViewers(p, statsPacket, false);
             sendStatsToPartyMembers(p.username, p.id, p.stats);
           };
           const broadcastEffects = (p: any) => {

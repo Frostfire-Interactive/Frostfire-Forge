@@ -116,6 +116,68 @@ test("returns world ids and the directory of this node", async () => {
   expect(cluster!.directory.nodeId).toBe("b");
 });
 
+test("news is told to and carried out from the region's other nodes while the cluster runs, and not after", async () => {
+  const { PEER_NEWS, onPeerNews, tellPeers } = await import("../cluster/peernews");
+  const store = new MemoryStore();
+  await startCluster(store, address, fast);
+  const other = new ClusterBus(store, "a", BUS_KEY);
+  const heard: any[] = [];
+  other.on(PEER_NEWS, (data, from) => { heard.push({ ...data, from }); });
+  await other.start();
+  const carried: any[] = [];
+  onPeerNews("start-test", (data, from) => { carried.push({ data, from }); });
+  try {
+    expect(await tellPeers("start-test", { n: 1 })).toBe(true);
+    await until(() => heard.length === 1);
+    expect(heard[0]).toMatchObject({ name: "start-test", data: { n: 1 }, from: "b" });
+    await other.toWorld(PEER_NEWS, { name: "start-test", region: heard[0].region, data: { n: 2 } });
+    await until(() => carried.length === 1);
+    expect(carried[0]).toEqual({ data: { n: 2 }, from: "a" });
+    await stopCluster();
+    expect(await tellPeers("start-test", { n: 3 })).toBe(false);
+  } finally {
+    onPeerNews("start-test", null);
+    await other.stop();
+  }
+});
+
+test("a cached list written here is told to the region's other nodes, and one written there is heard here, while the cluster runs", async () => {
+  const { PEER_NEWS } = await import("../cluster/peernews");
+  const store = new MemoryStore();
+  await startCluster(store, address, fast);
+  const other = new ClusterBus(store, "a", BUS_KEY);
+  const told: any[] = [];
+  // The world channel reaches its sender too: only what node b told.
+  other.on(PEER_NEWS, (data, from) => { if (from === "b" && data?.name === "asset-changed") told.push(data); });
+  await other.start();
+  let listened = 0;
+  assetCache.onChange("start-test-list", () => listened++);
+  try {
+    await assetCache.set("start-test-list", [1]);
+    await until(() => told.length === 1);
+    expect(told[0].data).toEqual({ key: "start-test-list" });
+    expect(listened).toBe(1);
+    // Node a wrote it: the listeners here hear it, and it is not told on.
+    await other.toWorld(PEER_NEWS, { name: "asset-changed", region: told[0].region, data: { key: "start-test-list" } });
+    await until(() => listened === 2);
+    await settle();
+    expect(told.map((t) => t.data)).toEqual([{ key: "start-test-list" }]);
+    // A clear there: every list here is read again.
+    await other.toWorld(PEER_NEWS, { name: "asset-changed", region: told[0].region, data: { all: true } });
+    await until(() => listened === 3);
+    // News without a key changes nothing.
+    await other.toWorld(PEER_NEWS, { name: "asset-changed", region: told[0].region, data: {} });
+    await settle();
+    expect(listened).toBe(3);
+    await stopCluster();
+    await assetCache.set("start-test-list", [2]);
+    await settle();
+    expect(told.length).toBe(1);
+  } finally {
+    await other.stop();
+  }
+});
+
 test("entity ids come from the node's allocator once it has joined", async () => {
   const cluster = await startCluster(new MemoryStore(), address);
   const first = nextEntityId();

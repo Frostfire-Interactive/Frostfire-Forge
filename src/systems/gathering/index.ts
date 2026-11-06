@@ -6,6 +6,7 @@ import { spawnsHere } from "../../cluster";
 import { ghosts } from "../../cluster/ghosts";
 import { linkCalls } from "../../cluster/linkcalls";
 import { mirrorOwner, mirrorPlayers } from "../../cluster/mirrors";
+import { onPeerNews, tellPeers } from "../../cluster/peernews";
 import log from "../../modules/logger";
 import { getIconUrl } from "../../modules/spriteSheetManager";
 import assetCache from "../../services/assetCache";
@@ -355,16 +356,33 @@ export async function handleEditorPacket(admin: any, type: string, data: any): P
   if (answer.denied) send(wt, packetManager.notify({ message: editor.DENIED }));
   send(wt, packetManager.gatheringEditorResult({ ok: answer.ok, errors: answer.errors, fields: answer.fields, id: answer.id, notes: answer.notes, action: type, data: answer.data }));
   if (!answer.changed) return;
+  await areasChangedHere(admin.username, admin.id);
+  void tellPeers("gathering-areas", { by: admin.username });
+}
+
+/**
+ * The areas changed, saved by `by` here or on another node: the spawner is given them again, and the open editors
+ * but the saver's (`exceptId`) are told.
+ */
+async function areasChangedHere(by: string, exceptId?: string): Promise<void> {
   try {
     await reloadAreas();
   } catch (error) {
     log.error(`[Gathering] Reloading the areas after an editor change failed: ${error}`);
   }
-  const updated = packetManager.gatheringEditorUpdated({ by: admin.username });
+  const updated = packetManager.gatheringEditorUpdated({ by });
   for (const other of Object.values(playerCache.list()) as any[]) {
-    if (other?.wt && other.id !== admin.id && editor.mayHaveEditorOpen(other)) send(other.wt, updated);
+    if (other?.wt && other.id !== exceptId && editor.mayHaveEditorOpen(other)) send(other.wt, updated);
   }
 }
+
+/**
+ * Cluster mode: an area saved in the editor on another node of the region. The areas are shared (the
+ * "gathering_areas" table cache); this node spawns the nodes of its own blocks from them.
+ */
+onPeerNews("gathering-areas", (news) => {
+  return areasChangedHere(typeof news?.by === "string" ? news.by : "");
+});
 
 export const canUseEditor = editor.canUseEditor;
 

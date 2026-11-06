@@ -9,7 +9,7 @@ mock.module("../controllers/sqldatabase", () => databaseModule({
 }));
 
 const playerCache = (await import("../services/playermanager")).default;
-const { default: layerManager, blockOf } = await import("../services/layermanager");
+const { default: layerManager, blockOf, MAX_PLAYERS_PER_LAYER } = await import("../services/layermanager");
 const mapIndex = (await import("../services/mapindex")).default;
 const spatialGrid = (await import("../services/spatialgrid")).default;
 const aoiReverse = await import("../services/aoiReverseIndex");
@@ -46,7 +46,7 @@ afterEach(() => {
 
 function fillFirstLayer(mapName: string, x: number, y: number): void {
   const block = blockOf(x, y);
-  for (let i = 0; layerManager.countInBlock(`${mapName}:layer_1`, block) < 50; i++) {
+  for (let i = 0; layerManager.countInBlock(`${mapName}:layer_1`, block) < MAX_PLAYERS_PER_LAYER; i++) {
     layerManager.assignPlayerToLayer(`filler_${mapName}_${i}`, mapName, x, y);
   }
 }
@@ -298,4 +298,71 @@ test("a send that throws does not stop the pass: the zone still ticks", async ()
   await groundAoe.processZoneTicks();
 
   expect(caster.stats.health).toBe(60);
+});
+
+// Cluster mode: a player of a neighbouring node standing in the zone (a mirror) is hit through the mirror hit
+// handler (receiver.ts sends it to the owner, which applies it), never here.
+const { mirrorPlayers } = await import("../cluster/mirrors");
+
+function addMirror(id: string, x: number, y: number, layerId: string | null, extra: any = {}): any {
+  const mirror: any = {
+    id, username: `user${id}`, remote: true, mirrorFrom: "node-b",
+    location: { map: `${map}.json`, position: { x, y, direction: "down" } },
+    aoi: { layerId }, party: [], stats: { health: 50, total_max_health: 100 }, ...extra,
+  };
+  mirrorPlayers.set(id, mirror);
+  return mirror;
+}
+
+function recordMirrorHits(): any[] {
+  const hits: any[] = [];
+  groundAoe.setMirrorZoneHitHandler(async (caster, mirror, zone, damage) => { hits.push({ caster: caster.id, mirror: mirror.id, zone: zone.id, damage }); });
+  return hits;
+}
+
+test("a tick sends the hit on a mirror inside the radius on the layer to the mirror handler, and leaves the mirror as it is", async () => {
+  try {
+    const caster = addPlayer("1", 1000, 1000);
+    const inside = addMirror("m1", 1100, 1000, caster.aoi.layerId);
+    addMirror("m2", 1300, 1000, caster.aoi.layerId);                  // out of range
+    addMirror("m3", 1000, 1000, "elsewhere:layer_2");                 // other layer
+    caster.party = ["userm1", "userm2", "userm3"];
+    playerCache.set("1", caster);
+    const hits = recordMirrorHits();
+
+    const zone = spawn(caster);
+    zone.nextTickAt = 0;
+    await groundAoe.processZoneTicks();
+
+    expect(hits).toEqual([{ caster: "1", mirror: "m1", zone: zone.id, damage: -10 }]);
+    expect(inside.stats.health).toBe(50);
+  } finally {
+    mirrorPlayers.clear();
+  }
+});
+
+test("a tick sends nothing for a mirror that is a ghost, dead, in stealth or a guest, nor when the caster has gone", async () => {
+  try {
+    const caster = addPlayer("1", 1000, 1000);
+    addMirror("g", 1050, 1000, caster.aoi.layerId, { isGhost: true });
+    addMirror("d", 1050, 1000, caster.aoi.layerId, { isDead: true });
+    addMirror("s", 1050, 1000, caster.aoi.layerId, { isStealth: true });
+    addMirror("u", 1050, 1000, caster.aoi.layerId, { isGuest: true });
+    addMirror("ok", 1050, 1000, caster.aoi.layerId);
+    caster.party = ["userg", "userd", "users", "useru", "userok"];
+    playerCache.set("1", caster);
+    const hits = recordMirrorHits();
+
+    const zone = spawn(caster);
+    zone.nextTickAt = 0;
+    await groundAoe.processZoneTicks();
+    expect(hits.map((h) => h.mirror)).toEqual(["ok"]);
+
+    playerCache.remove("1");
+    zone.nextTickAt = 0;
+    await groundAoe.processZoneTicks();
+    expect(hits.map((h) => h.mirror)).toEqual(["ok"]);
+  } finally {
+    mirrorPlayers.clear();
+  }
 });

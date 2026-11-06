@@ -2,23 +2,58 @@ import { sharedRedis } from "./redisclient";
 
 type RedisValue = any;
 
-// Who wants to know when a key is written here, for what they keep of it in memory (the sheets of the items, say).
-// A write made by another process (a node of the cluster, on a shared Redis) is not heard: a listener that must
-// see those too refreshes on a timer as well.
-const changeListeners = new Map<string, Set<() => void>>();
+// Who wants to know when a key is written, for what they keep of it in memory (the sheets of the items, say). A write
+// made by another process is heard only when it is told here (changedElsewhere): in a cluster, a node tells the
+// region's others of each write it makes (cluster/index.ts). Anything else on a shared Redis is not heard: a listener
+// that must see those too refreshes on a timer as well.
+const changeListeners = new Map<string, Set<(elsewhere: boolean) => void>>();
+// Who wants to know of every write made through this process's cache, whatever its key.
+const writeListeners = new Set<(key: string | null) => void>();
 
-function changed(key: string): void {
+/** The listeners of `key` hear that it was written, here or (`elsewhere`) by another process. */
+function heard(key: string, elsewhere = false): void {
   for (const listener of changeListeners.get(key) ?? []) {
     try {
-      listener();
+      listener(elsewhere);
     } catch {
       // A listener must not undo a write.
     }
   }
 }
 
+function written(key: string | null): void {
+  for (const listener of writeListeners) {
+    try {
+      listener(key);
+    } catch {
+      // A listener must not undo a write.
+    }
+  }
+}
+
+function changed(key: string): void {
+  heard(key);
+  written(key);
+}
+
 function changedAll(): void {
-  for (const key of changeListeners.keys()) changed(key);
+  for (const key of changeListeners.keys()) heard(key);
+  written(null);
+}
+
+/** Calls `listener` with the key of each write made through this process's cache (null for a clear: every key). */
+export function onWrite(listener: (key: string | null) => void): () => void {
+  writeListeners.add(listener);
+  return () => void writeListeners.delete(listener);
+}
+
+/**
+ * `key` was written by another process on the shared cache (null: it was cleared). Its listeners here hear it as a
+ * write of their own; onWrite's do not, since it was not made here.
+ */
+export function changedElsewhere(key: string | null): void {
+  if (key === null) for (const each of changeListeners.keys()) heard(each, true);
+  else heard(key, true);
 }
 
 // The key of a Redis value's stamp, written with the value (RedisCacheService.add). Outside the cache's prefix, so
@@ -42,8 +77,12 @@ interface CacheService {
   setNested(key: string, nestedKey: string, value: RedisValue): Promise<void>;
   getAll(): Promise<Record<string, RedisValue>>;
   close(): void;
-  /** Calls `listener` after `key` is written or removed through this cache (clear() counts for every key). */
-  onChange(key: string, listener: () => void): void;
+  /**
+   * Calls `listener` after `key` is written or removed through this cache (clear() counts for every key), or by
+   * another node of the cluster (`elsewhere`, changedElsewhere). A listener that writes the key itself does so only
+   * for a write made here: one for every write would answer each node's write with its own, and back.
+   */
+  onChange(key: string, listener: (elsewhere: boolean) => void): void;
 }
 
 class MemoryCacheService implements CacheService {
@@ -147,7 +186,7 @@ class MemoryCacheService implements CacheService {
     this.hashes.clear();
   }
 
-  onChange(key: string, listener: () => void): void {
+  onChange(key: string, listener: (elsewhere: boolean) => void): void {
     (changeListeners.get(key) ?? changeListeners.set(key, new Set()).get(key)!).add(listener);
   }
 }
@@ -346,7 +385,7 @@ export class RedisCacheService implements CacheService {
     }
   }
 
-  onChange(key: string, listener: () => void): void {
+  onChange(key: string, listener: (elsewhere: boolean) => void): void {
     (changeListeners.get(key) ?? changeListeners.set(key, new Set()).get(key)!).add(listener);
   }
 

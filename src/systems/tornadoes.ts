@@ -276,7 +276,7 @@ export function pullStep(cx: number, cy: number, x: number, y: number, dt: numbe
   return { x: x + ux * inward + uy * around, y: y + uy * inward - ux * around, inX: x + ux * inward, inY: y + uy * inward };
 }
 
-async function pullPlayers(map: string, tornadoes: Tornado[], players: any[], dt: number): Promise<void> {
+async function pullPlayers(map: string, tornadoes: Array<{ x: number; y: number }>, players: any[], dt: number): Promise<void> {
   for (const who of players) {
     if (!affected(who)) continue;
     const id = String(who.id), atX = Number(who.location.position.x), atY = Number(who.location.position.y);
@@ -300,7 +300,7 @@ async function pullPlayers(map: string, tornadoes: Tornado[], players: any[], dt
   }
 }
 
-async function hurtPlayers(tornadoes: Tornado[], players: any[], now: number): Promise<void> {
+async function hurtPlayers(tornadoes: Array<{ x: number; y: number }>, players: any[], now: number): Promise<void> {
   for (const who of players) {
     const id = String(who?.id);
     if (!affected(who) || !tornadoes.some((t) => Math.hypot(t.x - who.location.position.x, t.y - who.location.position.y) < HURT_RADIUS)) {
@@ -323,10 +323,12 @@ export async function pull(now: number = Date.now()): Promise<void> {
     lastPull = now;
     if (dt <= 0) return;
     for (const [map, list] of byMap) {
-      if (!list.length) continue;
+      // Another node's tornadoes near the border pull the players here too; only their owner moves them.
+      const remote = remoteOn(map);
+      if (!list.length && !remote.length) continue;
       const players = bridge.players(map), size = bridge.size(map);
       for (const tornado of list) steer(tornado, dt, size);
-      await pullPlayers(map, list, players, dt);
+      await pullPlayers(map, [...list, ...remote], players, dt);
     }
   } catch (error) {
     log.error(`Tornadoes: ${error}`);
@@ -364,16 +366,20 @@ export async function tick(now: number = Date.now()): Promise<void> {
       // harm below awaits is then neither hurt with nor shown again here.
       for (let i = list.length - 1; i >= 0; i--) if (!(list[i]!.diesAt > now)) list.splice(i, 1);
       const alive = list;
-      const players = alive.length ? bridge.players(map) : [];
-      if (alive.length) await hurtPlayers(alive, players, now);
-      const shown = [...alive.map((t) => ({ id: t.id, x: Math.round(t.x), y: Math.round(t.y) })), ...remoteOn(map)];
+      // Another node's tornadoes hurt the players here too (each node hurts only its own players).
+      const harming = [...alive, ...remoteOn(map)];
+      const players = harming.length ? bridge.players(map) : [];
+      if (harming.length) await hurtPlayers(harming, players, now);
+      // Read again after the harm: a block that moved meanwhile made one of this node's tornadoes another's mirror.
+      const remote = remoteOn(map);
+      const shown = [...alive.map((t) => ({ id: t.id, x: Math.round(t.x), y: Math.round(t.y) })), ...remote];
       if (now - (lastShown.get(map) ?? -Infinity) >= SHOW_EVERY && (shown.length || shownSome.has(map))) {
         lastShown.set(map, now);
         bridge.show(map, shown);
         if (shown.length) shownSome.add(map);
         else shownSome.delete(map);
       }
-      if (!alive.length && !shownSome.has(map) && remoteOn(map).length === 0) byMap.delete(map);
+      if (!alive.length && !shownSome.has(map) && remote.length === 0) byMap.delete(map);
     }
   } catch (error) {
     log.error(`Tornadoes: ${error}`);

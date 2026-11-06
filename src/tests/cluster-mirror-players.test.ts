@@ -40,6 +40,7 @@ const {
   broadcastGroundPreviewToAOI,
   clearGroundPreviewForAOI,
   broadcastPlayerUpdate,
+  relayToMirrorViewers,
 } = await import("../socket/aoi");
 const { broadcastEffectsUpdate, getEffectsState, mirrorEffectsPayload } = await import("../systems/spelleffects");
 const { ghosts, Ghosts } = await import("../cluster/ghosts");
@@ -561,6 +562,24 @@ describe("relays to the neighbours", () => {
     expect(relays).toEqual([]);
   });
 
+  test("relayToMirrorViewers relays what was sent here once, with the string id", () => {
+    relayToMirrorViewers(owner(), frames, false);
+    relayToMirrorViewers(owner(), frames, true);
+    expect(relays).toEqual([["player", "42", frames, false], ["player", "42", frames, true]]);
+  });
+
+  test("the record carries the angler's line, and null without one", () => {
+    const line = { x: 3, y: 4, bit: true, reeled: false };
+    expect(playerGhostRecord({ ...owner(), fishLine: line }).fishLine).toEqual(line);
+    expect(playerGhostRecord(owner()).fishLine).toBeNull();
+  });
+
+  test("relayToMirrorViewers relays nothing for no player or no packets", () => {
+    relayToMirrorViewers(null, frames, false);
+    relayToMirrorViewers(owner(), [], false);
+    expect(relays).toEqual([]);
+  });
+
   test("a mirror relays nothing on", async () => {
     const map = `m${++mapSeq}`;
     const viewer = await viewerAt("1", map, 1000, 1000);
@@ -575,6 +594,7 @@ describe("relays to the neighbours", () => {
     broadcastStatsUpdateToAOI(mirror, null, frames);
     broadcastPlayerUpdate(mirror);
     broadcastEffectsUpdate(mirror);
+    relayToMirrorViewers(mirror, frames, false);
     expect(relays).toEqual([]);
   });
 });
@@ -593,34 +613,58 @@ describe("the receiver's cluster wiring (read from its source: receiver.ts canno
   const withNames = (names: string[], code: string): ((given: Record<string, any>) => any) =>
     new Function(`"use strict";\n${transpiler.transformSync(`function make({ ${names.join(", ")} }: any) { ${code} }`)}\nreturn make;`)();
 
+  // forwardFromPlayer (aoievent.ts) owns the cluster-off, stealth and vanish rules; these check what each handler hands it.
   const chatStart = "// Cluster mode: listeners across a block border";
   const chat = withNames(
-    ["clusterEnabled", "currentPlayer", "forwardAoiEvent", "MIRROR_RADIUS_PX", "packetManager", "wt", "sentMessage", "sentLinks"],
+    ["currentPlayer", "forwardFromPlayer", "packetManager", "wt", "sentMessage", "sentLinks"],
     cut(chatStart, /listener\.emit\(Events\.PLAYER_CHAT/),
   );
-  const runChat = (cluster: boolean, over: any = {}) => {
+  const clear = withNames(
+    ["message", "sendMessageToPlayer", "wt", "findPlayersWithTargetInAOI", "currentPlayer", "forwardFromPlayer", "packetManager"],
+    cut("if (message == null) {", /\r?\n\s*let decryptedMessage/),
+  );
+  /** A case's body, without its `case "X": {` line and its closing `break;`. */
+  const caseBody = (name: string) => cut(`case "${name}": {`, /\r?\n\s*break;/).slice(`case "${name}": {`.length);
+  const typingNames = ["currentPlayer", "wt", "filterPlayersByMap", "sendPacketBestEffort", "packetManager", "forwardFromPlayer"];
+  const typing = withNames(typingNames, caseBody("TYPING"));
+  const stopTyping = withNames(typingNames, caseBody("STOPTYPING"));
+  const talker = { username: "talker", location: { map: "main", position: { x: 5, y: 6 } }, aoi: { layerId: "main:1" } };
+  const packetManager = { chat: (data: any) => [data], typing: (data: any) => [{ typing: data }], stopTyping: (data: any) => [{ stopTyping: data }] };
+  /** What a slice hands forwardFromPlayer, its packets built. */
+  const forwards = (run: (forwardFromPlayer: (...args: any[]) => void) => void) => {
     const calls: any[][] = [];
-    chat({
-      clusterEnabled: () => cluster,
-      currentPlayer: { username: "talker", location: { map: "main", position: { x: 5, y: 6 } }, aoi: { layerId: "main:1" }, ...over },
-      forwardAoiEvent: (...args: any[]) => calls.push(args),
-      MIRROR_RADIUS_PX: 1234,
-      packetManager: { chat: (data: any) => [data] },
-      wt: { data: { id: "77" } },
-      sentMessage: "hello",
-      sentLinks: [],
-    });
+    run((player: any, packets: () => any[], options: any) => calls.push([player, packets(), options]));
     return calls;
   };
+  const runTyping = (handler: (given: Record<string, any>) => any, player: any = talker) => forwards((forwardFromPlayer) => handler({
+    currentPlayer: player, wt: { data: { id: "77" } }, filterPlayersByMap: () => [], sendPacketBestEffort: () => {}, packetManager, forwardFromPlayer,
+  }));
 
-  test("a chat line is forwarded once, from the speaker's place", () => {
-    expect(runChat(true)).toEqual([["main", "main:1", 5, 6, 1234, [{ id: "77", message: "hello", username: "talker" }], { speaker: "talker" }]]);
+  test("a chat line is forwarded once, from the speaker, under their name", () => {
+    expect(forwards((forwardFromPlayer) => chat({ currentPlayer: talker, forwardFromPlayer, packetManager, wt: { data: { id: "77" } }, sentMessage: "hello", sentLinks: [] })))
+      .toEqual([[talker, [{ id: "77", message: "hello", username: "talker" }], { speaker: "talker" }]]);
   });
 
-  test("a chat line is not forwarded with cluster off, or from a stealthed or vanished speaker", () => {
-    expect(runChat(false)).toEqual([]);
-    expect(runChat(true, { isStealth: true })).toEqual([]);
-    expect(runChat(true, { isVanished: true })).toEqual([]);
+  test("a cleared line is cleared across the border too, for the listeners the line went to", () => {
+    const local: any[] = [];
+    const calls = forwards((forwardFromPlayer) => clear({
+      message: null, sendMessageToPlayer: (to: any, line: string) => local.push([to, line]), wt: { data: { id: "77" } },
+      findPlayersWithTargetInAOI: () => [{ wt: "viewer" }], currentPlayer: talker, forwardFromPlayer, packetManager,
+    }));
+    expect(local).toEqual([[{ data: { id: "77" } }, ""], ["viewer", ""]]);
+    expect(calls).toEqual([[talker, [{ id: "77", message: "", username: "talker" }], { speaker: "talker" }]]);
+  });
+
+  test("typing and its end are forwarded best effort, as they go to the players here", () => {
+    expect(runTyping(typing)).toEqual([[talker, [{ typing: { id: "77" } }], { bestEffort: true }]]);
+    expect(runTyping(stopTyping)).toEqual([[talker, [{ stopTyping: { id: "77" } }], { bestEffort: true }]]);
+  });
+
+  test("typing is not forwarded from a guest, a corpse or a ghost", () => {
+    expect(runTyping(typing, { ...talker, isGuest: true })).toEqual([]);
+    expect(runTyping(typing, { ...talker, isDead: true })).toEqual([]);
+    expect(runTyping(typing, { ...talker, isGhost: true })).toEqual([]);
+    expect(runTyping(stopTyping, { ...talker, isGuest: true })).toEqual([]);
   });
 
   test("the chat forward comes after the mute check and before the no-listener return", () => {

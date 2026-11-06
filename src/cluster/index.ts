@@ -1,5 +1,5 @@
 import log from "../modules/logger";
-import assetCache from "../services/assetCache";
+import assetCache, { changedElsewhere, onWrite } from "../services/assetCache";
 import gameLoop from "../services/gameloop";
 import { usesSharedCache } from "../services/datacache";
 import { setClusterPlayerLock } from "../services/batch";
@@ -27,14 +27,15 @@ import { NodeLinks } from "./links";
 import { linkCalls } from "./linkcalls";
 import { runLinkHooks } from "./linkhooks";
 import type { LinkTransport } from "./linktransport";
-import { MapCatalogue, extentOf, type MapExtent } from "./maps";
+import { MapCatalogue, extentOf, takeInMap, type MapExtent } from "./maps";
 import { NodeDeath } from "./nodedeath";
 import type { ClusterDebugSource } from "./nodedebug";
 import { LoopLagMeter, NodeRegistry, type LoadReport, type NodeInfo } from "./nodes";
+import { peerNews } from "./peernews";
 import { PlayerLocks } from "./playerlock";
 import { trackPresence } from "./presence";
 import { RedisStore } from "./redisstore";
-import { SNAPSHOT_EVERY_MS, SnapshotWriter, useSnapshotMaps } from "./snapshots";
+import { SNAPSHOT_EVERY_MS, SnapshotWriter, addSnapshotMap, useSnapshotMaps } from "./snapshots";
 import type { ClusterStore } from "./store";
 import { sealStore } from "./storeseal";
 import { BorderBand, TargetCache, linkPartners } from "./strip";
@@ -485,6 +486,18 @@ export async function startCluster(
     bus.on("server-order", (data, from) => {
       if (from !== self && data?.region === regionId()) serverOrders?.(data);
     });
+    // What happens here that the region's other nodes show their own players too (cluster/peernews.ts).
+    peerNews.attach(bus, self, regionId());
+    teardown.rest.push({ what: "detach the peer news", run: () => peerNews.detach() });
+    // A cached list written here (an editor's save): the shared cache holds it, and the region's other nodes read
+    // again what they keep of it in memory (the NPCs they stream, the item sheets, the cutscene triggers).
+    const ASSET_CHANGED = "asset-changed";
+    const stopTellingWrites = onWrite((key) => void peerNews.tell(ASSET_CHANGED, key === null ? { all: true } : { key }));
+    peerNews.on(ASSET_CHANGED, (news: { key?: unknown; all?: unknown }) => {
+      if (news?.all === true) changedElsewhere(null);
+      else if (typeof news?.key === "string" && news.key) changedElsewhere(news.key);
+    });
+    teardown.rest.push({ what: "stop telling the cache's writes", run: () => { stopTellingWrites(); peerNews.on(ASSET_CHANGED, null); } });
     // Phase 7: trade settle marks are shared (Task 20b).
     tradeSettle.attach(store);
     teardown.rest.push({ what: "detach the settle marks", run: () => tradeSettle.detach() });
@@ -691,6 +704,18 @@ async function tearDown(self: string, teardown: Teardown): Promise<void> {
     }
     list.length = 0;
   }
+}
+
+/**
+ * A map made while the cluster runs (the map editor's New map, on this node or another, socket/handlers/editors.ts),
+ * once this node has loaded it: it joins the region's maps as those loaded at start did. Nothing outside cluster mode.
+ */
+export async function clusterMapAdded(name: string, widthPx: number, heightPx: number): Promise<void> {
+  const node = running;
+  if (!node) return;
+  const extent = extentOf(name, widthPx, heightPx);
+  addSnapshotMap(extent);
+  await takeInMap(node, extent);
 }
 
 /** The node's links to its neighbours, or null (cluster off, or running without links). */

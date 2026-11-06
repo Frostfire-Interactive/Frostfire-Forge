@@ -751,6 +751,7 @@ function makeAdminActions() {
     send: () => {},
     ghostPacket: () => [],
     revivePacket: () => [],
+    relay: () => {},
     broadcastEffects: () => {},
     sendPartyStats: () => { seen.order.push("party"); },
     revived: () => { seen.order.push("PLAYER_REVIVED"); },
