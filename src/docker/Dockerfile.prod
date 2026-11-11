@@ -13,8 +13,11 @@ RUN bun install --frozen-lockfile --production --ignore-scripts
 FROM base AS translator
 RUN apt-get update && apt-get install -y --no-install-recommends python3-venv && rm -rf /var/lib/apt/lists/*
 COPY src/language-service/translator/requirements.txt ./src/language-service/translator/
+# pip is removed after the install: the translator does not use it, and its bundled CA file (cacert.pem)
+# would fail the release check for certificates in the image
 RUN python3 -m venv src/language-service/.venv \
-  && src/language-service/.venv/bin/python -m pip install --no-cache-dir -r src/language-service/translator/requirements.txt
+  && src/language-service/.venv/bin/python -m pip install --no-cache-dir -r src/language-service/translator/requirements.txt \
+  && src/language-service/.venv/bin/python -m pip uninstall -y pip
 
 # Production stage
 FROM base AS production
