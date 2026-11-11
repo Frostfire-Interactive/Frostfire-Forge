@@ -1,6 +1,10 @@
 # Dependencies
 node_modules
 npm-debug.log
+# The language service's local Python environment (built for this machine, not the image)
+src/language-service/.venv
+src/language-service/.env*
+**/__pycache__
 yarn-error.log
 bun.lockb
 

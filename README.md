@@ -39,6 +39,7 @@ Frostfire Forge is an upcoming 2D MMO engine platform designed to empower develo
 - [Architecture](#-architecture)
   - [Gateway (Authentication & Reverse Proxy)](#gateway-authentication--reverse-proxy)
   - [Asset Server (Media & Resources)](#asset-server-media--resources)
+  - [Language Service (Chat Translation)](#language-service-chat-translation)
 - [Environment Variables](#-environment-variables)
 - [Weather](#weather)
   - [How a Weather Is Drawn](#how-a-weather-is-drawn)
@@ -110,6 +111,24 @@ The game server connects to the asset server using the `ASSET_SERVER_URL` and `A
 
 ---
 
+### Language Service (Chat Translation)
+
+Chat lines are translated for each listener's language by the [Frostfire Forge Language Service](https://github.com/Frostfire-Interactive/Frostfire-Forge-Language-Service), a git submodule at `src/language-service`. The engine calls it in its own process (no HTTP), and its offline model runs in a Python child process the engine starts at boot.
+
+#### Setup
+
+The service keeps its model files in [Git LFS](https://git-lfs.com), so run `git lfs install` once on the machine first. Clone with `git clone --recurse-submodules`, or in an existing checkout run `git submodule update --init`. Then create the translator's Python environment inside `src/language-service` once, as its README says:
+
+```bash
+cd src/language-service
+python -m venv .venv
+.venv/Scripts/python -m pip install -r translator/requirements.txt   # Linux/macOS: .venv/bin/python
+```
+
+The Docker images build this environment themselves. Without it the server still runs, and chat lines are sent as written.
+
+---
+
 ## ⚙️ Environment Variables
 
 ```bash
@@ -120,12 +139,6 @@ DATABASE_PASSWORD="your_db_password"
 DATABASE_PORT="3306"
 DATABASE_USER="your_db_user"
 SQL_SSL_MODE="DISABLED"                    # Set to "ENABLED" to require TLS for the database connection
-
-# Translation Services
-GOOGLE_TRANSLATE_API_KEY="your_google_api_key"
-OPENAI_API_KEY="your_openai_api_key"
-TRANSLATION_SERVICE="google_translate"      # Set to "openai" to use OpenAI translation
-OPENAI_MODEL="gpt-4.1-nano-2025-04-14"
 
 # Security (Optional)
 SESSION_KEY="your_session_secret_key"          # Session encryption key

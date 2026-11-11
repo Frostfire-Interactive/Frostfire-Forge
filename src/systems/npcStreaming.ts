@@ -259,6 +259,39 @@ function npcsIn(all: Npc[], map: string, g: { chunkPx: number }, keys: Set<strin
     }
     byMap.set(id, chunks);
   }
+  return inChunks(all, chunks, keys);
+}
+
+/**
+ * Every map's NPCs-by-chunk index in one pass over the list (what npcsIn builds for one map, for each map at once).
+ * A pass per map went through a world's 265,000 NPCs 1,778 times at start-up, some 20 seconds before the node
+ * registered with the Gateway. An index already built is kept.
+ */
+function indexAllMaps(all: Npc[], geometries: Map<string, Geometry>): void {
+  let byMap = npcChunks.get(all);
+  if (!byMap) {
+    byMap = new Map();
+    npcChunks.set(all, byMap);
+  }
+  const built = new Map<string, Map<string, number[]>>();
+  for (const [name, g] of geometries) {
+    const id = `${name}|${g.chunkPx}`;
+    if (!byMap.has(id)) built.set(name, new Map());
+  }
+  for (let i = 0; i < all.length; i++) {
+    const n = all[i];
+    if (n.id == null) continue;
+    const name = norm(n.map), chunks = built.get(name);
+    if (!chunks) continue;
+    const key = chunkOf(geometries.get(name)!, n.position.x, n.position.y);
+    const list = chunks.get(key);
+    if (list) list.push(i);
+    else chunks.set(key, [i]);
+  }
+  for (const [name, chunks] of built) byMap.set(`${name}|${geometries.get(name)!.chunkPx}`, chunks);
+}
+
+function inChunks(all: Npc[], chunks: Map<string, number[]>, keys: Set<string>): Npc[] {
   // in the order of the NPC list, as going through the whole list gave them
   const places: number[] = [];
   for (const key of keys) {
@@ -443,8 +476,7 @@ export function warmStreamData(): Promise<void> {
     } catch (err) { log.warn(`[npcstream] Could not warm the particles list: ${err}`); }
     try {
       const maps = (await mapsRead) || [];
-      const withNpcs = new Set<string>();
-      for (const n of (npcs ?? EMPTY) as Npc[]) if (n.id != null) withNpcs.add(norm(n.map));
+      const geometries = new Map<string, Geometry>();
       for (const m of maps) {
         const name = norm(m.name);
         let g = geometryCache.get(name);
@@ -452,9 +484,9 @@ export function warmStreamData(): Promise<void> {
           g = geometryOf(m);
           geometryCache.set(name, g);
         }
-        if (npcs && withNpcs.has(name)) npcsIn(npcs as Npc[], name, g, new Set()); // builds the chunk index
-        await new Promise((resolve) => setImmediate(resolve)); // players and timers go on between maps
+        if (!geometries.has(name)) geometries.set(name, g);
       }
+      if (npcs) indexAllMaps(npcs as Npc[], geometries); // builds every map's chunk index
     } catch (err) { log.warn(`[npcstream] Could not warm the map geometry: ${err}`); }
     await Promise.all(hot);
     log.info(`[npcstream] Warmed the npc and particle lists and the map chunk indexes in ${(performance.now() - started).toFixed(0)} ms`);

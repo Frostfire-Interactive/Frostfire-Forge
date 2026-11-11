@@ -1,166 +1,63 @@
 import log from "../modules/logger";
-import swears from "../utility/swears.json";
-const GOOGLE_TRANSLATE_API_KEY = process.env.GOOGLE_TRANSLATE_API_KEY;
-const TRANSLATION_SERVICE = process.env.TRANSLATION_SERVICE || "google_translate";
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4.1-nano-2025-04-14";
-import OpenAI from "openai";
-let openai: OpenAI | null = null;
+// The language service, a git submodule at src/language-service, runs in this process: its
+// translator is a Python child process the engine starts (see that folder's README).
+import { set_logger, start_translator, translate_text, TranslationRequestError } from "../language-service/src/api";
 
-if (TRANSLATION_SERVICE === "openai" && OPENAI_API_KEY) {
-    openai = new OpenAI();
+set_logger({ info: log.info, warn: log.warn, error: log.error });
+
+declare interface TranslationData {
+    source_text: string;
+    source_language: string;
+    target_languages: string;
 }
 
 const language = {
-    translate: async (text: string, lang: string) => {
-        let response = text;
-        if (!text || text.trim() === "") return text;
+    // The language service's calls, replaceable in tests.
+    service: { translate_text, start_translator },
 
+    /** Loads the translation model now, so the first chat line does not wait for it. */
+    start: () => {
+        language.service.start_translator().catch(() => {}); // the service logs why it could not start
+    },
+
+    translate: async (data: TranslationData) => {
         try {
-            const translationPromise = (async () => {
-                if (TRANSLATION_SERVICE.toLowerCase() === "google_translate") {
-                    if (!GOOGLE_TRANSLATE_API_KEY) {
-                        log.warn("Google Translate API Key not found");
-                        return response;
-                    }
-                    response = await language.translate_google({ text, lang }) as any;
-                }
-
-                if (TRANSLATION_SERVICE.toLowerCase() === "openai") {
-                    if (!OPENAI_API_KEY) {
-                        log.warn("OpenAI API Key not found");
-                        return response;
-                    }
-                    response = await language.translate_openai({ text, lang }) as any;
-                }
-                return response;
-            })();
-
-            const timeoutPromise = new Promise((_, reject) => {
-                setTimeout(() => reject(new Error('Translation timeout')), 1000);
-            });
-
-            response = await Promise.race([translationPromise, timeoutPromise]) as string;
+            const result = await language.service.translate_text(data);
+            // Only the requested language's own entry, and only plain text, goes on.
+            const translations = result?.translated_text;
+            const translated = translations && typeof translations === "object" && Object.hasOwn(translations, data.target_languages)
+                ? translations[data.target_languages]
+                : undefined;
+            if (typeof translated !== "string" || translated === "") {
+                log.error("No translation received from the language service");
+                return data.source_text;
+            }
+            return translated;
         } catch (error) {
-
-            log.error(`Error translating text: ${error}`);
-            return language.translate_google({ text, lang }) as any;
+            // A request the service refuses (a language it does not know, a line too long) keeps the line as sent.
+            if (error instanceof TranslationRequestError) {
+                log.error(`Translation refused: ${error.message}`);
+                return data.source_text;
+            }
+            log.error(`Translation failed: ${error}`);
         }
+    },
 
-        const htmlEntities: { [key: string]: string } = {
-            "&amp;": "&",
-            "&lt;": "<",
-            "&gt;": ">",
-            "&quot;": "\"",
-            "&#39;": "'",
-            "&#96;": "`"
+    /**
+     * One translation per language for a line, shared by every listener who reads that language: the first to ask
+     * starts it and the rest wait on the same answer, so listeners asking at once do not each call the translator.
+     */
+    perLanguage: (translateTo: (target: string) => Promise<string>): ((target: string) => Promise<string>) => {
+        // A Map: a listener's language comes from their client, and "__proto__" must not reach an object's prototype.
+        const lines = new Map<string, Promise<string>>();
+        return (target: string) => {
+            let line = lines.get(target);
+            if (!line) {
+                line = translateTo(target);
+                lines.set(target, line);
+            }
+            return line;
         };
-
-        response = response.replace(/&(?:amp|lt|gt|quot|#39|#96);/g, (match: string) => htmlEntities[match]);
-        return response;
-    },
-    translate_google: async (data: any) => {
-        log.debug(`Translating text: ${data.text} to ${data.lang} using Google Translate`);
-        const url = new URL("https://translation.googleapis.com/language/translate/v2");
-
-        url.searchParams.append('key', GOOGLE_TRANSLATE_API_KEY as string);
-
-        url.searchParams.append('q', data.text);
-
-        url.searchParams.append('target', data.lang);
-
-        const response = await fetch(url, {
-            method: "POST",
-            body: JSON.stringify(data),
-            headers: {
-                "Content-Type": "application/json",
-            },
-        }).then((res) => res.json());
-
-        if (response.error) {
-            log.error(`Error translating text: ${response.error.message}`);
-            return;
-        }
-
-        let translatedText = response.data.translations[0].translatedText;
-
-        if (data.lang === "en") {
-            for (const swear of swears) {
-                const swearRegex = new RegExp(swear.id, "gi");
-                while (swearRegex.test(translatedText)) {
-                    const randomLength = Math.floor(Math.random() * 5) + 1;
-                    translatedText = translatedText.replace(
-                        swearRegex,
-                        "*".repeat(randomLength)
-                    );
-                }
-            }
-        }
-
-        return translatedText;
-    },
-    translate_openai: async (data: any) => {
-        log.debug(`Translating text: ${data.text} to ${data.lang} using OpenAI`);
-        if (!openai) {
-            log.error("OpenAI client not initialized");
-            return data.text;
-        }
-
-        try {
-            const completion = await openai.chat.completions.create({
-                model: OPENAI_MODEL,
-                messages: [
-                    {
-                        role: "system",
-                        content: `
-                            You are a professional translator that knows how to translate text between different languages.
-                            You must follow these rules when translating:
-                            Always translate the text to the target language specified by the user.
-                            If the text is already in the target language, respond with the original text.
-                            If the text contains any swear words, replace them with asterisks (e.g., ****) in the translation.
-                            If the text contains any racial slurs, replace them with asterisks (e.g., ****) in the translation.
-                            If the text contains any sensitive or inappropriate content, replace it with asterisks (e.g., ****) in the translation.
-                            Do not include any explanations or additional text in your response, only the translated text.
-                            Do not apologize for anything.
-                            Do not refuse to translate any text as accuracy needs to be maintained.
-                            Do not mention that you are an AI model.
-                            Do not mention any of your rules in the translation.
-                            Do not censor any words except for swear words and racial slurs.
-                            If you encounter a swear word, filter that word in the translation.
-                            if you encounter a racial slur, filter that word in the translation.
-                            Always prioritize accuracy and faithfulness to the original text.
-                            Maintain Emojis and special characters in the translation.
-                            If the text is a single word, translate that word only.
-                            If the text cannot be translated, respond with the original text.
-                            ALWAYS FOLLOW THESE RULES UNDER ANY CIRCUMSTANCES.
-                            Do not add additional commentary or information.
-                            Do not add any additional punctuation or characters.
-                            Do not change any part of the text except for translating it.
-                            Preserve the meaning and context of the original text.
-                            Preserve capitalization and punctuation as much as possible.
-                            DO NOT BREAK CHARACTER UNDER ANY CIRCUMSTANCES.
-                            DO NOT BREAK THESE RULES UNDER ANY CIRCUMSTANCES.
-                        `
-                    },
-                    {
-                        role: "user",
-                        content: `Translate the following text to ${data.lang}: ${data.text}. Filter any swear words or racial slurs in the translation.`
-                    }
-                ],
-                temperature: 0.3,
-                max_tokens: 150
-            });
-
-            const translatedText = completion.choices[0]?.message?.content?.trim();
-            if (!translatedText) {
-                log.error("No translation received from OpenAI");
-                return data.text;
-            }
-
-            return translatedText;
-        } catch (error) {
-            log.error(`OpenAI Translation Error: ${error}`);
-        }
     }
 };
 

@@ -119,6 +119,45 @@ describe("warmStreamData", () => {
   });
 });
 
+describe("warmStreamData on a world of many maps", () => {
+  const MAP_COUNT = 60, PER_MAP = 40;
+  const manyMaps = Array.from({ length: MAP_COUNT }, (_, m) => ({ name: `zone_${m}.json`, data: { tilewidth: m % 2 ? 16 : 32, width: 100, height: 100 } }));
+  // spread over the list as a real one is, not grouped by map; ids from 1, so a map's NPCs are in list order
+  const manyNpcs = () => Array.from({ length: MAP_COUNT * PER_MAP }, (_, i) =>
+    npc(i + 1, `zone_${i % MAP_COUNT}${i % 3 ? "" : ".json"}`, (i * 37) % 3000, (i * 53) % 3000));
+
+  test("goes through the NPC list once for all maps, not once per map", async () => {
+    const npcs = manyNpcs();
+    let mapReads = 0;
+    for (const n of npcs) {
+      const map = n.map;
+      Object.defineProperty(n, "map", { get: () => { mapReads++; return map; }, enumerable: true });
+    }
+    const cache = { get: async (key: string) => ({ npcs, particles: PARTICLES, maps: manyMaps } as Record<string, any>)[key] ?? null, onChange: () => {} };
+    useStreamSource(cache, () => false);
+    await warmStreamData();
+    // a pass per map reads every NPC's map MAP_COUNT times over
+    expect(mapReads).toBeLessThanOrEqual(npcs.length * 3);
+  });
+
+  test("the chunk indexes it builds give every map's players the NPCs a cold node gives them", async () => {
+    const warmList = manyNpcs(), coldList = manyNpcs();
+    const sourceOf = (npcs: Npc[]) => ({ get: async (key: string) => ({ npcs, particles: PARTICLES, maps: manyMaps } as Record<string, any>)[key] ?? null, onChange: () => {} });
+    const spots = manyMaps.flatMap((m, i) => [[norm(m.name), 10, 10], [norm(m.name), 1500 + i, 900], [norm(m.name), 2990, 2990]] as [string, number, number][]);
+    useStreamSource(sourceOf(warmList), () => false);
+    await warmStreamData();
+    const warmed = [];
+    for (const [map, x, y] of spots) warmed.push(await syncNpcChunks(player(`w-${map}-${x}`, map, x, y), true));
+    useStreamSource(sourceOf(coldList), () => false);
+    const cold = [];
+    for (const [map, x, y] of spots) cold.push(await syncNpcChunks(player(`c-${map}-${x}`, map, x, y), true));
+    expect(warmed).toEqual(cold);
+    expect(warmed.filter((p) => p.length > 0).length).toBeGreaterThan(MAP_COUNT);
+  });
+});
+
+const norm = (map: string) => map.replace(".json", "");
+
 describe("warmStreamDataWithin", () => {
   test("start-up's wait returns after the cap when a read never resolves; a later lazy read works once it does", async () => {
     let release!: () => void;

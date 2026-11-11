@@ -43,6 +43,7 @@ import mapIndex from "../services/mapindex";
 import spatialGrid from "../services/spatialgrid.ts";
 import layerManager from "../services/layermanager.ts";
 import gameLoop from "../services/gameloop";
+import language from "../systems/language";
 import packet from "../modules/packet.ts";
 import fs from "node:fs";
 import query from "../controllers/sqldatabase";
@@ -96,6 +97,9 @@ import achievements from "../systems/achievements";
 import cooldownManager from "../services/cooldownmanager";
 import { installUnhandledRejectionHandler } from "../services/unhandled";
 installUnhandledRejectionHandler();
+
+// The translation model loads in the background while the server starts, so the first chat line does not wait for it.
+language.start();
 
 const _cert = process.env.TLS_CERT_PATH;
 const _key = process.env.TLS_KEY_PATH;

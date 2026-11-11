@@ -55,12 +55,6 @@ export default (async () => {
     process.env.SQL_SSL_MODE = "false";
   }
 
-  if (!process.env.GOOGLE_TRANSLATE_API_KEY) {
-    startUpWarnings.push(
-      "No Google Translation API key is set, translation functionality will be disabled. Please set the GOOGLE_TRANSLATE_API_KEY environment variable to suppress this message."
-    );
-  }
-
   if (!process.env.WEBSRV_PORTSSL && !process.env.GAME_PORT) {
     startUpWarnings.push(
       "No game port is set, defaulting to 3000. Please set the WEBSRV_PORTSSL environment variable to suppress this message."

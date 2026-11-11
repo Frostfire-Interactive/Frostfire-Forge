@@ -232,8 +232,11 @@ describe("the chat relays", () => {
     expect(source.match(/chatLinksOf\(/g)?.length).toBeGreaterThanOrEqual(6);
     expect(source).toContain("protectLinks(sentMessage, sentLinks)");
     expect(source).toContain("text.length > MAX_CHAT_LENGTH");
-    expect(source).toContain("Chat translation to ${player.language} failed");
-    expect(source).toContain("restoreLinks(await language.translate(protectedLine.text");
+    expect(source).toContain("Chat translation to ${target} failed");
+    // one translation per language, shared by listeners who are all sent to at once
+    expect(source).toContain("const lineIn = language.perLanguage(");
+    expect(source).toContain("message: await lineIn(player.language)");
+    expect(source).toContain("restoreLinks(await language.translate({ ...languages, source_text: protectedLine.text })");
   });
 
   test("links are read from the item and achievement caches, never the database", () => {

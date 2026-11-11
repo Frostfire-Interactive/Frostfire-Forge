@@ -100,6 +100,8 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v6
+        with:
+          submodules: true
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -149,6 +151,12 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      # The language service keeps its translation model in Git LFS; the image needs the real files, not pointers
+      - name: Download Translation Model
+        run: git submodule foreach --recursive git lfs pull
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -185,6 +193,8 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v6
+        with:
+          submodules: true
 
       - name: Checkout Gateway Repository
         uses: actions/checkout@v6
@@ -295,6 +305,12 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      # The language service keeps its translation model in Git LFS; the image needs the real files, not pointers
+      - name: Download Translation Model
+        run: git submodule foreach --recursive git lfs pull
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3

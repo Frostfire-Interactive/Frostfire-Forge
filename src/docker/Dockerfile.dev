@@ -1,16 +1,26 @@
 # Development Dockerfile for Frostfire Forge Game Server
 FROM oven/bun:canary-slim AS base
 WORKDIR /app
+# Python runs the chat translator (the language service submodule starts it as a child process)
+RUN apt-get update && apt-get install -y --no-install-recommends python3 && rm -rf /var/lib/apt/lists/*
 
 # Install dependencies
 FROM base AS deps
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile
 
+# The translator's Python environment, at the path the language service starts it from
+FROM base AS translator
+RUN apt-get update && apt-get install -y --no-install-recommends python3-venv && rm -rf /var/lib/apt/lists/*
+COPY src/language-service/translator/requirements.txt ./src/language-service/translator/
+RUN python3 -m venv src/language-service/.venv \
+  && src/language-service/.venv/bin/python -m pip install --no-cache-dir -r src/language-service/translator/requirements.txt
+
 # Development stage
 FROM base AS development
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
+COPY --from=translator /app/src/language-service/.venv ./src/language-service/.venv
 
 ARG VERSION=unknown
 ARG BUILD_DATE=unknown

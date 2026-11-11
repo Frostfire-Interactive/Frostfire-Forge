@@ -117,6 +117,10 @@ export function getInternalServerOptions(certPath: string, keyPath: string, caPa
 // Origins whose HTTP/3 support has been probed: true = h3 works, false = h2 only.
 const http3Origins = new Map<string, boolean>();
 const HTTP3_PROBE_TIMEOUT_MS = 2500;
+// On this machine a QUIC handshake takes milliseconds. The Gateway's internal port answers HTTP/2 only, and the
+// remote wait held the node's first request to it (its registration) 2.5 s. A probe that misses on a busy start-up
+// only means HTTP/2 for that origin, which works.
+const HTTP3_LOOPBACK_PROBE_TIMEOUT_MS = 250;
 
 /** Whether a URL's host is this machine: 127.0.0.0/8, ::1 or localhost. */
 export function isLoopbackUrl(url: string): boolean {
@@ -197,7 +201,7 @@ export function serverFetch(url: string, init?: RequestInit): Promise<Response> 
     if (callerSignal.aborted) probe.abort();
     else callerSignal.addEventListener("abort", forwardAbort, { once: true });
   }
-  const timer = setTimeout(() => probe.abort(), HTTP3_PROBE_TIMEOUT_MS);
+  const timer = setTimeout(() => probe.abort(), isLoopbackUrl(url) ? HTTP3_LOOPBACK_PROBE_TIMEOUT_MS : HTTP3_PROBE_TIMEOUT_MS);
 
   return fetch(url, { ...init, protocol: "http3", tls: tlsOptions, signal: probe.signal })
     .then((res) => {

@@ -6,6 +6,11 @@
 
 # Environment files (supplied at runtime through env_file)
 .env*
+src/language-service/.env*
+
+# The language service's local Python environment (built for this machine, not the image)
+src/language-service/.venv
+**/__pycache__
 
 # TLS certificates and private keys (mounted at runtime)
 src/certs/**

@@ -140,32 +140,31 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
 
         if (playersInMap.length === 0) return;
 
-        const translations: Record<string, string> = {};
         // Link tokens go through the translator as placeholders and are put back after, so a link
         // is never translated; a translation that lost one is dropped for the line as sent.
         const protectedLine = protectLinks(sentMessage, sentLinks);
 
-        playersInMap.forEach(async (player) => {
-          if (!translations[player.language]) {
-
-            // A translator that throws must not cost the recipient the line: they get it as sent,
-            // links included (this runs once per language, so it logs once per language).
-            let line = sentMessage;
-            if (player.language !== currentPlayer.language) {
-              try {
-                line = sentLinks.length === 0
-                  ? await language.translate(sentMessage, player.language) ?? sentMessage
-                  : restoreLinks(await language.translate(protectedLine.text, player.language), protectedLine.held) ?? sentMessage;
-              } catch (error) {
-                log.warn(`Chat translation to ${player.language} failed, sending the line untranslated: ${error}`);
-              }
-            }
-            translations[player.language] = line;
+        // Every listener is sent to at once, so the translation is shared from the moment it starts: one API call
+        // per language, however many listeners read it.
+        const lineIn = language.perLanguage(async (target) => {
+          // A translator that throws must not cost the recipient the line: they get it as sent,
+          // links included (this runs once per language, so it logs once per language).
+          if (target === currentPlayer.language) return sentMessage;
+          try {
+            const languages = { source_language: currentPlayer.language, target_languages: target };
+            return sentLinks.length === 0
+              ? await language.translate({ ...languages, source_text: sentMessage }) ?? sentMessage
+              : restoreLinks(await language.translate({ ...languages, source_text: protectedLine.text }) ?? "", protectedLine.held) ?? sentMessage;
+          } catch (error) {
+            log.warn(`Chat translation to ${target} failed, sending the line untranslated: ${error}`);
+            return sentMessage;
           }
+        });
 
+        playersInMap.forEach(async (player) => {
           const chatData = {
             id: wt.data.id,
-            message: translations[player.language],
+            message: await lineIn(player.language),
             username: currentPlayer.username,
             ...(sentLinks.length > 0 ? { links: sentLinks } : {}),
           };
