@@ -15,8 +15,8 @@ function getValidMapPath(mapName: string): string {
   return resolved;
 }
 
-// Each file's last checksum, by its size and time: the maps are checked against the asset server's every few seconds
-// (modules/assetloader.ts checkMapChanges), and a file that was not written since is not read and hashed again.
+// Each file's last checksum, by its size and time: the maps are compared with the asset server's at registration
+// and after it restarts (modules/assetloader.ts checkMapChanges), and a file not written since is not read and hashed again.
 const known = new Map<string, { mtimeMs: number; size: number; checksum: string }>();
 
 export function calculateFileChecksum(filePath: string): string {
@@ -54,6 +54,16 @@ export function calculateAllMapChecksums(): Record<string, string> {
   });
 
   return checksums;
+}
+
+/** The checksum of one map's file here, or "" when there is none. */
+export function calculateMapChecksum(mapName: string): string {
+  try {
+    const filePath = getValidMapPath(mapName);
+    return fs.existsSync(filePath) ? calculateFileChecksum(filePath) : "";
+  } catch {
+    return "";
+  }
 }
 
 export function getMapContent(mapName: string): any | null {

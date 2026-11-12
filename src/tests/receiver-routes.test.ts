@@ -68,7 +68,7 @@ test("every label a module handles is a packet type the receiver accepts", () =>
 // at the first packet instead of at startup.
 test("the receiver still loads the asset loader and the other modules at startup", () => {
   const receiver = readFileSync(join(import.meta.dir, "..", "socket", "receiver.ts"), "utf8");
-  // A bare import, or a static import of values from it (the map sync poll uses checkMapChanges): both load it at startup.
+  // A bare import, or a static import of values from it (the map sync poll uses pollMapChanges): both load it at startup.
   expect(receiver).toMatch(/^import (?!type\b)(?:\{[^}]*\} from )?"\.\.\/modules\/assetloader(?:\.ts)?";$/m);
   const sources = modules.map((file) => readFileSync(join(dir, file), "utf8"));
   for (const line of receiver.matchAll(/^import "([^"]+)";$/gm)) {

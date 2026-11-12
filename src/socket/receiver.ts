@@ -1803,7 +1803,7 @@ import { dropRows, refreshPlayer } from "../services/datacache";
 import cooldownManager from "../services/cooldownmanager";
 import effectManager from "../services/effectmanager";
 // Keeps the startup load order: the handler modules, which import these, load at the first packet.
-import { checkMapChanges, onMapsChanged, takeInWorldChange, type MapChange } from "../modules/assetloader";
+import { pollMapChanges, onMapsChanged, takeInWorldChange, type MapChange } from "../modules/assetloader";
 import { checkWorldChanges, getWorldMap } from "../modules/worldmaps";
 // Keeps the startup load order: the handler modules, which import these, load at the first packet.
 import "../modules/https_servers.ts";
@@ -2432,7 +2432,7 @@ onMapsChanged(async (changes) => {
   if (Number.isFinite(seconds) && seconds > 0) {
     setInterval(async () => {
       try {
-        await checkMapChanges();
+        await pollMapChanges();
       } catch (error: any) {
         log.warn(`Map change check failed: ${error?.message ?? error}`);
       }

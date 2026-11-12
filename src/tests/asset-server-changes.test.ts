@@ -112,13 +112,17 @@ describe("the NPCs a map places itself", () => {
   });
 });
 
+// The maps a check or a poll found changed are written here and read again by takeInMaps
+const takeInCode = fnOf(loader, "async function takeInMaps(").replaceAll('await import("./checksums.ts")', "checksums");
+
 describe("maps changed on the asset server", () => {
-  const code = fnOf(loader, "export async function checkMapChanges(").replace("export ", "").replace('await import("./checksums.ts")', "checksums");
-  const NAMES = ["process", "serverFetch", "checksums", "assetCache", "reloadMap", "addCreatedMap", "log", "path", "mapChangeListeners", "takenInMaps", "checkingMaps"];
-  function node(answers: any[], loaded = ["m.json"], env: Record<string, string> = { ASSET_SERVER_URL: "http://assets" }) {
+  const code = `${takeInCode}\n${fnOf(loader, "export async function checkMapChanges(").replace("export ", "").replaceAll('await import("./checksums.ts")', "checksums")}`;
+  const NAMES = ["process", "serverFetch", "checksums", "assetCache", "reloadMap", "addCreatedMap", "log", "path", "mapChangeListeners", "takenInMaps", "checkingMaps", "mapSync"];
+  function node(answers: any[], loaded = ["m.json"], env: Record<string, string> = { ASSET_SERVER_URL: "http://assets" }, local: Record<string, string> = {}) {
     const done: any[] = [];
     const heard: any[] = [];
     const takenInMaps = new Map<string, string>();
+    const mapSync = { epoch: "", seq: 0 };
     const check = withNames(NAMES, `${code}\nreturn checkMapChanges;`)({
       process: { env },
       serverFetch: async (url: string, init: any) => {
@@ -130,6 +134,7 @@ describe("maps changed on the asset server", () => {
       checksums: {
         calculateAllMapChecksums: () => ({ "m.json": "local" }),
         writeMapContent: (name: string, data: any) => { done.push(["write", name, data]); return true; },
+        calculateMapChecksum: (name: string) => local[name] ?? "",
       },
       assetCache: { get: async (key: string) => (key === "maps" ? loaded.map((name) => ({ name })) : null) },
       reloadMap: async (name: string) => { done.push(["reload", name]); },
@@ -139,8 +144,9 @@ describe("maps changed on the asset server", () => {
       mapChangeListeners: [(changes: any) => { heard.push(changes); }],
       takenInMaps,
       checkingMaps: false,
+      mapSync,
     });
-    return { check, done, heard };
+    return { check, done, heard, mapSync };
   }
   const outdated = (...maps: Array<[string, string]>) => ({ body: { success: true, outdatedMaps: maps.map(([name, checksum]) => ({ name, checksum, data: { name } })) } });
 
@@ -187,10 +193,115 @@ describe("maps changed on the asset server", () => {
     expect(none.done).toEqual([]);
   });
 
+  test("one whose copy here already hashes like the asset server's is not written or read again", async () => {
+    const n = node([outdated(["m.json", "same"])], ["m.json"], undefined, { "m.json": "same" });
+    expect(await n.check()).toEqual([]);
+    expect(n.done.length).toBe(1);
+  });
+
+  test("the check remembers where this server stands in the asset server's list of changed maps", async () => {
+    const n = node([{ body: { success: true, outdatedMaps: [], changes: { epoch: "e1", seq: 4 } } }]);
+    await n.check();
+    expect(n.mapSync).toEqual({ epoch: "e1", seq: 4 });
+  });
+
+  test("an asset server with no list of changed maps leaves this server without a place in one", async () => {
+    const n = node([{ body: { success: true, outdatedMaps: [] } }]);
+    await n.check();
+    expect(n.mapSync).toEqual({ epoch: "", seq: 0 });
+  });
+
   test("are checked at registration with the gateway the same way", () => {
     const sync = cut(gatewayClient, "private async syncMapChecksums(", /\n  }\r?\n/);
     expect(sync).toContain("checkMapChanges(");
     expect(sync).not.toContain("writeMapContent");
+  });
+});
+
+// The poll asks the asset server only for the maps changed since the last answer, and takes in only those: with
+// thousands of maps, comparing every one at every poll held the event loop for seconds.
+describe("the poll for maps changed on the asset server", () => {
+  const code = `${takeInCode}\n${fnOf(loader, "export async function pollMapChanges(").replace("export ", "")}`;
+  const NAMES = ["process", "serverFetch", "checkMapChanges", "checksums", "assetCache", "reloadMap", "addCreatedMap", "log", "path", "mapChangeListeners", "takenInMaps", "checkingMaps", "mapSync"];
+  function node(answers: any[], place = { epoch: "e1", seq: 4 }) {
+    const mapSync = { ...place };
+    const asked: any[] = [];
+    const done: any[] = [];
+    const heard: any[] = [];
+    let full = 0;
+    const poll = withNames(NAMES, `${code}\nreturn pollMapChanges;`)({
+      process: { env: { ASSET_SERVER_URL: "http://assets", ASSET_SERVER_AUTH_KEY: "k", SERVER_ID: "s1" } },
+      serverFetch: async (url: string, init: any) => {
+        asked.push([url, JSON.parse(init.body)]);
+        const answer = answers.shift();
+        if (answer instanceof Error) throw answer;
+        return { ok: answer.ok ?? true, status: answer.status ?? 200, json: async () => answer.body };
+      },
+      checkMapChanges: async () => { full++; mapSync.epoch = "e2"; mapSync.seq = 1; return [{ name: "all", added: false }]; },
+      checksums: {
+        calculateAllMapChecksums: () => { throw new Error("every map was checksummed"); },
+        writeMapContent: (name: string, data: any) => { done.push(["write", name, data]); return true; },
+        calculateMapChecksum: () => "",
+      },
+      assetCache: { get: async (key: string) => (key === "maps" ? [{ name: "m.json" }, { name: "other.json" }] : null) },
+      reloadMap: async (name: string) => { done.push(["reload", name]); },
+      addCreatedMap: async (name: string, kind: string) => { done.push(["add", name, kind]); },
+      log: quiet,
+      path,
+      mapChangeListeners: [(changes: any) => { heard.push(changes); }],
+      takenInMaps: new Map<string, string>(),
+      checkingMaps: false,
+      mapSync,
+    });
+    return { poll, asked, done, heard, mapSync, full: () => full };
+  }
+  const changed = (seq: number, ...names: string[]) => ({ body: { success: true, epoch: "e1", seq, full: false, maps: names.map((name) => ({ name, checksum: `c-${name}`, data: { name } })) } });
+
+  test("takes in only the maps the asset server lists as changed since its last answer", async () => {
+    const n = node([changed(5, "m.json")]);
+    expect(await n.poll()).toEqual([{ name: "m", added: false }]);
+    expect(n.asked).toEqual([["http://assets/map-changes", { epoch: "e1", since: 4, serverId: "s1", authKey: "k" }]]);
+    expect(n.done).toEqual([["write", "m.json", { name: "m.json" }], ["reload", "m"]]);
+    expect(n.heard).toEqual([[{ name: "m", added: false }]]);
+    expect(n.mapSync).toEqual({ epoch: "e1", seq: 5 });
+    expect(n.full()).toBe(0);
+  });
+
+  test("with nothing changed, writes and tells nothing", async () => {
+    const n = node([changed(4)]);
+    expect(await n.poll()).toEqual([]);
+    expect(n.done).toEqual([]);
+    expect(n.heard).toEqual([]);
+    expect(n.mapSync).toEqual({ epoch: "e1", seq: 4 });
+  });
+
+  test("compares every map once when the asset server started again or no longer holds the changes since its last answer", async () => {
+    const n = node([{ body: { success: true, epoch: "e2", seq: 0, full: true, maps: [] } }]);
+    expect(await n.poll()).toEqual([{ name: "all", added: false }]);
+    expect(n.full()).toBe(1);
+    expect(n.done).toEqual([]);
+  });
+
+  test("compares every map, without asking for changes, while it has no place in the asset server's list", async () => {
+    const n = node([], { epoch: "", seq: 0 });
+    expect(await n.poll()).toEqual([{ name: "all", added: false }]);
+    expect(n.asked).toEqual([]);
+    expect(n.full()).toBe(1);
+  });
+
+  test("throws when the asset server refuses or cannot be reached, and keeps its place", async () => {
+    await expect(node([new Error("down")]).poll()).rejects.toThrow("down");
+    await expect(node([{ ok: false, status: 503, body: {} }]).poll()).rejects.toThrow("503");
+    const n = node([{ body: { success: false, error: "nope" } }]);
+    await expect(n.poll()).rejects.toThrow("nope");
+    expect(n.mapSync).toEqual({ epoch: "e1", seq: 4 });
+    expect(n.full()).toBe(0);
+  });
+
+  test("is what the poll runs", () => {
+    const poll = cut(receiver, "const seconds = Number(process.env.WORLD_SYNC_INTERVAL", /\n}\r?\n/);
+    expect(poll).toContain("await pollMapChanges()");
+    expect(poll).not.toContain("checkMapChanges()");
   });
 });
 
@@ -245,7 +356,7 @@ describe("a map changed under this node's players", () => {
 
   test("is looked for every few seconds, maps and worlds alike, and at registration", () => {
     const poll = cut(receiver, "const seconds = Number(process.env.WORLD_SYNC_INTERVAL ?? 10);", /\n}\r?\n/);
-    expect(poll).toContain("await checkMapChanges()");
+    expect(poll).toContain("await pollMapChanges()");
     expect(poll).toContain("await takeInWorldChange(world)");
     expect(poll).toContain("await takeInMapChange({ name: world.id, added: false })");
     expect(receiver).toContain("onMapsChanged(async (changes) => {");

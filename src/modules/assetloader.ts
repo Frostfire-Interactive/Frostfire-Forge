@@ -145,6 +145,11 @@ const mapChangeListeners: Array<(changes: MapChange[]) => unknown> = [];
 /** Each map's asset-server checksum, once its copy was taken in: the same copy listed again is not read again. */
 const takenInMaps = new Map<string, string>();
 let checkingMaps = false;
+/**
+ * Where this server stands in the asset server's list of changed maps (/map-changes): the asset server's run, and the
+ * last change it was told about. Set by checkMapChanges; empty until then, or with an asset server that keeps no list.
+ */
+const mapSync = { epoch: "", seq: 0 };
 
 /** Called with the maps a check found changed on the asset server, once they are read again here. */
 export function onMapsChanged(listener: (changes: MapChange[]) => unknown): void {
@@ -1220,18 +1225,102 @@ export async function reloadMap(mapName: string): Promise<MapData> {
 }
 
 /**
- * Picks up the Tiled maps changed on the asset server while this server runs (a restart of the asset server with new
- * files, the Tiled extension, another server's save): the asset server sends each map whose copy here differs from
- * its own; each is written here and read again (a new one is taken in like a map made in the map editor), and the
- * listeners (onMapsChanged) are told. Returns the maps that changed. Throws when the asset server refuses or cannot
- * be reached; does nothing with none configured, or while a check is under way.
+ * Writes here and reads again each map the asset server sent (a new one is taken in like a map made in the map
+ * editor), and tells the listeners (onMapsChanged). A map whose copy here already hashes like the asset server's (this
+ * server's own save) is left alone. Returns the maps that changed.
+ */
+async function takeInMaps(sent: unknown): Promise<MapChange[]> {
+  const { writeMapContent, calculateMapChecksum } = await import("./checksums.ts");
+  const loaded = ((await assetCache.get("maps")) as MapData[] | null) ?? [];
+  const changes: MapChange[] = [];
+  for (const fresh of (Array.isArray(sent) ? sent : []) as Array<{ name?: string; checksum?: string; data: unknown }>) {
+    const file = String(fresh?.name ?? "");
+    if (file !== path.basename(file) || !file.endsWith(".json") || file.startsWith(".")) continue;
+    const checksum = String(fresh.checksum ?? "");
+    // Taken in already, and still listed: this copy and the asset server's do not hash alike. Read once, not at every check.
+    if (checksum && takenInMaps.get(file) === checksum) continue;
+    if (checksum && calculateMapChecksum(file) === checksum) continue;
+    if (!writeMapContent(file, fresh.data)) {
+      log.error(`Map ${file} changed on the asset server but could not be written here`);
+      continue;
+    }
+    if (checksum) takenInMaps.set(file, checksum);
+    const name = file.slice(0, -".json".length);
+    try {
+      if (loaded.some((m) => m.name === file)) {
+        await reloadMap(name);
+        changes.push({ name, added: false });
+      } else {
+        await addCreatedMap(name, "map");
+        changes.push({ name, added: true });
+      }
+      log.info(`Map ${file} changed on the asset server: read again`);
+    } catch (error: any) {
+      log.error(`Map ${file} changed on the asset server but could not be read: ${error?.message ?? error}`);
+    }
+  }
+  if (changes.length) {
+    for (const listener of mapChangeListeners) {
+      try {
+        await listener(changes);
+      } catch (error: any) {
+        log.error(`A map change could not be taken in: ${error?.message ?? error}`);
+      }
+    }
+  }
+  return changes;
+}
+
+/**
+ * Takes in the maps changed on the asset server since its last answer (pollMapChanges' every few seconds): the asset
+ * server keeps a list of the maps saved to it, and sends only those. While this server has no place in that list, or
+ * the asset server started again (its files may have changed while it was down) or no longer holds every change since
+ * this server's place, every map is compared once instead (checkMapChanges). Returns the maps that changed. Throws when
+ * the asset server refuses or cannot be reached; does nothing with none configured, or while a check is under way.
+ */
+export async function pollMapChanges(): Promise<MapChange[]> {
+  const assetServerUrl = process.env.ASSET_SERVER_INTERNAL_URL || process.env.ASSET_SERVER_URL;
+  if (!assetServerUrl || checkingMaps) return [];
+  if (!mapSync.epoch) return checkMapChanges(assetServerUrl);
+  checkingMaps = true;
+  try {
+    const response = await serverFetch(`${assetServerUrl}/map-changes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        epoch: mapSync.epoch,
+        since: mapSync.seq,
+        serverId: process.env.SERVER_ID || "game-server",
+        authKey: process.env.ASSET_SERVER_AUTH_KEY || process.env.GATEWAY_AUTH_KEY,
+      }),
+    });
+    if (!response.ok) throw new Error(`the asset server answered ${response.status}`);
+    const result = (await response.json()) as { success?: boolean; error?: string; epoch?: string; seq?: number; full?: boolean; maps?: unknown };
+    if (!result?.success) throw new Error(result?.error || "the asset server sent no changes");
+    if (!result.full) {
+      const changes = await takeInMaps(result.maps);
+      if (Number.isInteger(result.seq)) mapSync.seq = result.seq as number;
+      return changes;
+    }
+  } finally {
+    checkingMaps = false;
+  }
+  return checkMapChanges(assetServerUrl);
+}
+
+/**
+ * Compares every Tiled map with the asset server's (at registration with the gateway, and when pollMapChanges cannot
+ * ask for the changed ones): the asset server sends each map whose copy here differs from its own, and they are taken
+ * in (takeInMaps). Its answer gives this server its place in the asset server's list of changed maps. Returns the maps
+ * that changed. Throws when the asset server refuses or cannot be reached; does nothing with none configured, or while
+ * a check is under way.
  */
 export async function checkMapChanges(url?: string): Promise<MapChange[]> {
   const assetServerUrl = url || process.env.ASSET_SERVER_INTERNAL_URL || process.env.ASSET_SERVER_URL;
   if (!assetServerUrl || checkingMaps) return [];
   checkingMaps = true;
   try {
-    const { calculateAllMapChecksums, writeMapContent } = await import("./checksums.ts");
+    const { calculateAllMapChecksums } = await import("./checksums.ts");
     const response = await serverFetch(`${assetServerUrl}/map-checksums`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1242,44 +1331,13 @@ export async function checkMapChanges(url?: string): Promise<MapChange[]> {
       }),
     });
     if (!response.ok) throw new Error(`the asset server answered ${response.status}`);
-    const result = (await response.json()) as { success?: boolean; error?: string; outdatedMaps?: Array<{ name: string; checksum?: string; data: unknown }> };
+    const result = (await response.json()) as { success?: boolean; error?: string; outdatedMaps?: unknown; changes?: { epoch?: unknown; seq?: unknown } };
     if (!result?.success) throw new Error(result?.error || "the asset server sent no checksums");
-
-    const loaded = ((await assetCache.get("maps")) as MapData[] | null) ?? [];
-    const changes: MapChange[] = [];
-    for (const fresh of Array.isArray(result.outdatedMaps) ? result.outdatedMaps : []) {
-      const file = String(fresh?.name ?? "");
-      if (file !== path.basename(file) || !file.endsWith(".json") || file.startsWith(".")) continue;
-      const checksum = String(fresh.checksum ?? "");
-      // Taken in already, and still listed: this copy and the asset server's do not hash alike. Read once, not at every check.
-      if (checksum && takenInMaps.get(file) === checksum) continue;
-      if (!writeMapContent(file, fresh.data)) {
-        log.error(`Map ${file} changed on the asset server but could not be written here`);
-        continue;
-      }
-      if (checksum) takenInMaps.set(file, checksum);
-      const name = file.slice(0, -".json".length);
-      try {
-        if (loaded.some((m) => m.name === file)) {
-          await reloadMap(name);
-          changes.push({ name, added: false });
-        } else {
-          await addCreatedMap(name, "map");
-          changes.push({ name, added: true });
-        }
-        log.info(`Map ${file} changed on the asset server: read again`);
-      } catch (error: any) {
-        log.error(`Map ${file} changed on the asset server but could not be read: ${error?.message ?? error}`);
-      }
-    }
-    if (changes.length) {
-      for (const listener of mapChangeListeners) {
-        try {
-          await listener(changes);
-        } catch (error: any) {
-          log.error(`A map change could not be taken in: ${error?.message ?? error}`);
-        }
-      }
+    const changes = await takeInMaps(result.outdatedMaps);
+    // The asset server's place in its list of changed maps when it compared: a map saved since is listed after it
+    if (typeof result.changes?.epoch === "string" && Number.isInteger(result.changes.seq)) {
+      mapSync.epoch = result.changes.epoch;
+      mapSync.seq = result.changes.seq as number;
     }
     return changes;
   } finally {
