@@ -15,13 +15,23 @@ function getValidMapPath(mapName: string): string {
   return resolved;
 }
 
+// Each file's last checksum, by its size and time: the maps are checked against the asset server's every few seconds
+// (modules/assetloader.ts checkMapChanges), and a file that was not written since is not read and hashed again.
+const known = new Map<string, { mtimeMs: number; size: number; checksum: string }>();
+
 export function calculateFileChecksum(filePath: string): string {
   try {
+    const stat = fs.statSync(filePath);
+    const hit = known.get(filePath);
+    if (hit && hit.mtimeMs === stat.mtimeMs && hit.size === stat.size) return hit.checksum;
+
     const fileContent = fs.readFileSync(filePath, "utf-8");
 
     const jsonData = JSON.parse(fileContent);
     const normalizedContent = JSON.stringify(jsonData);
-    return crypto.createHash("sha256").update(normalizedContent).digest("hex");
+    const checksum = crypto.createHash("sha256").update(normalizedContent).digest("hex");
+    known.set(filePath, { mtimeMs: stat.mtimeMs, size: stat.size, checksum });
+    return checksum;
   } catch (error) {
     console.error(`Failed to calculate checksum for ${filePath}:`, error);
     return "";

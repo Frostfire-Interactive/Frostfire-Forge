@@ -450,10 +450,6 @@ class GatewayClient {
 
   private async syncMapChecksums(attempt: number = 1, maxAttempts: number = 30): Promise<void> {
     try {
-      const { calculateAllMapChecksums, writeMapContent } = await import("./checksums.ts");
-
-      const localChecksums = calculateAllMapChecksums();
-
       const assetServerUrl = this.config.assetServerUrl || process.env.ASSET_SERVER_INTERNAL_URL || process.env.ASSET_SERVER_URL;
       if (!assetServerUrl) {
         log.warn("Asset server URL not configured, skipping map sync");
@@ -461,43 +457,12 @@ class GatewayClient {
       }
 
       try {
-        const response = await serverFetch(`${assetServerUrl}/map-checksums`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            checksums: localChecksums,
-            serverId: this.config.serverId,
-            authKey: process.env.ASSET_SERVER_AUTH_KEY || process.env.GATEWAY_AUTH_KEY
-          })
-        });
-
-        if (!response.ok) {
-          throw new Error(`Map checksum sync failed with status ${response.status}`);
-        }
-
-        const result = await response.json();
-
-        if (!result.success) {
-          throw new Error(result.error || "Unknown error");
-        }
-
-        if (result.outdatedMaps && result.outdatedMaps.length > 0) {
-          log.info(`Syncing ${result.outdatedMaps.length} map(s) from asset server...`);
-
-          for (const mapUpdate of result.outdatedMaps) {
-            const success = writeMapContent(mapUpdate.name, mapUpdate.data);
-            if (success) {
-              log.success(`Updated map: ${mapUpdate.name}`);
-              const { refreshMapVersion } = await import("./assetloader.ts");
-              refreshMapVersion(mapUpdate.name);
-            } else {
-              log.error(`Failed to update map: ${mapUpdate.name}`);
-            }
-          }
-
-        } else {
-          log.success("All maps are up to date");
-        }
+        // The maps that differ from the asset server's are written here and read again, and their players load them
+        // again (as the check every WORLD_SYNC_INTERVAL seconds does)
+        const { checkMapChanges } = await import("./assetloader.ts");
+        const changes = await checkMapChanges(assetServerUrl);
+        if (changes.length > 0) log.success(`Updated ${changes.length} map(s) from the asset server: ${changes.map((c) => c.name).join(", ")}`);
+        else log.success("All maps are up to date");
       } catch (syncError) {
         if (attempt < maxAttempts) {
           const delayMs = Math.min(1000 * Math.pow(2, attempt - 1), 30000); // Exponential backoff, max 30s

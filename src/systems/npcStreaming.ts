@@ -207,6 +207,10 @@ function mapsList(): Promise<MapData[] | null> {
   }
   return mapsLoading;
 }
+/** A map read again (changed on the asset server, /reloadmap) may have a new size: its chunk grid is worked out again. */
+export function forgetMapGeometry(map: string): void {
+  geometryCache.delete(norm(map));
+}
 function geometryOf(m: MapData): Geometry {
   const tw = m.data?.tilewidth || 32, size = CHUNK_SIZE_CONFIG[tw] || 32;
   return { chunkPx: size * tw, chunksX: Math.ceil((m.data?.width || 0) / size), chunksY: Math.ceil((m.data?.height || 0) / size) };

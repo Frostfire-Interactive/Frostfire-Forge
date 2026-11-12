@@ -72,6 +72,7 @@ test("a world changed on the asset server is taken in without a restart", async 
   const world = getWorldMap("synctest")!;
   world.properties = { name: world.name, warps: null, graveyards: null, version: "0" } as any;
   const collision = world.collision;
+  const entry = world.map;
   expect(collision.isSet(1, 1)).toBe(1);
 
   // Nothing changed: nothing to do, and the local files are not hashed again
@@ -87,6 +88,9 @@ test("a world changed on the asset server is taken in without a restart", async 
   expect(collision.isSet(2, 2)).toBe(1);
   expect(world.properties!.warps).toEqual([{ name: "W1", map: "town", x: 5, y: 6, position: { x: 200, y: 32 }, size: { width: 32, height: 16 }, layer: "Warps" }]);
   expect(world.properties!.version).not.toBe("0");
+  // the map entry the maps list holds carries the new objects (the loader reads its particle NPCs again from them)
+  expect(world.map).toBe(entry);
+  expect(world.map.data.layers.find((l: any) => l.name === "Warps").objects.map((o: any) => o.x)).toEqual([200]);
 
   expect(await checkWorldChanges()).toEqual([]);
 });

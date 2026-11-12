@@ -286,34 +286,22 @@ describe("/reloadmap", () => {
   // "map-reloaded").
   function reloading(read: any = { compressed: "new", data: { layers: ["new"] } }) {
     const sent: any[] = [];
-    const resynced: any[] = [];
     const maps: any[] = [{ name: "m.json", compressed: "old", data: { layers: ["old"] } }];
-    const onMap = [{ id: "a", wt: { id: "a" }, location: { map: "m", position: { x: 1, y: 2, direction: "up" } } }, { id: "b", wt: { id: "b" }, location: { map: "m" } }];
     const given = {
       maps,
-      mapPropertiesCache: [],
       reloadMap: async (name: string) => { sent.push(["reloadMap", name]); return read; },
-      filterPlayersByMap: (name: string) => (name === "m" ? onMap : []),
-      constructMapMetadata: (name: string, x: number, y: number, direction: string) => ({ name, x, y, direction }),
-      sendPacket: (wt: any, packet: any) => sent.push([wt.id, packet]),
-      packetManager: { loadMap: (meta: any) => ({ load: meta }) },
-      creatures: { resyncPlayer: (id: string) => resynced.push(["creatures", id]) },
-      gathering: { resyncPlayer: (id: string) => resynced.push(["gathering", id]) },
+      takeInMapChange: async (change: any) => { sent.push(["takeIn", change]); },
     };
     const reloadMapHere = withNames(Object.keys(given), `${fn("async function reloadMapHere(")}\nreturn reloadMapHere;`)(given);
-    return { reloadMapHere, sent, resynced, maps };
+    return { reloadMapHere, sent, maps };
   }
 
   test("reads the map again here, and this node's players on it load it again", async () => {
-    const { reloadMapHere, sent, resynced, maps } = reloading();
+    const { reloadMapHere, sent, maps } = reloading();
     expect(await reloadMapHere("m")).toBe(true);
     expect(maps[0]).toEqual({ name: "m.json", compressed: "new", data: { layers: ["new"] } });
-    expect(sent).toEqual([
-      ["reloadMap", "m"],
-      ["a", { load: { name: "m", x: 1, y: 2, direction: "up" } }],
-      ["b", { load: { name: "m", x: 0, y: 0, direction: "down" } }],
-    ]);
-    expect(resynced).toEqual([["creatures", "a"], ["gathering", "a"], ["creatures", "b"], ["gathering", "b"]]);
+    // takeInMapChange forgets the map's caches here and has its players load it again (asset-server-changes.test.ts)
+    expect(sent).toEqual([["reloadMap", "m"], ["takeIn", { name: "m", added: false }]]);
   });
 
   test("of a map this node does not hold, or one that could not be read, does nothing here", async () => {

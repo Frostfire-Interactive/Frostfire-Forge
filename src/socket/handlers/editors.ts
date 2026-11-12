@@ -1035,6 +1035,14 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
             log.warn(`Failed to save chunks to disk locally: ${diskError}`);
           }
 
+          // and made the asset server's copy, which this node then holds: the check for maps changed on the asset
+          // server (assetloader.ts checkMapChanges) does not take the save in a second time
+          try {
+            await syncMapFromAssetServer(saveData.mapName);
+          } catch (syncError) {
+            log.warn(`Failed to bring ${saveData.mapName} up to date from the asset server: ${syncError}`);
+          }
+
           // Refresh collision cache since collision layer may have been updated
           try {
             const { reloadMap } = await import("../../modules/assetloader");

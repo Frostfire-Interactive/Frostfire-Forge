@@ -1803,7 +1803,7 @@ import { dropRows, refreshPlayer } from "../services/datacache";
 import cooldownManager from "../services/cooldownmanager";
 import effectManager from "../services/effectmanager";
 // Keeps the startup load order: the handler modules, which import these, load at the first packet.
-import "../modules/assetloader";
+import { checkMapChanges, onMapsChanged, takeInWorldChange, type MapChange } from "../modules/assetloader";
 import { checkWorldChanges, getWorldMap } from "../modules/worldmaps";
 // Keeps the startup load order: the handler modules, which import these, load at the first packet.
 import "../modules/https_servers.ts";
@@ -1844,7 +1844,7 @@ import "../systems/particles";
 import worlds from "../systems/worlds";
 // Keeps the startup load order: the handler modules, which import these, load at the first packet.
 import "../systems/npcs";
-import { syncNpcChunks, forgetNpcStream, readNpcList, readHeldList } from "../systems/npcStreaming";
+import { syncNpcChunks, forgetNpcStream, readNpcList, readHeldList, forgetMapGeometry } from "../systems/npcStreaming";
 import spellEffects, { registerSpellEffect, cancelEffect, setStunsForPlayer, setSlowsForPlayer } from "../systems/spelleffects";
 import dots from "../systems/dots";
 import { spellManaCost } from "../systems/spellmath";
@@ -1917,7 +1917,7 @@ import { deliverToPlayer, hearDeliveries, isOnline, registerPlayerAction, runOnP
 import { greetContacts, sendFriends, tellContactsOffline } from "./contacts";
 import { clusterEnabled, nodeId } from "../cluster/config";
 import { applyPartyMembers, cacheIfHeld, clearParty } from "./partystate";
-import { clusterBlocks, clusterNodes, clusterStore, useEngineHooks } from "../cluster/index";
+import { clusterBlocks, clusterMapAdded, clusterNodes, clusterStore, useEngineHooks } from "../cluster/index";
 import { adoptOwnerEpoch } from "../cluster/ownerepoch";
 import { MAX_GRANT_ITEMS, grants } from "../cluster/grants";
 import { playerHandoff } from "../cluster/handoff";
@@ -2370,15 +2370,75 @@ if (PROFILE) {
  * saturated server sheds movement cadence (fewer, larger updates) instead of
  * queueing work it can't drain.
  */
-// Worlds changed on the asset server by something other than this server (the Tiled extension, another game server's
-// editor save) are taken in without a restart: new collision and no-pvp bits, warps and graveyards, and a new map
-// version, so players who load the map again get the new chunks. WORLD_SYNC_INTERVAL is in seconds; 0 turns it off.
+/**
+ * A map read again here after it changed (on the asset server, or by /reloadmap): what this node worked out from the
+ * old one is forgotten (its collision cache, fishing spots, NPC chunk grid, unsaved editor edits), a map new to this
+ * server joins the region's maps (cluster mode), and this node's players on it load it again where they stand.
+ */
+export async function takeInMapChange(change: MapChange): Promise<void> {
+  const name = change.name;
+  clearMapCache(name);
+  fishing.forgetMap(name);
+  forgetMapGeometry(name);
+  editorEditHistory.delete(name);
+  if (change.added) {
+    const props = mapPropertiesCache.find((m: any) => m.name === `${name}.json`);
+    if (props) {
+      try {
+        await clusterMapAdded(name, props.width * props.tileWidth, props.height * props.tileHeight);
+      } catch (error: any) {
+        log.warn(`Map ${name} could not join the region's maps: ${error?.message ?? error}`);
+      }
+    }
+  }
+  await refreshPlayersOnMap(name);
+}
+
+/**
+ * Has this node's players on a map load it again where they stand: its new tiles, collision, NPCs and particles. One
+ * changing server node, or without a connection, is left alone.
+ */
+export async function refreshPlayersOnMap(mapName: string): Promise<void> {
+  for (const p of filterPlayersByMap(mapName)) {
+    if (!p?.wt || (CELLS_ON && inHandoff(p))) continue;
+    const position = p.location?.position;
+    try {
+      await transitionPlayerToMap(
+        p,
+        mapName,
+        { x: Number(position?.x) || 0, y: Number(position?.y) || 0, direction: position?.direction || "down" },
+        p.wt,
+        spawnBatchQueue,
+        despawnBatchQueue
+      );
+    } catch (error: any) {
+      log.warn(`${p.username ?? p.id} could not load ${mapName} again: ${error?.message ?? error}`);
+    }
+  }
+}
+
+// Maps changed on the asset server and read again here (by the check below, or the one at registration with the
+// gateway) reach this node's players.
+onMapsChanged(async (changes) => {
+  for (const change of changes) await takeInMapChange(change);
+});
+
+// Maps and worlds changed on the asset server by something other than this server (a restart of the asset server with
+// new files, the Tiled extension, another game server's editor save) are taken in without a restart: a map is written
+// here and read again; a world gets its new collision and no-pvp bits, warps, graveyards and objects. Their particle and
+// placed NPCs are read again, and the players on them load them again. WORLD_SYNC_INTERVAL is in seconds; 0 turns it off.
 {
   const seconds = Number(process.env.WORLD_SYNC_INTERVAL ?? 10);
   if (Number.isFinite(seconds) && seconds > 0) {
     setInterval(async () => {
       try {
+        await checkMapChanges();
+      } catch (error: any) {
+        log.warn(`Map change check failed: ${error?.message ?? error}`);
+      }
+      try {
         for (const world of await checkWorldChanges()) {
+          await takeInWorldChange(world);
           const propsList = await assetCache.get("mapProperties");
           const props = propsList?.find((m: any) => m.name === world.name);
           if (props && world.properties) {
@@ -2387,9 +2447,8 @@ if (PROFILE) {
             props.version = world.properties.version;
             await assetCache.add("mapProperties", propsList);
           }
-          clearMapCache(world.id);
-          fishing.forgetMap(world.id);
-          log.info(`World ${world.id} changed on the asset server: collision, warps and graveyards updated`);
+          log.info(`World ${world.id} changed on the asset server: collision, warps, graveyards and objects updated`);
+          await takeInMapChange({ name: world.id, added: false });
         }
       } catch (error: any) {
         log.warn(`World change check failed: ${error?.message ?? error}`);

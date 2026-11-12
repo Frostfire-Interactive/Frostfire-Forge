@@ -53,7 +53,7 @@ import { reloadMap } from "../../modules/assetloader";
 import { resetCooldowns } from "../../systems/cooldowns";
 import { setLock as setSubscriptionLock, isLockId as isSubscriptionLock, subscriptionState } from "../../systems/subscriptions";
 import { forgetLook } from "../looks";
-import { MAX_COMMAND_LENGTH, TORNADO, bumpStateRevision, busyNote, channelLineOk, chatHearing, chatLinksOf, chatRateOk, constructMapMetadata, defaultMap, despawnBatchQueue, destinationLayerFor, draggedPlayersMap, filterPlayersByMap, getAnimationNameForDirection, guardedAction, guildDone, guildEditOk, handlePlayerDeath, isCiphertext, kickedFromGuild, mapPropertiesCache, maps, noticeRegion, offerInvitation, officerChat, panelCommands, panelHears, pushGuild, queueSpawnForReceivers, resolvedWeatherCache, reviveDeps, resyncNpcChunks, rowOf, sendAnimationTo, sendIgnoreAnswer, sendPacket, sendReport, sendToWholeMap, spawnBatchQueue, stateRevision, subscriptionLocked, transitionPlayerToMap, weatherShown, withSender, worldsCache } from "../receiver";
+import { MAX_COMMAND_LENGTH, TORNADO, bumpStateRevision, busyNote, channelLineOk, chatHearing, chatLinksOf, chatRateOk, defaultMap, despawnBatchQueue, destinationLayerFor, draggedPlayersMap, filterPlayersByMap, getAnimationNameForDirection, guardedAction, guildDone, guildEditOk, handlePlayerDeath, isCiphertext, kickedFromGuild, mapPropertiesCache, maps, noticeRegion, offerInvitation, officerChat, panelCommands, panelHears, pushGuild, queueSpawnForReceivers, resolvedWeatherCache, reviveDeps, resyncNpcChunks, rowOf, sendAnimationTo, sendIgnoreAnswer, sendPacket, sendReport, sendToWholeMap, spawnBatchQueue, stateRevision, subscriptionLocked, takeInMapChange, transitionPlayerToMap, weatherShown, withSender, worldsCache } from "../receiver";
 import { remoteAdminOf } from "../arrival";
 import { revivePlayer } from "../revive";
 import { trackPacket } from "../../cluster/inflight";
@@ -356,20 +356,8 @@ async function reloadMapHere(mapName: string): Promise<boolean> {
   if (!result) return false;
   map.compressed = result.compressed;
   map.data = result.data;
-  for (const player of filterPlayersByMap(mapName)) {
-    const mapMetadata = constructMapMetadata(
-      mapName,
-      player.location.position?.x || 0,
-      player.location.position?.y || 0,
-      player.location.position?.direction || "down",
-      maps,
-      mapPropertiesCache
-    );
-    sendPacket(player.wt, packetManager.loadMap(mapMetadata));
-    // loading a map clears the client's creatures and gathering nodes
-    creatures.resyncPlayer(player.id);
-    gathering.resyncPlayer(player.id);
-  }
+  // its caches here are forgotten, and its players load it again with its NPCs, weather and creatures
+  await takeInMapChange({ name: mapName, added: false });
   return true;
 }
 

@@ -419,9 +419,9 @@ let checking = false;
 
 /**
  * Picks up worlds changed on the asset server by anything but this server (the Tiled extension, another game
- * server's editor save): fetches their new files and puts the new collision and no-pvp bits, warps and graveyards in
- * place. The map version changes, so players who load the map again get the new chunks. Returns the worlds that
- * changed. Particle NPCs and the world's size are not updated; a change of size needs a restart.
+ * server's editor save): fetches their new files and puts the new collision and no-pvp bits, warps, graveyards and
+ * objects in place. The map version changes, so players who load the map again get the new chunks. Returns the worlds
+ * that changed.
  */
 export async function checkWorldChanges(): Promise<WorldMap[]> {
   if (!worldsDir || checking) return [];
@@ -437,6 +437,9 @@ export async function checkWorldChanges(): Promise<WorldMap[]> {
         const fresh = openWorld(dir, id);
         world.collision.adopt(fresh.collision);
         world.nopvp.adopt(fresh.nopvp);
+        // its new layers, objects, tilesets and zones, in the same map entry the maps list holds (the loader reads its
+        // particle NPCs again from them: assetloader.ts takeInWorldChange)
+        world.map.data = fresh.map.data;
         if (world.properties) {
           const { warps, graveyards } = warpsAndGraveyardsOf(manifest);
           world.properties.warps = warps;

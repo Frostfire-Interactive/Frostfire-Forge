@@ -107,6 +107,50 @@ const mapProperties: MapProperties[] = [];
 const mapNpcList: Npc[] = [];
 /** The ids of the whole NPCs among them: no two may share one. */
 const placedNpcIds = new Set<number>();
+/** The next particle NPC's id is minus this: a map read again gives its particles ids no other map NPC had. */
+let nextMapNpcId = 1;
+
+/** Drops the NPCs a map placed itself (before it is read again), and frees the ids of its placed ones. */
+function dropMapNpcs(mapName: string): void {
+  const map = String(mapName).replace(".json", "");
+  let kept = 0;
+  for (let i = 0; i < mapNpcList.length; i++) {
+    const entry = mapNpcList[i]!;
+    if (entry.map === map) {
+      placedNpcIds.delete(entry.id as number);
+      continue;
+    }
+    mapNpcList[kept++] = entry;
+  }
+  mapNpcList.length = kept;
+}
+
+/** The maps' NPCs as they are now join the NPC cache, in place of the map NPCs it held, beside the database's. */
+async function publishMapNpcs(): Promise<void> {
+  npc.setMapNpcs(mapNpcList);
+  const current = ((await assetCache.get("npcs")) as Npc[] | null) ?? [];
+  await assetCache.set("npcs", [...current.filter((n) => !npc.isMapNpc(n)), ...mapNpcList]);
+}
+
+/** A world's particle objects are NPCs once read: its map entry keeps no second copy (a large world has tens of thousands, and the whole maps list is handed to every auth worker). */
+function emptyParticleLayers(map: MapData): void {
+  for (const layer of map.data.layers) {
+    if (layer.type === "objectgroup" && String(layer.name).toLowerCase() === "particles") layer.objects = [];
+  }
+}
+
+/** A map changed on the asset server and read again here (checkMapChanges); `added` when it is new to this server. */
+export type MapChange = { name: string; added: boolean };
+const mapChangeListeners: Array<(changes: MapChange[]) => unknown> = [];
+/** Each map's asset-server checksum, once its copy was taken in: the same copy listed again is not read again. */
+const takenInMaps = new Map<string, string>();
+let checkingMaps = false;
+
+/** Called with the maps a check found changed on the asset server, once they are read again here. */
+export function onMapsChanged(listener: (changes: MapChange[]) => unknown): void {
+  mapChangeListeners.push(listener);
+}
+
 /** Where the client draws an NPC's particles relative to its position (client npc.ts: position + 16, + 24). */
 const MAP_NPC_PARTICLE_OFFSET = { x: 16, y: 24 } as const;
 
@@ -278,11 +322,18 @@ function registerWorld(world: WorldMap, maps: MapData[]): void {
   mapProperties.push(properties);
   world.properties = properties;
   extractAndCompressLayers(world.map);
-  // The particle objects are NPCs now: the map entry does not keep a second copy (a large world has tens of
-  // thousands of them, and the whole maps list is handed to every auth worker)
-  for (const layer of world.map.data.layers) {
-    if (layer.type === "objectgroup" && String(layer.name).toLowerCase() === "particles") layer.objects = [];
-  }
+  emptyParticleLayers(world.map);
+}
+
+/**
+ * A world changed on the asset server (worldmaps.ts checkWorldChanges, which gave its map entry the new objects): its
+ * particle and placed NPCs are read again from them and reach the NPC cache.
+ */
+export async function takeInWorldChange(world: WorldMap): Promise<void> {
+  dropMapNpcs(world.name);
+  extractAndCompressLayers(world.map);
+  emptyParticleLayers(world.map);
+  await publishMapNpcs();
 }
 
 /**
@@ -317,6 +368,7 @@ export async function addCreatedMap(name: string, kind: "map" | "world", data?: 
   }
   assetCache.add("maps", maps).catch((error) => log.error(`The map data ("maps") could not be written to the cache: ${error}`));
   assetCache.add("mapProperties", mapProperties).catch((error) => log.error(`The map data ("mapProperties") could not be written to the cache: ${error}`));
+  await publishMapNpcs();
 }
 
 /**
@@ -538,7 +590,7 @@ function extractAndCompressLayers(map: MapData) {
             const unknown = names.filter((n: string) => !particles.some((p: Particle) => p.name === n));
             if (unknown.length) log.warn(`Particle object "${obj.name}" in map ${map.name} names unknown particle(s): ${unknown.join(", ")}`);
             mapNpcList.push({
-              id: -(mapNpcList.length + 1),
+              id: -(nextMapNpcId++),
               last_updated: null,
               map: map.name.replace(".json", ""),
               name: obj.name || null,
@@ -1111,6 +1163,14 @@ export async function reloadMap(mapName: string): Promise<MapData> {
     assetCache.removeNested(mapName, "collision").catch((error) => log.error(`The collision layer of ${mapName} could not be cleared from the cache: ${error}`));
     assetCache.removeNested(mapName, "nopvp").catch((error) => log.error(`The nopvp layer of ${mapName} could not be cleared from the cache: ${error}`));
 
+    // Its NPCs, warps, graveyards and shadow layers are read again from the new file (a warp removed there is gone)
+    dropMapNpcs(file);
+    const own = mapProperties.find(m => m.name === file);
+    if (own) {
+      own.warps = null;
+      own.graveyards = null;
+      own.shadowLayerNames = null;
+    }
     extractAndCompressLayers(newMap);
 
     const maps = await assetCache.get("maps") as MapData[];
@@ -1118,8 +1178,8 @@ export async function reloadMap(mapName: string): Promise<MapData> {
 
     const index = maps.findIndex(m => m.name === file);
 
-    // Get the updated mapProperties from the cache (extractAndCompressLayers updated it)
-    const existingProps = mapProps.find(m => m.name.replace(".json", "") === newMap.name.replace(".json", ""));
+    // What extractAndCompressLayers read into this map's properties
+    const existingProps = own ?? mapProps.find(m => m.name.replace(".json", "") === newMap.name.replace(".json", ""));
     const existingGraveyards = existingProps?.graveyards;
     const existingWarps = existingProps?.warps;
     const existingShadowLayerNames = existingProps?.shadowLayerNames;
@@ -1136,16 +1196,21 @@ export async function reloadMap(mapName: string): Promise<MapData> {
       version: String(fs.statSync(fullPath).mtimeMs),
     };
 
-    if (index >= 0) {
-      maps[index] = newMap;
-      mapProps[index] = newProps;
-    } else {
-      maps.push(newMap);
-      mapProps.push(newProps);
+    if (index >= 0) maps[index] = newMap;
+    else maps.push(newMap);
+    // by name: the two lists need not be in the same order
+    const propsIndex = mapProps.findIndex(m => m.name === file);
+    if (propsIndex >= 0) mapProps[propsIndex] = newProps;
+    else mapProps.push(newProps);
+    if (mapProps !== mapProperties) {
+      const ownIndex = mapProperties.findIndex(m => m.name === file);
+      if (ownIndex >= 0) mapProperties[ownIndex] = newProps;
+      else mapProperties.push(newProps);
     }
 
     assetCache.add("maps", maps).catch((error) => log.error(`The map data ("maps") could not be written to the cache: ${error}`));
     assetCache.add("mapProperties", mapProps).catch((error) => log.error(`The map data ("mapProperties") could not be written to the cache: ${error}`));
+    await publishMapNpcs();
 
     return newMap;
   } catch (error) {
@@ -1154,16 +1219,72 @@ export async function reloadMap(mapName: string): Promise<MapData> {
   }
 }
 
-export function refreshMapVersion(mapName: string): void {
+/**
+ * Picks up the Tiled maps changed on the asset server while this server runs (a restart of the asset server with new
+ * files, the Tiled extension, another server's save): the asset server sends each map whose copy here differs from
+ * its own; each is written here and read again (a new one is taken in like a map made in the map editor), and the
+ * listeners (onMapsChanged) are told. Returns the maps that changed. Throws when the asset server refuses or cannot
+ * be reached; does nothing with none configured, or while a check is under way.
+ */
+export async function checkMapChanges(url?: string): Promise<MapChange[]> {
+  const assetServerUrl = url || process.env.ASSET_SERVER_INTERNAL_URL || process.env.ASSET_SERVER_URL;
+  if (!assetServerUrl || checkingMaps) return [];
+  checkingMaps = true;
   try {
-    const fullPath = getValidMapPath(mapName);
-    if (!fs.existsSync(fullPath)) return;
-    const file = path.basename(fullPath);
-    const props = mapProperties.find(m => m.name === file || m.name === mapName);
-    if (props) {
-      props.version = String(fs.statSync(fullPath).mtimeMs);
+    const { calculateAllMapChecksums, writeMapContent } = await import("./checksums.ts");
+    const response = await serverFetch(`${assetServerUrl}/map-checksums`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        checksums: calculateAllMapChecksums(),
+        serverId: process.env.SERVER_ID || "game-server",
+        authKey: process.env.ASSET_SERVER_AUTH_KEY || process.env.GATEWAY_AUTH_KEY,
+      }),
+    });
+    if (!response.ok) throw new Error(`the asset server answered ${response.status}`);
+    const result = (await response.json()) as { success?: boolean; error?: string; outdatedMaps?: Array<{ name: string; checksum?: string; data: unknown }> };
+    if (!result?.success) throw new Error(result?.error || "the asset server sent no checksums");
+
+    const loaded = ((await assetCache.get("maps")) as MapData[] | null) ?? [];
+    const changes: MapChange[] = [];
+    for (const fresh of Array.isArray(result.outdatedMaps) ? result.outdatedMaps : []) {
+      const file = String(fresh?.name ?? "");
+      if (file !== path.basename(file) || !file.endsWith(".json") || file.startsWith(".")) continue;
+      const checksum = String(fresh.checksum ?? "");
+      // Taken in already, and still listed: this copy and the asset server's do not hash alike. Read once, not at every check.
+      if (checksum && takenInMaps.get(file) === checksum) continue;
+      if (!writeMapContent(file, fresh.data)) {
+        log.error(`Map ${file} changed on the asset server but could not be written here`);
+        continue;
+      }
+      if (checksum) takenInMaps.set(file, checksum);
+      const name = file.slice(0, -".json".length);
+      try {
+        if (loaded.some((m) => m.name === file)) {
+          await reloadMap(name);
+          changes.push({ name, added: false });
+        } else {
+          await addCreatedMap(name, "map");
+          changes.push({ name, added: true });
+        }
+        log.info(`Map ${file} changed on the asset server: read again`);
+      } catch (error: any) {
+        log.error(`Map ${file} changed on the asset server but could not be read: ${error?.message ?? error}`);
+      }
     }
-  } catch { /* ignore */ }
+    if (changes.length) {
+      for (const listener of mapChangeListeners) {
+        try {
+          await listener(changes);
+        } catch (error: any) {
+          log.error(`A map change could not be taken in: ${error?.message ?? error}`);
+        }
+      }
+    }
+    return changes;
+  } finally {
+    checkingMaps = false;
+  }
 }
 
 await syncMapsBeforeLoading();
