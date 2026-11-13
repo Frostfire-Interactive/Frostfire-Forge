@@ -6,6 +6,8 @@ import { nodeTicket } from "./ticket";
 import { atomically, nothingWritten } from "../services/batch";
 import { deferredStep } from "../services/deferredstep";
 import log from "../modules/logger";
+import { StallReporter } from "../modules/stallreport";
+import path from "path";
 import player, { clearMapCache } from "../systems/player.ts";
 // Keeps the startup load order: the handler modules, which import these, load at the first packet.
 import "../systems/permissions";
@@ -1803,7 +1805,7 @@ import { dropRows, refreshPlayer } from "../services/datacache";
 import cooldownManager from "../services/cooldownmanager";
 import effectManager from "../services/effectmanager";
 // Keeps the startup load order: the handler modules, which import these, load at the first packet.
-import { pollMapChanges, onMapsChanged, takeInWorldChange, type MapChange } from "../modules/assetloader";
+import { followAssetServerMapChanges, pollMapChanges, onMapsChanged, takeInWorldChange, type MapChange } from "../modules/assetloader";
 import { checkWorldChanges, getWorldMap } from "../modules/worldmaps";
 // Keeps the startup load order: the handler modules, which import these, load at the first packet.
 import "../modules/https_servers.ts";
@@ -2291,11 +2293,21 @@ export async function getInventorySlots(player: any): Promise<number> {
 // 100% of one core reported as ~5% "busy" and never tripped the throttle.
 const LOOP_PROBE_INTERVAL_MS = 250;
 let eventLoopLagMs = 0;
+// A block of a second or more has the thread sampled for 30 s and the functions it ran named in the log (at most once
+// in 15 minutes): the code behind a lag the dashboard shows, on a server whose code cannot be stepped through.
+const stallReporter = new StallReporter({
+  thresholdMs: 1000,
+  windowMs: 30_000,
+  quietMs: 15 * 60_000,
+  root: path.resolve("src"),
+  report: (line) => log.warn(line),
+});
 {
   let expected = performance.now() + LOOP_PROBE_INTERVAL_MS;
   setInterval(() => {
     const now = performance.now();
     const lag = Math.max(0, now - expected);
+    stallReporter.late(lag);
     // EMA so a single GC pause doesn't slam the throttle, but sustained lag
     // ramps it within a second or two.
     eventLoopLagMs = eventLoopLagMs * 0.6 + lag * 0.4;
@@ -2426,34 +2438,45 @@ onMapsChanged(async (changes) => {
 // Maps and worlds changed on the asset server by something other than this server (a restart of the asset server with
 // new files, the Tiled extension, another game server's editor save) are taken in without a restart: a map is written
 // here and read again; a world gets its new collision and no-pvp bits, warps, graveyards and objects. Their particle and
-// placed NPCs are read again, and the players on them load them again. WORLD_SYNC_INTERVAL is in seconds; 0 turns it off.
+// placed NPCs are read again, and the players on them load them again. The asset server pushes them on one connection
+// (followAssetServerMapChanges): nothing is asked while it is open, and after a restart of the asset server only the
+// maps that differ from its last run are sent. An asset server without that connection (an older one) is asked every
+// WORLD_SYNC_INTERVAL seconds instead. WORLD_SYNC_INTERVAL=0 turns both off.
+async function takeInWorldChanges(): Promise<void> {
+  for (const world of await checkWorldChanges()) {
+    await takeInWorldChange(world);
+    const propsList = await assetCache.get("mapProperties");
+    const props = propsList?.find((m: any) => m.name === world.name);
+    if (props && world.properties) {
+      props.warps = world.properties.warps;
+      props.graveyards = world.properties.graveyards;
+      props.version = world.properties.version;
+      await assetCache.add("mapProperties", propsList);
+    }
+    log.info(`World ${world.id} changed on the asset server: collision, warps, graveyards and objects updated`);
+    await takeInMapChange({ name: world.id, added: false });
+  }
+}
 {
   const seconds = Number(process.env.WORLD_SYNC_INTERVAL ?? 10);
   if (Number.isFinite(seconds) && seconds > 0) {
-    setInterval(async () => {
-      try {
-        await pollMapChanges();
-      } catch (error: any) {
-        log.warn(`Map change check failed: ${error?.message ?? error}`);
-      }
-      try {
-        for (const world of await checkWorldChanges()) {
-          await takeInWorldChange(world);
-          const propsList = await assetCache.get("mapProperties");
-          const props = propsList?.find((m: any) => m.name === world.name);
-          if (props && world.properties) {
-            props.warps = world.properties.warps;
-            props.graveyards = world.properties.graveyards;
-            props.version = world.properties.version;
-            await assetCache.add("mapProperties", propsList);
+    followAssetServerMapChanges({
+      worldsChanged: takeInWorldChanges,
+      legacy: () => {
+        setInterval(async () => {
+          try {
+            await pollMapChanges();
+          } catch (error: any) {
+            log.warn(`Map change check failed: ${error?.message ?? error}`);
           }
-          log.info(`World ${world.id} changed on the asset server: collision, warps, graveyards and objects updated`);
-          await takeInMapChange({ name: world.id, added: false });
-        }
-      } catch (error: any) {
-        log.warn(`World change check failed: ${error?.message ?? error}`);
-      }
-    }, seconds * 1000).unref();
+          try {
+            await takeInWorldChanges();
+          } catch (error: any) {
+            log.warn(`World change check failed: ${error?.message ?? error}`);
+          }
+        }, seconds * 1000).unref();
+      },
+    });
   }
 }
 

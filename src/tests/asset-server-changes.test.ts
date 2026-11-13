@@ -229,6 +229,7 @@ describe("the poll for maps changed on the asset server", () => {
     const done: any[] = [];
     const heard: any[] = [];
     let full = 0;
+    const reads: string[] = [];
     const poll = withNames(NAMES, `${code}\nreturn pollMapChanges;`)({
       process: { env: { ASSET_SERVER_URL: "http://assets", ASSET_SERVER_AUTH_KEY: "k", SERVER_ID: "s1" } },
       serverFetch: async (url: string, init: any) => {
@@ -243,7 +244,7 @@ describe("the poll for maps changed on the asset server", () => {
         writeMapContent: (name: string, data: any) => { done.push(["write", name, data]); return true; },
         calculateMapChecksum: () => "",
       },
-      assetCache: { get: async (key: string) => (key === "maps" ? [{ name: "m.json" }, { name: "other.json" }] : null) },
+      assetCache: { get: async (key: string) => { reads.push(key); return key === "maps" ? [{ name: "m.json" }, { name: "other.json" }] : null; } },
       reloadMap: async (name: string) => { done.push(["reload", name]); },
       addCreatedMap: async (name: string, kind: string) => { done.push(["add", name, kind]); },
       log: quiet,
@@ -253,7 +254,7 @@ describe("the poll for maps changed on the asset server", () => {
       checkingMaps: false,
       mapSync,
     });
-    return { poll, asked, done, heard, mapSync, full: () => full };
+    return { poll, asked, done, heard, mapSync, reads, full: () => full };
   }
   const changed = (seq: number, ...names: string[]) => ({ body: { success: true, epoch: "e1", seq, full: false, maps: names.map((name) => ({ name, checksum: `c-${name}`, data: { name } })) } });
 
@@ -273,6 +274,12 @@ describe("the poll for maps changed on the asset server", () => {
     expect(n.done).toEqual([]);
     expect(n.heard).toEqual([]);
     expect(n.mapSync).toEqual({ epoch: "e1", seq: 4 });
+  });
+
+  test("with nothing changed, does not read the maps list (with CACHE=redis, every map's data: seconds of parsing every poll)", async () => {
+    const n = node([changed(4), changed(4), changed(4)]);
+    for (let i = 0; i < 3; i++) await n.poll();
+    expect(n.reads).toEqual([]);
   });
 
   test("compares every map once when the asset server started again or no longer holds the changes since its last answer", async () => {
@@ -354,12 +361,26 @@ describe("a map changed under this node's players", () => {
     ]);
   });
 
-  test("is looked for every few seconds, maps and worlds alike, and at registration", () => {
-    const poll = cut(receiver, "const seconds = Number(process.env.WORLD_SYNC_INTERVAL ?? 10);", /\n}\r?\n/);
-    expect(poll).toContain("await pollMapChanges()");
-    expect(poll).toContain("await takeInWorldChange(world)");
-    expect(poll).toContain("await takeInMapChange({ name: world.id, added: false })");
+  test("is followed on the asset server's connection, maps and worlds alike, and asked for only from an older asset server", () => {
+    const sync = cut(receiver, "const seconds = Number(process.env.WORLD_SYNC_INTERVAL ?? 10);", /\n}\r?\n/);
+    expect(sync).toContain("followAssetServerMapChanges({");
+    expect(sync).toContain("worldsChanged: takeInWorldChanges");
+    // the timer is only the fallback for an asset server without /map-events
+    expect(sync.indexOf("setInterval(")).toBeGreaterThan(sync.indexOf("legacy: () => {"));
+    const worlds = fnOf(receiver, "async function takeInWorldChanges(");
+    expect(worlds).toContain("await takeInWorldChange(world)");
+    expect(worlds).toContain("await takeInMapChange({ name: world.id, added: false })");
     expect(receiver).toContain("onMapsChanged(async (changes) => {");
+  });
+
+  test("the connection the engine follows is /map-events, from this server's place, and takes in what it sends", () => {
+    const follow = fnOf(loader, "export function followAssetServerMapChanges(");
+    expect(follow).toContain("${assetServerUrl}/map-events");
+    expect(follow).toContain("epoch: place.epoch");
+    expect(follow).toContain("since: place.seq");
+    expect(follow).toContain('redirect: "manual"');
+    expect(follow).toContain("return await takeInMaps(maps)");
+    expect(follow).toContain("return checkMapChanges(assetServerUrl)");
   });
 
   test("by /reloadmap is taken in the same way", () => {

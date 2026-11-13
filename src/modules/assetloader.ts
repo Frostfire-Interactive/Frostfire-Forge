@@ -14,6 +14,7 @@ import zlib from "zlib";
 import { serverFetch } from "./https_servers.ts";
 import { addWorldMap, loadWorldMaps, syncWorldMaps, type WorldMap } from "./worldmaps";
 import { removeUnlistedMaps } from "./mapmirror";
+import { followMapEvents } from "./mapevents";
 import { placedNpc } from "./mapnpc";
 import * as settings from "../config/settings.json";
 const defaultMap = settings.default_map?.replace(".json", "") || "main";
@@ -1230,6 +1231,9 @@ export async function reloadMap(mapName: string): Promise<MapData> {
  * server's own save) is left alone. Returns the maps that changed.
  */
 async function takeInMaps(sent: unknown): Promise<MapChange[]> {
+  // Nearly every poll sends nothing. The maps list is every map's data (with CACHE=redis, a read and parse of all of
+  // it that holds the event loop for seconds), so it is read only for a map that came.
+  if (!Array.isArray(sent) || sent.length === 0) return [];
   const { writeMapContent, calculateMapChecksum } = await import("./checksums.ts");
   const loaded = ((await assetCache.get("maps")) as MapData[] | null) ?? [];
   const changes: MapChange[] = [];
@@ -1272,7 +1276,7 @@ async function takeInMaps(sent: unknown): Promise<MapChange[]> {
 }
 
 /**
- * Takes in the maps changed on the asset server since its last answer (pollMapChanges' every few seconds): the asset
+ * Takes in the maps changed on the asset server since its last answer (asked every WORLD_SYNC_INTERVAL seconds, only from an asset server without /map-events): the asset
  * server keeps a list of the maps saved to it, and sends only those. While this server has no place in that list, or
  * the asset server started again (its files may have changed while it was down) or no longer holds every change since
  * this server's place, every map is compared once instead (checkMapChanges). Returns the maps that changed. Throws when
@@ -1343,6 +1347,55 @@ export async function checkMapChanges(url?: string): Promise<MapChange[]> {
   } finally {
     checkingMaps = false;
   }
+}
+
+/**
+ * Follows the maps changed on the asset server while this server runs (modules/mapevents.ts): one connection to
+ * /map-events, on which the asset server sends each map saved there and each world change, and after it restarts, the
+ * maps that differ from its last run. Nothing is asked between. With an asset server that has no /map-events, `legacy`
+ * runs instead (asking every few seconds). Returns the function that stops it; does nothing with no asset server.
+ */
+export function followAssetServerMapChanges(handlers: { worldsChanged: () => Promise<unknown>; legacy: () => void }): () => void {
+  const assetServerUrl = process.env.ASSET_SERVER_INTERNAL_URL || process.env.ASSET_SERVER_URL;
+  if (!assetServerUrl) return () => {};
+  const follower = followMapEvents({
+    open: (place, signal) =>
+      serverFetch(`${assetServerUrl}/map-events`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          epoch: place.epoch,
+          since: place.seq,
+          serverId: process.env.SERVER_ID || "game-server",
+          authKey: process.env.ASSET_SERVER_AUTH_KEY || process.env.GATEWAY_AUTH_KEY,
+        }),
+        redirect: "manual",
+        signal,
+      }),
+    place: () => ({ ...mapSync }),
+    setPlace: (place) => {
+      mapSync.epoch = place.epoch;
+      mapSync.seq = place.seq;
+    },
+    takeIn: async (maps) => {
+      while (checkingMaps) await Bun.sleep(100); // a compare under way (at registration) finishes first
+      checkingMaps = true;
+      try {
+        return await takeInMaps(maps);
+      } finally {
+        checkingMaps = false;
+      }
+    },
+    fullCheck: async () => {
+      while (checkingMaps) await Bun.sleep(100);
+      return checkMapChanges(assetServerUrl);
+    },
+    worldsChanged: handlers.worldsChanged,
+    legacy: handlers.legacy,
+    wait: (ms) => Bun.sleep(ms),
+    log,
+  });
+  return follower.stop;
 }
 
 await syncMapsBeforeLoading();

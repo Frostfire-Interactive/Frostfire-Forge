@@ -299,6 +299,8 @@ function getCORSHeaders(requestOrigin: string | null): Record<string, string> {
 }
 
 const gamePort = parseInt(process.env.WEBSRV_PORTSSL || process.env.GAME_PORT || "3000");
+// The port players reach WebTransport on, when a host port is mapped to the game port (the Docker test stack): advertised to the gateway and the cluster
+const publicGamePort = parseInt(process.env.PUBLIC_GAME_PORT || "") || gamePort;
 const httpInternalPort = parseInt(process.env.WEBSRV_INTERNAL_PORT || "3002");
 
 Bun.serve({
@@ -1109,7 +1111,7 @@ onPlayersLost((peer, restarted) => void contactsLost(peer, restarted));
 const cluster = await startCluster(
   undefined,
   {
-    publicHost, port: gamePort, wtPort: gamePort, useSSL: resolveUseSSL(),
+    publicHost, port: gamePort, wtPort: publicGamePort, useSSL: resolveUseSSL(),
     linkHost: nodeLinkHost(), linkPort,
     certHash: certificateSupportsPinning(webTransportTls!.certPem) ? localCertHash : "",
   },
@@ -1229,7 +1231,7 @@ gatewayClient = new GatewayClient({
   host: serverHost,
   publicHost: publicHost,
   port: gamePort,
-  wtPort: gamePort,
+  wtPort: publicGamePort,
   wtEnabled: true,
   maxConnections: (settings as any)?.webtransport?.maxSessions || 2000,
   heartbeatInterval: settings?.gateway?.heartbeatInterval || 5000,

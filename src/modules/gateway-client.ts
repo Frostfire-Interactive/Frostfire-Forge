@@ -458,7 +458,7 @@ class GatewayClient {
 
       try {
         // The maps that differ from the asset server's are written here and read again, and their players load them
-        // again (as the check every WORLD_SYNC_INTERVAL seconds does)
+        // again (as the changes the asset server pushes are)
         const { checkMapChanges } = await import("./assetloader.ts");
         const changes = await checkMapChanges(assetServerUrl);
         if (changes.length > 0) log.success(`Updated ${changes.length} map(s) from the asset server: ${changes.map((c) => c.name).join(", ")}`);

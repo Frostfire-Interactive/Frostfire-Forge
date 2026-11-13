@@ -1036,7 +1036,7 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           }
 
           // and made the asset server's copy, which this node then holds: the check for maps changed on the asset
-          // server (assetloader.ts pollMapChanges) does not take the save in a second time
+          // server (assetloader.ts followAssetServerMapChanges) does not take the save in a second time
           try {
             await syncMapFromAssetServer(saveData.mapName);
           } catch (syncError) {
