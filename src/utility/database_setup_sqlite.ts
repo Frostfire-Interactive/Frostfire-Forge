@@ -659,6 +659,8 @@ const createDefaultWeather = async () => {
   await query(`INSERT OR IGNORE INTO weather (name, ambience, wind_direction, wind_speed, humidity, temperature, precipitation) VALUES ('tornado', 0.85, 'right', 30, 85, 68, 75);`);
   // "blizzard" is drawn only in the snow zones, as harsh as its wind speed says, falling as its precipitation says.
   await query(`INSERT OR IGNORE INTO weather (name, ambience, wind_direction, wind_speed, humidity, temperature, precipitation) VALUES ('blizzard', 0, 'right', 35, 85, 10, 80);`);
+  // "fog" is drawn as a pale haze everywhere, as thick as its humidity says.
+  await query(`INSERT OR IGNORE INTO weather (name, ambience, wind_direction, wind_speed, humidity, temperature, precipitation) VALUES ('fog', 0.15, 'none', 3, 95, 50, 0);`);
 }
 
 const createWorldTable = async () => {

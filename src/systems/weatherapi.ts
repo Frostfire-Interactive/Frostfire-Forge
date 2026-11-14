@@ -6,14 +6,14 @@
  * taken at startup and every few minutes and held here, in memory, the same
  * for every world. The client draws by a weather's name, so it is never told
  * "weather_api": it is told the one of the names it draws (clear, rainy,
- * snowy, thunderstorm, sandstorm) that the last reading looks like.
+ * snowy, thunderstorm, sandstorm, fog) that the last reading looks like.
  */
 import log from "../modules/logger";
 
 export const WEATHER_API = "weather_api";
 
 /** What the client is told a reading looks like: weathers it draws by name. */
-export type Look = "clear" | "rainy" | "snowy" | "thunderstorm" | "sandstorm";
+export type Look = "clear" | "rainy" | "snowy" | "thunderstorm" | "sandstorm" | "fog";
 
 const ENDPOINT = "https://api.openweathermap.org/data/2.5/weather";
 /** OpenWeatherMap renews a place's reading about every ten minutes. */
@@ -36,6 +36,11 @@ const CALM = 1;
  */
 export const SANDSTORM_WIND = CALM;
 const SAND_CONDITIONS = [731, 751, 761];
+/**
+ * USER REQUEST 2026-11-13 ("I would like to add a new weather type: fog"): the mist (701) and fog (741) conditions look
+ * like fog, at any wind (never a sandstorm). The client draws it as a pale haze everywhere, as thick as the humidity.
+ */
+const FOG_CONDITIONS = [701, 741];
 
 /** The weather until the first reading, and with no key or place to read: a still, clear day. */
 const STILL: WeatherData = { name: WEATHER_API, temperature: 68, humidity: 30, wind_speed: 0, wind_direction: "none", precipitation: 0, ambience: 0 };
@@ -48,6 +53,7 @@ function lookOfCondition(id: number): Look {
   if (id >= 200 && id < 300) return "thunderstorm";
   if ((id >= 300 && id < 400) || (id >= 500 && id < 600)) return "rainy";
   if (id >= 600 && id < 700) return "snowy";
+  if (FOG_CONDITIONS.includes(id)) return "fog";
   return "clear";
 }
 
@@ -92,10 +98,10 @@ export function readingToWeather(body: any): { row: WeatherData; look: Look; utc
   const dry = lookOfCondition(id);
   const look: Look = dry === "clear" && (speed >= SANDSTORM_WIND || SAND_CONDITIONS.includes(id)) ? "sandstorm" : dry;
   const amount = Math.max(0, finite(body?.rain?.["1h"], 0)) + Math.max(0, finite(body?.snow?.["1h"], 0)) * SNOW_WEIGHT;
-  const precipitation = look === "clear" || look === "sandstorm" ? 0 : fallOf(amount > 0 ? amount : null, id);
+  const precipitation = look === "clear" || look === "sandstorm" || look === "fog" ? 0 : fallOf(amount > 0 ? amount : null, id);
   const clouds = clamp(finite(body?.clouds?.all, 0), 0, 100) / 100;
   // The sky darkens with what falls, most in a thunderstorm; dry, only as far as its clouds.
-  const ambience = look === "thunderstorm" ? 0.8 : look === "clear" || look === "sandstorm" ? clouds * 0.3 : 0.3 + precipitation / 100 * 0.3;
+  const ambience = look === "thunderstorm" ? 0.8 : look === "clear" || look === "sandstorm" || look === "fog" ? clouds * 0.3 : 0.3 + precipitation / 100 * 0.3;
   return {
     look,
     utcOffset,

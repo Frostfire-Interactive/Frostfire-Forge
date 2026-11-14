@@ -114,7 +114,7 @@ describe("a reading as a weather", () => {
   test("thunderstorm, drizzle and snow", () => {
     const look = (id: number, over: Row = {}) => api.readingToWeather(reading({ weather: [{ id }], wind: { speed: 0, deg: 0 }, ...over }))!.look;
     expect([look(200), look(232), look(300), look(321), look(531), look(600), look(622), look(741), look(801)])
-      .toEqual(["thunderstorm", "thunderstorm", "rainy", "rainy", "rainy", "snowy", "snowy", "clear", "clear"]);
+      .toEqual(["thunderstorm", "thunderstorm", "rainy", "rainy", "rainy", "snowy", "snowy", "fog", "clear"]);
     const storm = api.readingToWeather(reading({ weather: [{ id: 211 }] }))!;
     expect(storm.row.ambience).toBe(0.8);
     const snow = api.readingToWeather(reading({ weather: [{ id: 601 }], rain: undefined, snow: { "1h": 2.5 }, main: { temp: 28.4, humidity: 90 } }))!;
@@ -132,6 +132,15 @@ describe("a reading as a weather", () => {
     expect([of(731, 3).look, of(751, 0).look, of(761, 5).look]).toEqual(["sandstorm", "sandstorm", "sandstorm"]);
     // Rain, snow and storms are never a sandstorm, however hard the wind.
     expect([of(501, 40).look, of(601, 40).look, of(211, 40).look]).toEqual(["rainy", "snowy", "thunderstorm"]);
+  });
+
+  test("mist and fog look like fog, whatever the wind", () => {
+    const of = (id: number, speed: number) => api.readingToWeather(reading({ weather: [{ id }], rain: undefined, wind: { speed, deg: 270 } }))!;
+    expect([of(701, 0).look, of(741, 0).look, of(701, 20).look, of(741, 20).look]).toEqual(["fog", "fog", "fog", "fog"]);
+    // Fog drops nothing; the wind it drifts with is kept.
+    expect(of(741, 20).row).toMatchObject({ precipitation: 0, wind_speed: 20 });
+    // The other dry conditions are as before.
+    expect([of(721, 0).look, of(731, 0).look]).toEqual(["clear", "sandstorm"]);
   });
 
   test("the wind blows to where the map shows it, from the bearing it blows from", () => {

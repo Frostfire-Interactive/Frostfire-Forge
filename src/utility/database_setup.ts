@@ -640,6 +640,8 @@ const createDefaultWeather = async () => {
     ["tornado", "('tornado', 0.85, 'right', 30, 85, 68, 75)"],
     // "blizzard": only in the snow zones, as harsh as its wind speed says, falling as its precipitation says
     ["blizzard", "('blizzard', 0, 'right', 35, 85, 10, 80)"],
+    // "fog": a pale haze everywhere, as thick as its humidity says
+    ["fog", "('fog', 0.15, 'none', 3, 95, 50, 0)"],
   ];
   for (const [name, values] of more) {
     const found = await query(`SELECT COUNT(*) as count FROM weather WHERE name = '${name}'`) as Array<{ count: number }>;
