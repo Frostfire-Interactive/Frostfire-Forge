@@ -38,6 +38,7 @@ import { ensureCutsceneEditorPermission, ensureCutsceneSchema } from "../systems
 import * as cutscenePlayer from "../systems/cutsceneplayer.ts";
 import worlds from "../systems/worlds.ts";
 import playerCache from "../services/playermanager.ts";
+import { hiddenCount } from "./stealthoffline.ts";
 import { loadTables, forgetPlayer } from "../services/datacache.ts";
 import mapIndex from "../services/mapindex";
 import spatialGrid from "../services/spatialgrid.ts";
@@ -1242,6 +1243,9 @@ gatewayClient = new GatewayClient({
 // straight to the owner of the saved point. Set before registering: the first registration sends every table.
 const blockTable = cluster ? clusterBlocks() : null;
 if (blockTable) gatewayClient.reportBlocksFrom(blockTable);
+
+// A stealthed player is offline to players, so the realm list's count leaves them out (stealthoffline.ts).
+gatewayClient.setHiddenCounter(() => hiddenCount(Object.values(playerCache.list() as Record<string, any>)));
 
 await gatewayClient.registerWithRetry();
 

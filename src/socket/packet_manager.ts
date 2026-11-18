@@ -1,6 +1,7 @@
 import packet from "../modules/packet";
 import type { TradeView } from "../systems/trades";
 import type { NodeTicket } from "./ticket";
+import type { MapZone } from "../modules/zones";
 import { TICK_RATE } from "../services/tickrate";
 import { joinCreatureMoves } from "./creature_move_codec";
 
@@ -308,11 +309,18 @@ export const packetManager = {
     ] as any[];
   },
   clientConfig: (data: any) => {
+    // Auto loot as the client reads it, true or false: the row a player's settings are held in has it as 1 or 0, and
+    // equipping from a bag sends that row again (handlers/items.ts).
+    const config = Array.isArray(data)
+      ? data.map((entry) => entry && typeof entry === "object" && "auto_loot" in entry
+        ? { ...entry, auto_loot: entry.auto_loot === true || Number(entry.auto_loot) === 1 }
+        : entry)
+      : data;
     return [
       packet.encode(
         JSON.stringify({
           type: "CLIENTCONFIG",
-          data,
+          data: config,
         })
       )
     ] as any[];
@@ -694,6 +702,11 @@ export const packetManager = {
   editorSyncReady: (data: any) => {
     return [
       packet.encode(JSON.stringify({ type: "EDITOR_SYNC_READY", data })),
+    ] as any[];
+  },
+  mapZones: (data: { mapName: string, zones: MapZone[] }) => {
+    return [
+      packet.encode(JSON.stringify({ type: "MAP_ZONES", data })),
     ] as any[];
   },
   mapRebase: (data: { shiftX: number, shiftY: number, width: number, height: number }) => {

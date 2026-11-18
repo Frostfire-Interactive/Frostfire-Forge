@@ -1805,8 +1805,9 @@ import { dropRows, refreshPlayer } from "../services/datacache";
 import cooldownManager from "../services/cooldownmanager";
 import effectManager from "../services/effectmanager";
 // Keeps the startup load order: the handler modules, which import these, load at the first packet.
-import { followAssetServerMapChanges, pollMapChanges, onMapsChanged, takeInWorldChange, type MapChange } from "../modules/assetloader";
+import { checkMapChangesWhenFree, followAssetServerMapChanges, pollMapChanges, onMapsChanged, takeInWorldChange, type MapChange } from "../modules/assetloader";
 import { checkWorldChanges, getWorldMap } from "../modules/worldmaps";
+import { onLeftChangeMissed } from "../modules/mapsaves";
 // Keeps the startup load order: the handler modules, which import these, load at the first packet.
 import "../modules/https_servers.ts";
 import "../systems/language";
@@ -2479,6 +2480,18 @@ async function takeInWorldChanges(): Promise<void> {
     });
   }
 }
+
+// A change the asset server told of while a map editor save of the map was under way is left to that save
+// (modules/mapsaves.ts). A save that ended without saving (it failed after the asset server wrote it, or its node never
+// sent its news) has the change taken in after all: a world by the world check, a map by comparing every map.
+onLeftChangeMissed(async (name) => {
+  try {
+    if (getWorldMap(name)) await takeInWorldChanges();
+    else await checkMapChangesWhenFree();
+  } catch (error: any) {
+    log.warn(`The change to ${name} left to a save that did not save could not be taken in: ${error?.message ?? error}`);
+  }
+});
 
 // The movement volume sets the flush floor: none (a flush after every tick)
 // when the server is nearly idle, 50ms (20 Hz) once there's real outbound
@@ -3197,6 +3210,9 @@ export function constructMapMetadata(
     deserts: Array.isArray(map?.data?.deserts) ? map.data.deserts : null,
     // and its snow zones: a blizzard is only drawn inside them
     snowfields: Array.isArray(map?.data?.snowfields) ? map.data.snowfields : null,
+    // The named zones of the map, as outlines in tiles (modules/zones.ts): the client shows a zone's text on entry
+    // and plays its music inside it
+    zones: Array.isArray(map?.data?.zones) ? map.data.zones : null,
     // The inside of a building (isInteriorMap): the client shows no world map there and keeps its minimap zoomed
     // all the way in
     interior: isInteriorMap(normalizedName),

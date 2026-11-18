@@ -7,9 +7,11 @@ import { receiverSource } from "./receiver-source";
 // world's save has each node fetch its new collision and no-pvp bits and take its graveyards and warps, and its
 // players there fetch the changed chunks again (peer news "world-saved"). A plain map's save has each node bring its
 // copy of the map file up to date from the asset server and read the map again, then shows its players the save
-// (peer news "map-saved"). Live tile edits and layer locks reach the admins editing the map on every node (peer news
-// "editor-tile-edit" and "editor-layer-lock"). socket/handlers/editors.ts and modules/assetloader.ts cannot be
-// imported: these read their source.
+// (peer news "map-saved"). Each node marks a save under way from the saver's word of it ("map-saving") until that news,
+// or "map-not-saved", so that the asset server's word of the save, which comes first, is left to it. Live tile edits
+// and layer locks reach the admins editing the map on every node (peer news "editor-tile-edit" and
+// "editor-layer-lock"). socket/handlers/editors.ts and modules/assetloader.ts cannot be imported: these read their
+// source.
 
 const receiver = receiverSource();
 const loader = readFileSync(new URL("../modules/assetloader.ts", import.meta.url), "utf8");
@@ -194,14 +196,15 @@ describe("live editing", () => {
 });
 
 describe("news from another node", () => {
-  function heard(here = node()) {
-    const news: Record<string, (data: any) => unknown> = {};
+  function heard(here = node(), failing = false) {
+    const news: Record<string, (data: any, from?: string) => unknown> = {};
     const calls: any[] = [];
     const given: Record<string, any> = {
       ...here,
       onPeerNews: (name: string, run: any) => { news[name] = run; },
-      worldSavedHere: async (...args: any[]) => { calls.push(["world", ...args]); },
-      mapSavedElsewhere: async (...args: any[]) => { calls.push(["map", ...args]); },
+      worldSavedHere: async (...args: any[]) => { calls.push(["world", ...args]); if (failing) throw new Error("down"); },
+      mapSavedElsewhere: async (...args: any[]) => { calls.push(["map", ...args]); if (failing) throw new Error("down"); },
+      endSaveElsewhere: (...args: any[]) => calls.push(["end", ...args]),
       tileEditsHere: (...args: any[]) => calls.push(["tiles", ...args]),
       layerLockHere: (...args: any[]) => calls.push(["lock", ...args]),
     };
@@ -209,17 +212,27 @@ describe("news from another node", () => {
     return { news, calls, here };
   }
 
-  test("of a save is carried out here", async () => {
+  test("of a save is carried out here, and ends the mark of it", async () => {
     const { news, calls } = heard();
     const chunks = [{ chunkX: 1, chunkY: 1 }];
-    await news["world-saved"]({ world: "w", mapName: "w.json", changed: chunks, graveyards: ["g"], warps: [] });
-    await news["world-saved"]({ world: "w", changed: [] });
-    await news["map-saved"]({ mapName: "m.json", view: { shiftX: 32, width: 10, height: 9, chunks } });
+    await news["world-saved"]({ world: "w", mapName: "w.json", changed: chunks, graveyards: ["g"], warps: [] }, "n2");
+    await news["world-saved"]({ world: "w", changed: [] }, "n2");
+    await news["map-saved"]({ mapName: "m.json", view: { shiftX: 32, width: 10, height: 9, chunks } }, "n3");
     expect(calls).toEqual([
       ["world", { world: "w", mapName: "w.json", changed: chunks, graveyards: ["g"], warps: undefined }],
+      ["end", "n2", "w", true],
       ["world", { world: "w", mapName: "w", changed: [], graveyards: undefined, warps: undefined }],
+      ["end", "n2", "w", true],
       ["map", "m.json", { shiftX: 32, shiftY: 0, width: 10, height: 9, chunks }],
+      ["end", "n3", "m.json", true],
     ]);
+  });
+
+  test("of a save that cannot be carried out here ends the mark of it as not saved", async () => {
+    const { news, calls } = heard(node(), true);
+    await expect(news["world-saved"]({ world: "w", changed: [] }, "n2") as Promise<unknown>).rejects.toThrow("down");
+    await expect(news["map-saved"]({ mapName: "m", view: { chunks: [] } }, "n2") as Promise<unknown>).rejects.toThrow("down");
+    expect(calls.filter((call) => call[0] === "end")).toEqual([["end", "n2", "w", false], ["end", "n2", "m", false]]);
   });
 
   test("of a save that names no map, or no chunks, is not", async () => {
@@ -261,12 +274,67 @@ describe("news from another node", () => {
   });
 });
 
+describe("a save under way on another node", () => {
+  function marking() {
+    const news: Record<string, (data: any, from: string) => unknown> = {};
+    const marks: any[] = [];
+    const timers: { run: () => void; ms: number; cleared: boolean; unref: () => void }[] = [];
+    const given: Record<string, any> = {
+      onPeerNews: (name: string, run: any) => { news[name] = run; },
+      startMapSave: (map: string) => { marks.push(["start", map]); return (saved: boolean) => marks.push(["end", map, saved]); },
+      savesElsewhere: new Map(),
+      SAVE_ELSEWHERE_MS: 60_000,
+      setTimeout: (run: () => void, ms: number) => { const timer = { run, ms, cleared: false, unref() {} }; timers.push(timer); return timer; },
+      clearTimeout: (timer: any) => { if (timer) timer.cleared = true; },
+    };
+    const code = [cut(receiver, "const saveKey = ", /\r?\n/), fn("function endSaveElsewhere("), newsOf("map-saving"), newsOf("map-not-saved"), "return endSaveElsewhere;"].join("\n");
+    const endSaveElsewhere = withNames(Object.keys(given), code)(given);
+    return { news, marks, timers, endSaveElsewhere };
+  }
+
+  test("is marked here from its saver's word until its news of how it ended, the oldest first", () => {
+    const { news, marks, timers, endSaveElsewhere } = marking();
+    news["map-saving"]({ map: "w" }, "n2");
+    news["map-saving"]({ map: "w" }, "n2");
+    news["map-saving"]({ map: "w" }, "n3");
+    expect(marks).toEqual([["start", "w"], ["start", "w"], ["start", "w"]]);
+    endSaveElsewhere("n2", "w.json", true);
+    news["map-not-saved"]({ map: "w" }, "n2");
+    expect(marks.slice(3)).toEqual([["end", "w", true], ["end", "w", false]]);
+    expect(timers.map((timer) => timer.cleared)).toEqual([true, true, false]);
+    // nothing more is under way from n2
+    endSaveElsewhere("n2", "w", true);
+    news["map-not-saved"]({ map: "w" }, "n2");
+    expect(marks.length).toBe(5);
+  });
+
+  test("is given up on as not saved when its saver never tells how it ended", () => {
+    const { news, marks, timers, endSaveElsewhere } = marking();
+    news["map-saving"]({ map: "m" }, "n2");
+    expect(timers[0]!.ms).toBe(60_000);
+    timers[0]!.run();
+    expect(marks).toEqual([["start", "m"], ["end", "m", false]]);
+    // its news, late, finds nothing under way
+    endSaveElsewhere("n2", "m", true);
+    expect(marks.length).toBe(2);
+  });
+
+  test("that names no map is not marked", () => {
+    const { news, marks } = marking();
+    news["map-saving"]({}, "n2");
+    news["map-saving"](null, "n2");
+    news["map-saving"]({ map: 5 }, "n2");
+    news["map-not-saved"](null, "n2");
+    expect(marks).toEqual([]);
+  });
+});
+
 test("the map editor's saves and live edits are told to the region", () => {
   const save = caseOf("SAVE_MAP");
-  expect(save).toContain(`void tellPeers("world-saved", save);`);
+  expect(save).toContain(`saving.tell("world-saved", save);`);
   expect(save).toContain("await worldSavedHere(save, wt.data.id);");
   expect(save).toContain("showMapSaveHere(saveData.mapName, view, wt.data.id);");
-  expect(save).toContain(`void tellPeers("map-saved", { mapName: saveData.mapName, view });`);
+  expect(save).toContain(`saving?.tell("map-saved", { mapName: saveData.mapName, view, zones });`);
   expect(save).not.toContain("filterPlayersByMap(");
   expect(save).not.toContain("refreshWorldMap(");
 

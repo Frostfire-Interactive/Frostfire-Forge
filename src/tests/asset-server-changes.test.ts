@@ -117,8 +117,8 @@ const takeInCode = fnOf(loader, "async function takeInMaps(").replaceAll('await 
 
 describe("maps changed on the asset server", () => {
   const code = `${takeInCode}\n${fnOf(loader, "export async function checkMapChanges(").replace("export ", "").replaceAll('await import("./checksums.ts")', "checksums")}`;
-  const NAMES = ["process", "serverFetch", "checksums", "assetCache", "reloadMap", "addCreatedMap", "log", "path", "mapChangeListeners", "takenInMaps", "checkingMaps", "mapSync"];
-  function node(answers: any[], loaded = ["m.json"], env: Record<string, string> = { ASSET_SERVER_URL: "http://assets" }, local: Record<string, string> = {}) {
+  const NAMES = ["process", "serverFetch", "checksums", "assetCache", "reloadMap", "addCreatedMap", "log", "path", "mapChangeListeners", "takenInMaps", "checkingMaps", "mapSync", "leaveToSave"];
+  function node(answers: any[], loaded = ["m.json"], env: Record<string, string> = { ASSET_SERVER_URL: "http://assets" }, local: Record<string, string> = {}, saving: string[] = []) {
     const done: any[] = [];
     const heard: any[] = [];
     const takenInMaps = new Map<string, string>();
@@ -145,6 +145,7 @@ describe("maps changed on the asset server", () => {
       takenInMaps,
       checkingMaps: false,
       mapSync,
+      leaveToSave: (name: string) => saving.includes(name),
     });
     return { check, done, heard, mapSync };
   }
@@ -199,6 +200,13 @@ describe("maps changed on the asset server", () => {
     expect(n.done.length).toBe(1);
   });
 
+  test("one this server is saving is not written or read again: the save takes in the asset server's copy itself", async () => {
+    const n = node([outdated(["m.json", "c1"], ["other.json", "c2"])], ["m.json", "other.json"], undefined, {}, ["m.json"]);
+    expect(await n.check()).toEqual([{ name: "other", added: false }]);
+    expect(n.done.slice(1)).toEqual([["write", "other.json", { name: "other.json" }], ["reload", "other"]]);
+    expect(n.heard).toEqual([[{ name: "other", added: false }]]);
+  });
+
   test("the check remembers where this server stands in the asset server's list of changed maps", async () => {
     const n = node([{ body: { success: true, outdatedMaps: [], changes: { epoch: "e1", seq: 4 } } }]);
     await n.check();
@@ -222,7 +230,7 @@ describe("maps changed on the asset server", () => {
 // thousands of maps, comparing every one at every poll held the event loop for seconds.
 describe("the poll for maps changed on the asset server", () => {
   const code = `${takeInCode}\n${fnOf(loader, "export async function pollMapChanges(").replace("export ", "")}`;
-  const NAMES = ["process", "serverFetch", "checkMapChanges", "checksums", "assetCache", "reloadMap", "addCreatedMap", "log", "path", "mapChangeListeners", "takenInMaps", "checkingMaps", "mapSync"];
+  const NAMES = ["process", "serverFetch", "checkMapChanges", "checksums", "assetCache", "reloadMap", "addCreatedMap", "log", "path", "mapChangeListeners", "takenInMaps", "checkingMaps", "mapSync", "leaveToSave"];
   function node(answers: any[], place = { epoch: "e1", seq: 4 }) {
     const mapSync = { ...place };
     const asked: any[] = [];
@@ -253,6 +261,7 @@ describe("the poll for maps changed on the asset server", () => {
       takenInMaps: new Map<string, string>(),
       checkingMaps: false,
       mapSync,
+      leaveToSave: () => false,
     });
     return { poll, asked, done, heard, mapSync, reads, full: () => full };
   }
@@ -380,7 +389,29 @@ describe("a map changed under this node's players", () => {
     expect(follow).toContain("since: place.seq");
     expect(follow).toContain('redirect: "manual"');
     expect(follow).toContain("return await takeInMaps(maps)");
-    expect(follow).toContain("return checkMapChanges(assetServerUrl)");
+    expect(follow).toContain("fullCheck: () => checkMapChangesWhenFree(assetServerUrl)");
+    expect(fnOf(loader, "export async function checkMapChangesWhenFree(")).toMatch(/while \(checkingMaps\) await Bun\.sleep\(100\);\s+return checkMapChanges\(url\);/);
+  });
+
+  // A change left to a map editor save (modules/mapsaves.ts), here or on another node, that then ended without saving
+  test("left to a map editor save that ended without saving is taken in after all: a world by the world check, a map by comparing every map", async () => {
+    const calls: any[] = [];
+    let listener: (name: string) => Promise<void> = async () => {};
+    const warned: string[] = [];
+    const given: Record<string, any> = {
+      onLeftChangeMissed: (run: any) => { listener = run; },
+      getWorldMap: (name: string) => (name === "w" ? {} : undefined),
+      takeInWorldChanges: async () => { calls.push("worlds"); },
+      checkMapChangesWhenFree: async () => { calls.push("maps"); if (calls.length > 2) throw new Error("down"); },
+      log: { warn: (message: string) => warned.push(message) },
+    };
+    const code = cut(receiver, "onLeftChangeMissed(async (name) => {", /\n}\);\r?\n/) + "\n});";
+    withNames(Object.keys(given), code)(given);
+    await listener("w");
+    await listener("m");
+    expect(calls).toEqual(["worlds", "maps"]);
+    await listener("m");
+    expect(warned.length).toBe(1);
   });
 
   test("by /reloadmap is taken in the same way", () => {
@@ -395,4 +426,43 @@ test("the map editor's save leaves this node's copy of the map the asset server'
   const synced = save.indexOf("await syncMapFromAssetServer(saveData.mapName)");
   expect(synced).toBeGreaterThan(0);
   expect(save.indexOf("await reloadMap(saveData.mapName)")).toBeGreaterThan(synced);
+});
+
+// The asset server tells every game server of a save as soon as it has written it, this one and the other nodes of the
+// region too, before the save here has finished: the save is marked first, here and on the other nodes (told before
+// anything is written), so that word is left to it. The mark ends however the save ends, with whether it saved.
+test("a save here is marked before the other nodes are told it is under way, and they hear how it ended", async () => {
+  const calls: any[] = [];
+  const given = {
+    startMapSave: (map: string) => { calls.push(["start", map]); return (saved: boolean) => calls.push(["end", map, saved]); },
+    tellPeers: async (news: string, data: any) => { calls.push(["tell", news, data]); return true; },
+  };
+  const startSaveHere = withNames(Object.keys(given), `${fnOf(editors, "async function startSaveHere(")}\nreturn startSaveHere;`)(given);
+  const told = await startSaveHere("m.json");
+  told.tell("map-saved", { mapName: "m.json" });
+  told.end(true);
+  const notTold = await startSaveHere("w");
+  notTold.end(false);
+  expect(calls).toEqual([
+    ["start", "m"], ["tell", "map-saving", { map: "m" }], ["tell", "map-saved", { mapName: "m.json" }], ["end", "m", true],
+    ["start", "w"], ["tell", "map-saving", { map: "w" }], ["end", "w", false], ["tell", "map-not-saved", { map: "w" }],
+  ]);
+});
+
+test("the map editor's save of a world or a map is marked from before it writes until it ends", () => {
+  const worldStart = editors.indexOf("const saving = await startSaveHere(worldName);");
+  const worldWrite = editors.indexOf("await worldSavedHere(", worldStart);
+  const worldEnd = editors.indexOf("editorEditHistory.delete(saveData.mapName);", worldWrite);
+  expect(worldStart).toBeGreaterThan(0);
+  expect(editors.indexOf('await post("/save-map-chunks"', worldStart)).toBeGreaterThan(worldStart);
+  expect(worldWrite).toBeGreaterThan(worldStart);
+  expect(editors.slice(worldStart, worldWrite)).toContain('saving.tell("world-saved", save);');
+  expect(editors.slice(worldWrite, worldEnd)).toMatch(/saved = true;[\s\S]*\} finally \{\s+saving\.end\(saved\);\s+\}/);
+
+  const mapStart = editors.indexOf('const saving = typeof saveData?.mapName === "string" ? await startSaveHere(saveData.mapName) : null;');
+  const mapWrite = editors.indexOf("await saveMapChunks(saveData.mapName", mapStart);
+  const mapDone = editors.indexOf("Map saved successfully!", mapWrite);
+  expect(mapStart).toBeGreaterThan(worldEnd);
+  expect(mapWrite).toBeGreaterThan(mapStart);
+  expect(editors.slice(mapDone, mapDone + 2500)).toMatch(/saving\?\.tell\("map-saved", \{ mapName: saveData\.mapName, view, zones \}\);\s+saved = true;\s+\} catch[\s\S]*?\} finally \{\s+saving\?\.end\(saved\);\s+\}/);
 });

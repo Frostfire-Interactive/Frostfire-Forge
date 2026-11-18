@@ -3,6 +3,8 @@ import fs from "fs";
 import crypto from "crypto";
 import log from "./logger";
 import { removeUnlistedWorlds } from "./mapmirror";
+import { leaveToSave } from "./mapsaves";
+import { cleanZonesLenient, zonesOfKind } from "./zones";
 
 // World maps: a map too large to hold as one Tiled file (the 10240 x 10240 continent) is a directory <id>.world/ in
 // the maps folder, written by the map generator and served by the asset server. The game server never needs its
@@ -131,20 +133,7 @@ export function snowfieldsOf(zones: unknown): Desert[] {
 
 /** The zones of a manifest of one kind, with what is not a number left out. */
 function zonesOf(zones: unknown, kind: string): Desert[] {
-  if (!Array.isArray(zones)) return [];
-  const finite = (n: unknown) => typeof n === "number" && Number.isFinite(n);
-  const deserts: Desert[] = [];
-  for (const zone of zones) {
-    if (zone?.kind !== kind || !Array.isArray(zone.outline)) continue;
-    const outline = zone.outline
-      .filter((ring: unknown) => Array.isArray(ring))
-      .map((ring: unknown[]) => ring.filter((p: any) => Array.isArray(p) && finite(p[0]) && finite(p[1])).map((p: any) => [p[0], p[1]]))
-      .filter((ring: number[][]) => ring.length >= 3);
-    const b = zone.bbox;
-    if (!outline.length || !b || ![b.x, b.y, b.w, b.h].every(finite)) continue;
-    deserts.push({ name: String(zone.name ?? ""), bbox: { x: b.x, y: b.y, w: b.w, h: b.h }, outline });
-  }
-  return deserts;
+  return zonesOfKind(zones, kind);
 }
 
 function openWorld(dir: string, id: string): WorldMap {
@@ -190,7 +179,12 @@ function openWorld(dir: string, id: string): WorldMap {
   });
 
   const name = `${id}.json`;
-  const deserts = desertsOf(manifest.zones), snowfields = snowfieldsOf(manifest.zones);
+  // The zones of the world, kept one by one: a bad zone is left out with a warning, not the whole list, and a zone that
+  // partly overlaps a smaller one is cut back to its edge
+  const { zones, dropped, fixed } = cleanZonesLenient(manifest.zones, width, height);
+  for (const problem of dropped) log.warn(`World ${id}: zone left out: ${problem}`);
+  for (const note of fixed) log.info(`World ${id}: ${note}`);
+  const deserts = desertsOf(zones), snowfields = snowfieldsOf(zones);
   const spawn = manifest.spawn && Number.isFinite(manifest.spawn.x) && Number.isFinite(manifest.spawn.y)
     ? { x: Number(manifest.spawn.x), y: Number(manifest.spawn.y) }
     : null;
@@ -219,6 +213,8 @@ function openWorld(dir: string, id: string): WorldMap {
         layers,
         ...(manifest.warps ? { warps: manifest.warps } : {}),
         ...(manifest.graveyards ? { graveyards: manifest.graveyards } : {}),
+        // the named zones drawn in the map editor (zone text and music, modules/zones.ts), sent to the client with the map
+        zones,
         // the cave systems of an underworld, as rectangles in tiles (sent to the client with the map)
         ...(Array.isArray(manifest.sections) ? { sections: manifest.sections } : {}),
         // the desert zones, as outlines in tiles: a sandstorm is only drawn inside them (sent to the client with the map)
@@ -265,11 +261,16 @@ export function loadWorldMaps(mapDir: string, tiledMapNames: Set<string>): World
 export async function addWorldMap(id: string): Promise<WorldMap> {
   if (!worldsDir) throw new Error("the worlds have not been loaded");
   if (worlds.has(id)) throw new Error(`${id} is already a world`);
-  await syncWorldMaps(worldsDir);
+  for (const synced of await syncWorldMaps(worldsDir)) if (synced !== id) changedElsewhere.add(synced);
   const world = openWorld(path.join(worldsDir, `${id}.world`), id);
   worlds.set(id, world);
   return world;
 }
+
+// Worlds whose new files a sync made for something else fetched (a save, a new world), and worlds whose change a check
+// left to a save under way (modules/mapsaves.ts): they changed elsewhere, and the next check takes them in, unless the
+// save takes the world in first.
+const changedElsewhere = new Set<string>();
 
 /**
  * After an editor save on the asset server: fetches the world's changed files and puts the new collision and no-pvp
@@ -278,11 +279,13 @@ export async function addWorldMap(id: string): Promise<WorldMap> {
 export async function refreshWorldMap(mapName: string): Promise<void> {
   const world = getWorldMap(mapName);
   if (!world || !worldsDir) throw new Error(`${mapName} is not a loaded world`);
-  await syncWorldMaps(worldsDir);
+  for (const id of await syncWorldMaps(worldsDir)) if (id !== world.id) changedElsewhere.add(id);
   const dir = path.join(worldsDir, `${world.id}.world`);
   const fresh = openWorld(dir, world.id);
   world.collision.adopt(fresh.collision);
   world.nopvp.adopt(fresh.nopvp);
+  // the world as the asset server holds it is now in place: a change of it left to this save is taken in
+  changedElsewhere.delete(world.id);
   // a new version has clients drop the chunks they kept of the old one
   if (world.properties) world.properties.version = String(fs.statSync(path.join(dir, "manifest.json")).mtimeMs);
 }
@@ -303,12 +306,22 @@ function fileHash(file: string): string | null {
 // the same hashes again is up to date without hashing its local files (two 13 MB bitsets for a large world).
 const syncedFiles = new Map<string, string>();
 
+// The sync under way: a second one waits for it, so that one world's new files are fetched, and reported, once
+let syncing: Promise<unknown> = Promise.resolve();
+
 /**
  * Brings the local copy of every world the asset server has up to date: its manifest and its two bitsets, each
  * fetched only when the local file differs. Returns the ids of the worlds whose files were fetched. Does nothing
- * when the asset server is not configured, cannot be reached or has no worlds.
+ * when the asset server is not configured, cannot be reached or has no worlds. Syncs run one after another: one asked
+ * for while another runs starts when it ends, and finds what it fetched already here.
  */
-export async function syncWorldMaps(mapDir: string): Promise<string[]> {
+export function syncWorldMaps(mapDir: string): Promise<string[]> {
+  const run = syncing.then(() => syncWorldMapsNow(mapDir));
+  syncing = run.catch(() => {});
+  return run;
+}
+
+async function syncWorldMapsNow(mapDir: string): Promise<string[]> {
   const synced: string[] = [];
   const assetServerUrl = process.env.ASSET_SERVER_INTERNAL_URL || process.env.ASSET_SERVER_URL;
   if (!assetServerUrl) return synced;
@@ -421,16 +434,26 @@ let checking = false;
  * Picks up worlds changed on the asset server by anything but this server (the Tiled extension, another game
  * server's editor save): fetches their new files and puts the new collision and no-pvp bits, warps, graveyards and
  * objects in place. The map version changes, so players who load the map again get the new chunks. Returns the worlds
- * that changed.
+ * that changed. A world with a map editor save under way, here or on another node (modules/mapsaves.ts), is left to
+ * the save, which takes it in itself (refreshWorldMap); one whose save ends without saving is taken in by the next check.
  */
 export async function checkWorldChanges(): Promise<WorldMap[]> {
   if (!worldsDir || checking) return [];
   checking = true;
   try {
     const changed: WorldMap[] = [];
-    for (const id of await syncWorldMaps(worldsDir)) {
+    const synced = await syncWorldMaps(worldsDir);
+    const ids = new Set([...changedElsewhere, ...synced]);
+    changedElsewhere.clear();
+    for (const id of ids) {
       const world = worlds.get(id);
       if (!world) continue; // a world new to this server joins at the next start
+      if (leaveToSave(id)) {
+        // kept for the next check, unless the save takes the world in first
+        changedElsewhere.add(id);
+        log.debug(`World ${id} changed on the asset server: a save under way, which takes it in`);
+        continue;
+      }
       const dir = path.join(worldsDir, `${id}.world`);
       try {
         const manifest = JSON.parse(fs.readFileSync(path.join(dir, "manifest.json"), "utf-8"));

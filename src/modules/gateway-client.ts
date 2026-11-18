@@ -36,6 +36,8 @@ class GatewayClient {
   private config: ServerRegistrationConfig;
   private heartbeatTimer?: Timer;
   private activeConnections: number = 0;
+  /** How many of the players the realm list leaves out of its count: the stealthed ones (stealthoffline.ts). */
+  private hiddenCounter: () => number = () => 0;
   private registered: boolean = false;
   private reconnectTimer?: Timer;
   private reconnectAttempts: number = 0;
@@ -258,6 +260,8 @@ class GatewayClient {
         body: JSON.stringify({
           id: this.registrationId,
           activeConnections: this.activeConnections,
+          // Left out of the count the realm list shows, not of the realm's load.
+          hiddenConnections: this.hiddenConnections(),
           cpuUsage: cpuUsage,
           ramUsage: ramUsage,
           authKey: process.env.GATEWAY_AUTH_KEY,
@@ -306,6 +310,20 @@ class GatewayClient {
 
   setActiveConnections(count: number) {
     this.activeConnections = count;
+  }
+
+  /** Counts, at each heartbeat, the players the realm list does not show (sent as `hiddenConnections`). */
+  setHiddenCounter(counter: () => number) {
+    this.hiddenCounter = counter;
+  }
+
+  private hiddenConnections(): number {
+    try {
+      const hidden = Number(this.hiddenCounter());
+      return Number.isFinite(hidden) && hidden > 0 ? Math.floor(hidden) : 0;
+    } catch {
+      return 0;
+    }
   }
 
   /**

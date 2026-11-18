@@ -14,7 +14,9 @@ import zlib from "zlib";
 import { serverFetch } from "./https_servers.ts";
 import { addWorldMap, loadWorldMaps, syncWorldMaps, type WorldMap } from "./worldmaps";
 import { removeUnlistedMaps } from "./mapmirror";
+import { applyZones, cleanZonesLenient, type MapZone } from "./zones";
 import { followMapEvents } from "./mapevents";
+import { leaveToSave } from "./mapsaves";
 import { placedNpc } from "./mapnpc";
 import * as settings from "../config/settings.json";
 const defaultMap = settings.default_map?.replace(".json", "") || "main";
@@ -738,6 +740,16 @@ function extractAndCompressLayers(map: MapData) {
     }
   }
 
+  // The named zones of a plain map, saved at the top of its file by the map editor (modules/zones.ts): kept one by
+  // one against the map size in tiles, a bad zone is left out with a warning, and a zone that partly overlaps a smaller
+  // one is cut back to its edge
+  if (!(map as any).world && map.data) {
+    const { zones, dropped, fixed } = cleanZonesLenient(map.data.zones, Number(map.data.width) || 0, Number(map.data.height) || 0);
+    for (const problem of dropped) log.warn(`Map ${map.name}: zone left out: ${problem}`);
+    for (const note of fixed) log.info(`Map ${map.name}: ${note}`);
+    applyZones(map.data, zones);
+  }
+
   // A world has no tile data here: its collision and no-pvp zones are bitsets (modules/worldmaps.ts)
   if ((map as any).world) return;
 
@@ -999,7 +1011,7 @@ export async function saveMapChunks(mapName: string, chunks: any[], bounds?: { m
   }
 }
 
-export async function saveMapProperties(mapName: string, graveyards?: any, warps?: any): Promise<void> {
+export async function saveMapProperties(mapName: string, graveyards?: any, warps?: any, zones?: MapZone[]): Promise<void> {
   try {
     const fullPath = getValidMapPath(mapName);
     const file = path.basename(fullPath);
@@ -1016,6 +1028,10 @@ export async function saveMapProperties(mapName: string, graveyards?: any, warps
     }
     if (warps !== undefined) {
       mapData.warps = warps;
+    }
+    // the named zones drawn in the map editor, at the top of the file (modules/zones.ts)
+    if (zones !== undefined) {
+      mapData.zones = zones;
     }
 
     // Update Tiled object layers with the objects
@@ -1227,8 +1243,9 @@ export async function reloadMap(mapName: string): Promise<MapData> {
 
 /**
  * Writes here and reads again each map the asset server sent (a new one is taken in like a map made in the map
- * editor), and tells the listeners (onMapsChanged). A map whose copy here already hashes like the asset server's (this
- * server's own save) is left alone. Returns the maps that changed.
+ * editor), and tells the listeners (onMapsChanged). A map with a map editor save under way, here or on another node
+ * (modules/mapsaves.ts), or whose copy here already hashes like the asset server's (a save, once it has ended), is left
+ * alone. Returns the maps that changed.
  */
 async function takeInMaps(sent: unknown): Promise<MapChange[]> {
   // Nearly every poll sends nothing. The maps list is every map's data (with CACHE=redis, a read and parse of all of
@@ -1240,6 +1257,9 @@ async function takeInMaps(sent: unknown): Promise<MapChange[]> {
   for (const fresh of (Array.isArray(sent) ? sent : []) as Array<{ name?: string; checksum?: string; data: unknown }>) {
     const file = String(fresh?.name ?? "");
     if (file !== path.basename(file) || !file.endsWith(".json") || file.startsWith(".")) continue;
+    // A map editor save under way (SAVE_MAP), here or on another node, told of before it has finished: the save takes in
+    // the asset server's copy itself
+    if (leaveToSave(file)) continue;
     const checksum = String(fresh.checksum ?? "");
     // Taken in already, and still listed: this copy and the asset server's do not hash alike. Read once, not at every check.
     if (checksum && takenInMaps.get(file) === checksum) continue;
@@ -1349,6 +1369,12 @@ export async function checkMapChanges(url?: string): Promise<MapChange[]> {
   }
 }
 
+/** Compares every Tiled map with the asset server's (checkMapChanges) once the check or take-in under way has finished. */
+export async function checkMapChangesWhenFree(url?: string): Promise<MapChange[]> {
+  while (checkingMaps) await Bun.sleep(100);
+  return checkMapChanges(url);
+}
+
 /**
  * Follows the maps changed on the asset server while this server runs (modules/mapevents.ts): one connection to
  * /map-events, on which the asset server sends each map saved there and each world change, and after it restarts, the
@@ -1386,10 +1412,7 @@ export function followAssetServerMapChanges(handlers: { worldsChanged: () => Pro
         checkingMaps = false;
       }
     },
-    fullCheck: async () => {
-      while (checkingMaps) await Bun.sleep(100);
-      return checkMapChanges(assetServerUrl);
-    },
+    fullCheck: () => checkMapChangesWhenFree(assetServerUrl),
     worldsChanged: handlers.worldsChanged,
     legacy: handlers.legacy,
     wait: (ms) => Bun.sleep(ms),

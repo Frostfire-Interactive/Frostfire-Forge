@@ -812,14 +812,15 @@ describe("a player's client config", () => {
   test("the Ambience level is added to a live database at start, saved with the others, and left alone by a client that sends none", async () => {
     const { ensureAmbienceColumn } = await import("../systems/player");
     expect(await ensureAmbienceColumn()).toBe(true);
-    expect(row("pc_hero", "clientconfig").ambience_volume).toBe(100);
+    // a player who never moved the slider is given its default level (USER REQUEST 2026-11-18)
+    expect(row("pc_hero", "clientconfig").ambience_volume).toBe(50);
     online("6101", "pc_hero");
     await player.getConfig("pc_hero");
     expect(await sentBy(() => player.setConfig("6101", { fps: 60, music_volume: 10, effects_volume: 20, ambience_volume: 30, muted: false }))).toEqual([
       "UPDATE clientconfig SET fps = ?, music_volume = ?, effects_volume = ?, ambience_volume = ?, muted = ? WHERE username = ?",
     ]);
     expect(row("pc_hero", "clientconfig")).toMatchObject({ fps: 60, music_volume: 10, effects_volume: 20, ambience_volume: 30, muted: 0 });
-    expect(await fromCache(() => player.getConfig("pc_hero"))).toEqual([config("pc_hero", { fps: 60, music_volume: 10, effects_volume: 20, ambience_volume: 30, weather_volume: 100, auto_loot: 0, muted: 0 })]);
+    expect(await fromCache(() => player.getConfig("pc_hero"))).toEqual([config("pc_hero", { fps: 60, music_volume: 10, effects_volume: 20, ambience_volume: 30, weather_volume: 60, auto_loot: 0, muted: 0 })]);
     // a client from before the slider
     expect(await sentBy(() => player.setConfig("6101", { fps: 60, music_volume: 11, effects_volume: 20, muted: false }))).toEqual([
       "UPDATE clientconfig SET fps = ?, music_volume = ?, effects_volume = ?, muted = ? WHERE username = ?",
@@ -831,7 +832,7 @@ describe("a player's client config", () => {
   test("the Weather level is added beside the Ambience one at start, and saved with the others", async () => {
     const { ensureAmbienceColumn } = await import("../systems/player");
     expect(await ensureAmbienceColumn()).toBe(true);
-    expect(row("pc_hero", "clientconfig").weather_volume).toBe(100);
+    expect(row("pc_hero", "clientconfig").weather_volume).toBe(60);
     online("6101", "pc_hero");
     await player.getConfig("pc_hero");
     expect(await sentBy(() => player.setConfig("6101", { fps: 60, music_volume: 10, effects_volume: 20, ambience_volume: 30, weather_volume: 40, muted: false }))).toEqual([
@@ -925,6 +926,17 @@ describe("a new account", () => {
     for (const table of ["accounts", "stats", "clientconfig", "currency", "equipment", "collectables", "learned_spells"]) {
       expect(tables[table].filter((row) => row.username === "pc_newcomer")).toHaveLength(1);
     }
+  });
+
+  // USER REQUEST 2026-11-18 ("by default set the following slider values by default: weather: 60 music: 50
+  // effects: 30 ambience: 50 fps: 60")
+  test("starts with the pause menu's sliders at their defaults", async () => {
+    const { ensureAmbienceColumn } = await import("../systems/player");
+    expect(await ensureAmbienceColumn()).toBe(true);
+    await signUp();
+    expect(row("pc_newcomer", "clientconfig")).toMatchObject({
+      fps: 60, music_volume: 50, effects_volume: 30, ambience_volume: 50, weather_volume: 60, muted: 0,
+    });
   });
 
   // The quest log holds a row for each quest a player has taken, and a row needs its quest. A new account has

@@ -28,6 +28,7 @@ import player, { clearMapCache } from "../../systems/player.ts";
 import playerCache from "../../services/playermanager.ts";
 import { addCreatedMap, adoptCreatedMap } from "../../modules/assetloader";
 import { getWorldMap, refreshWorldMap } from "../../modules/worldmaps";
+import { startMapSave } from "../../modules/mapsaves";
 import { MAP_NAME_RE, mayCreateMaps, readCreateMap, requestCreateMap } from "../../systems/mapcreate";
 import { mayEditTileSounds, readTileSoundChanges, saveTileSounds } from "../../systems/tilesounds";
 import { packetManager } from "../packet_manager";
@@ -35,6 +36,7 @@ import { saveMapChunks, saveMapProperties, applyChunksWithRebase, reloadMap, syn
 import { serverFetch } from "../../modules/https_servers.ts";
 import { activeEditorsByMap, despawnBatchQueue, editorEditHistory, filterPlayersByMap, mailboxEditorWorld, mapPropertiesCache, maps, placePlayer, runForControlPanel, sendMailboxes, sendPacket, spawnBatchQueue, transitionPlayerToMap } from "../receiver";
 import type { PacketContext } from "./context";
+import { applyZones, sizeAfterSave, zonesForSave, type MapZone } from "../../modules/zones";
 
 // Packet handlers moved from receiver.ts's packetReceiver switch (phase 6, Task 1). The case bodies are unchanged.
 
@@ -182,21 +184,35 @@ onPeerNews("mailboxes", (news) => {
 type ChunkAt = { chunkX: number; chunkY: number };
 
 /**
- * A world saved in the map editor: the chunks the asset server changed, and the graveyards and warps saved with them.
- * `mapName` is the editor's name of it, which keys its unsaved edits.
+ * The zones of a map saved in the map editor, put on this node's copy of it (the next LOAD_MAP sends them) and sent
+ * to every player on it here, the saver too: their zone text and music follow the new outlines at once.
  */
-type WorldSave = { world: string; mapName: string; changed: ChunkAt[]; graveyards?: any[]; warps?: any[] };
+async function zonesSavedHere(mapName: string, zones: MapZone[]): Promise<void> {
+  const file = `${mapName.replace(".json", "")}.json`;
+  const world = getWorldMap(mapName);
+  if (world) applyZones(world.map.data as any, zones);
+  const cached = ((await assetCache.get("maps")) as any[] | null)?.find((m: any) => m.name === file);
+  if (cached?.data && cached !== world?.map) applyZones(cached.data, zones);
+  const update = packetManager.mapZones({ mapName: file, zones });
+  for (const p of filterPlayersByMap(mapName)) sendPacket(p.wt, update);
+}
+
+/**
+ * A world saved in the map editor: the chunks the asset server changed, and the graveyards, warps and zones saved with
+ * them. `mapName` is the editor's name of it, which keys its unsaved edits.
+ */
+type WorldSave = { world: string; mapName: string; changed: ChunkAt[]; graveyards?: any[]; warps?: any[]; zones?: MapZone[] };
 
 /**
  * A world saved in the map editor, which the asset server now holds: this node fetches its new collision and no-pvp
- * bits and takes its graveyards and warps, its unsaved edits are dropped, and its players on it but the saver
- * (`exceptId`), who already shows the edits, fetch the changed chunks again. A world this node does not hold is left
- * alone.
+ * bits and takes its graveyards, warps and zones, its unsaved edits are dropped, and its players on it but the saver
+ * (`exceptId`), who already shows the edits, fetch the changed chunks again. All of them, the saver too, are sent the
+ * new zones. A world this node does not hold is left alone.
  */
 async function worldSavedHere(save: WorldSave, exceptId?: unknown): Promise<void> {
   const world = getWorldMap(save.world);
   if (!world) return;
-  const { changed, graveyards, warps } = save;
+  const { changed, graveyards, warps, zones } = save;
   editorEditHistory.delete(save.mapName);
   if (graveyards || warps) {
     if (world.properties) {
@@ -207,18 +223,90 @@ async function worldSavedHere(save: WorldSave, exceptId?: unknown): Promise<void
     clearMapCache(save.world);
   }
   if (changed.length > 0) fishing.forgetMap(save.world);
-  if (changed.length > 0 || graveyards || warps) await refreshWorldMap(save.world);
+  if (changed.length > 0 || graveyards || warps || zones) await refreshWorldMap(save.world);
+  if (zones) await zonesSavedHere(save.world, zones);
   if (changed.length === 0) return;
   const update = packetManager.updateChunks({ chunks: changed });
   for (const other of filterPlayersByMap(save.world)) if (other.id !== exceptId) sendPacket(other.wt, update);
 }
 
+/**
+ * Marks a map editor save of a map or world as under way, here and (cluster mode) on the other nodes of the region,
+ * before anything is written: the asset server's word of the save, which can come before the save has finished, is
+ * left to it (modules/mapsaves.ts). `tell` sends the region the save's news ("world-saved" or "map-saved"), which ends
+ * the mark on each node once that node has taken the save in; `end` ends it here, and on the other nodes when no news
+ * was sent ("map-not-saved").
+ */
+async function startSaveHere(name: string): Promise<{ tell: (news: string, data: unknown) => void; end: (saved: boolean) => void }> {
+  const map = name.replace(/\.json$/, "");
+  const end = startMapSave(map);
+  await tellPeers("map-saving", { map });
+  let told = false;
+  return {
+    tell(news, data) {
+      told = true;
+      void tellPeers(news, data);
+    },
+    end(saved) {
+      end(saved);
+      if (!told) void tellPeers("map-not-saved", { map });
+    },
+  };
+}
+
+/**
+ * Cluster mode: the map editor saves under way on other nodes, by node and map, oldest first. Each is marked here
+ * (modules/mapsaves.ts) from its saver's word that it is under way until its news of how it ended; one whose news never
+ * comes is ended as not saved after SAVE_ELSEWHERE_MS.
+ */
+const savesElsewhere = new Map<string, Array<{ end: (saved: boolean) => void; timer: ReturnType<typeof setTimeout> }>>();
+const SAVE_ELSEWHERE_MS = 60_000;
+const saveKey = (from: unknown, map: string) => `${String(from)} ${map.replace(/\.json$/, "")}`;
+
+/** Ends the oldest save of the map under way on that node, with whether it saved. */
+function endSaveElsewhere(from: unknown, map: string, saved: boolean): void {
+  const key = saveKey(from, map);
+  const list = savesElsewhere.get(key);
+  const save = list?.shift();
+  if (!save) return;
+  if (list!.length === 0) savesElsewhere.delete(key);
+  clearTimeout(save.timer);
+  save.end(saved);
+}
+
+/** Cluster mode: a map editor save under way on another node, told of before it writes anything. */
+onPeerNews("map-saving", (news, from) => {
+  const map = news?.map;
+  if (typeof map !== "string" || !map) return;
+  const end = startMapSave(map);
+  // the saves of one node all wait as long: the first to time out is the oldest still under way
+  const timer = setTimeout(() => endSaveElsewhere(from, map, false), SAVE_ELSEWHERE_MS);
+  (timer as any).unref?.();
+  const key = saveKey(from, map);
+  savesElsewhere.set(key, [...(savesElsewhere.get(key) ?? []), { end, timer }]);
+});
+
+/** Cluster mode: a map editor save on another node that ended without saving anything for the region to take in. */
+onPeerNews("map-not-saved", (news, from) => {
+  const map = news?.map;
+  if (typeof map !== "string" || !map) return;
+  endSaveElsewhere(from, map, false);
+});
+
 /** Cluster mode: a world saved in the map editor on another node. A map can be split between nodes; each shows its own players. */
-onPeerNews("world-saved", (news) => {
+onPeerNews("world-saved", async (news, from) => {
   const world = news?.world;
   if (typeof world !== "string" || !world || !Array.isArray(news?.changed)) return;
   const listed = (value: unknown) => (Array.isArray(value) && value.length > 0 ? value : undefined);
-  return worldSavedHere({ world, mapName: typeof news?.mapName === "string" ? news.mapName : world, changed: news.changed, graveyards: listed(news.graveyards), warps: listed(news.warps) });
+  // an empty zone list is a save too: it removes every zone
+  const zones = Array.isArray(news?.zones) ? news.zones as MapZone[] : undefined;
+  let saved = false;
+  try {
+    await worldSavedHere({ world, mapName: typeof news?.mapName === "string" ? news.mapName : world, changed: news.changed, graveyards: listed(news.graveyards), warps: listed(news.warps), zones });
+    saved = true;
+  } finally {
+    endSaveElsewhere(from, world, saved);
+  }
 });
 
 /** A plain map saved in the map editor, as its players are shown it: the move of its origin in px when it grew left or up, its size in tiles, and the saved chunks. */
@@ -254,12 +342,13 @@ function showMapSaveHere(map: string, view: MapSaveView, exceptId?: unknown): vo
  * copy of the map file is brought up to date from it and the map read again, so that a reload here keeps the save; its
  * unsaved edits are dropped, and its players on it are shown the save.
  */
-async function mapSavedElsewhere(mapName: string, view: MapSaveView): Promise<void> {
+async function mapSavedElsewhere(mapName: string, view: MapSaveView, zones?: MapZone[]): Promise<void> {
   await syncMapFromAssetServer(mapName);
   await reloadMap(mapName);
   clearMapCache(mapName);
   editorEditHistory.delete(mapName);
   showMapSaveHere(mapName, view);
+  if (zones) await zonesSavedHere(mapName, zones);
 }
 
 /**
@@ -281,11 +370,18 @@ onPeerNews("map-created", async (news) => {
   await mapJoinsCluster(name);
 });
 
-onPeerNews("map-saved", (news) => {
+onPeerNews("map-saved", async (news, from) => {
   const mapName = news?.mapName;
   const view = news?.view;
   if (typeof mapName !== "string" || !mapName || !view || typeof view !== "object" || !Array.isArray(view.chunks)) return;
-  return mapSavedElsewhere(mapName, { shiftX: Number(view.shiftX) || 0, shiftY: Number(view.shiftY) || 0, width: view.width, height: view.height, chunks: view.chunks });
+  const zones = Array.isArray(news?.zones) ? news.zones as MapZone[] : undefined;
+  let saved = false;
+  try {
+    await mapSavedElsewhere(mapName, { shiftX: Number(view.shiftX) || 0, shiftY: Number(view.shiftY) || 0, width: view.width, height: view.height, chunks: view.chunks }, zones);
+    saved = true;
+  } finally {
+    endSaveElsewhere(from, mapName, saved);
+  }
 });
 
 /** Live tile edits, relayed to the admins editing the map on this node but their sender (`exceptId`). */
@@ -839,19 +935,30 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           return;
         }
 
-        const saveData = data as unknown as { mapName: string, chunks: any[], graveyards?: any, warps?: any };
+        const saveData = data as unknown as { mapName: string, chunks: any[], graveyards?: any, warps?: any, zones?: unknown };
 
         // A world (modules/worldmaps.ts) holds no tiles here: the asset server writes the edited chunks into the
         // world's packs, then this server fetches the new collision and no-pvp bits. Its size is fixed, and its
         // warps and graveyards come from the map generator.
         if (typeof saveData?.mapName === "string" && getWorldMap(saveData.mapName)) {
           const worldName = saveData.mapName.replace(".json", "");
+          // The asset server tells every node of the save too (/map-events): it is not taken in a second time
+          const saving = await startSaveHere(worldName);
+          let saved = false;
           try {
             // As for any map, a list of graveyards or warps is saved only when it holds something
             const hasChunks = Array.isArray(saveData.chunks) && saveData.chunks.length > 0;
             const graveyards = Array.isArray(saveData.graveyards) && saveData.graveyards.length > 0 ? saveData.graveyards : undefined;
             const warps = Array.isArray(saveData.warps) && saveData.warps.length > 0 ? saveData.warps : undefined;
-            if (!hasChunks && !graveyards && !warps) {
+            // The zones are saved whenever the save carries a list, an empty one too (it removes every zone)
+            const world = getWorldMap(saveData.mapName)!;
+            const zoneSave = zonesForSave(saveData.zones, world.width, world.height);
+            if ("error" in zoneSave) {
+              sendPacket(wt, packetManager.notify({ message: `Cannot save zones: ${zoneSave.error}` }));
+              break;
+            }
+            const zones = zoneSave.zones;
+            if (!hasChunks && !graveyards && !warps && !zones) {
               sendPacket(wt, packetManager.notify({ message: 'Nothing to save.' }));
               break;
             }
@@ -872,8 +979,8 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
               const result = await post("/save-map-chunks", { chunks: saveData.chunks });
               changed = Array.isArray(result.changed) ? result.changed : [];
             }
-            if (graveyards || warps) {
-              await post("/save-map-properties", { graveyards, warps });
+            if (graveyards || warps || zones) {
+              await post("/save-map-properties", { graveyards, warps, zones });
               // held for any map in the shared map properties; each node's world, and its movement cache, take them below
               const propsList = await assetCache.get("mapProperties");
               const props = propsList?.find((m: any) => m.name === `${worldName}.json`);
@@ -884,9 +991,10 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
               if (propsList) await assetCache.add("mapProperties", propsList);
             }
             // Every node of the region takes the save (cluster mode), and this one; the saver already shows its edits
-            const save: WorldSave = { world: worldName, mapName: saveData.mapName, changed, graveyards, warps };
-            void tellPeers("world-saved", save);
+            const save: WorldSave = { world: worldName, mapName: saveData.mapName, changed, graveyards, warps, zones };
+            saving.tell("world-saved", save);
             await worldSavedHere(save, wt.data.id);
+            saved = true;
 
             sendPacket(wt, packetManager.notify({
               message: `Map saved successfully! ${changed.length} chunks updated.`
@@ -896,12 +1004,27 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
             sendPacket(wt, packetManager.notify({
               message: `Error saving map changes: ${error.message}`
             }));
+          } finally {
+            saving.end(saved);
           }
           editorEditHistory.delete(saveData.mapName);
           break;
         }
 
+        // The asset server tells every node of the save too (/map-events): it is not taken in a second time
+        const saving = typeof saveData?.mapName === "string" ? await startSaveHere(saveData.mapName) : null;
+        let saved = false;
         try {
+          // The zones are checked against the size the map will have after this save, before anything is written. A
+          // list, an empty one too, is always saved: an empty list removes every zone.
+          const planned = ((await assetCache.get("maps")) as MapData[] | null)?.find((m: any) => m.name === saveData.mapName)?.data;
+          const plannedSize = sizeAfterSave(planned ?? {}, (saveData as any).bounds);
+          const zoneSave = zonesForSave(saveData.zones, plannedSize.width, plannedSize.height);
+          if ("error" in zoneSave) {
+            sendPacket(wt, packetManager.notify({ message: `Cannot save zones: ${zoneSave.error}` }));
+            break;
+          }
+          const zones = zoneSave.zones;
           log.info(`Map save requested by ${currentPlayer.username} for map: ${saveData.mapName}, ${saveData.chunks.length} chunks modified`);
 
           // Forward chunks to asset server via HTTP
@@ -929,7 +1052,7 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           log.info(`Map chunks saved to asset server: ${saveData.mapName}`);
 
           // Also sync graveyards and warps to asset server if present
-          if (saveData.graveyards || saveData.warps) {
+          if (saveData.graveyards || saveData.warps || zones) {
             try {
               const syncResponse = await serverFetch(`${assetServerUrl}/save-map-properties`, {
                 method: "POST",
@@ -940,6 +1063,7 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
                   mapName: saveData.mapName,
                   graveyards: saveData.graveyards,
                   warps: saveData.warps,
+                  zones,
                   authKey: authKey
                 })
               });
@@ -998,14 +1122,15 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
             assetCache.add("maps", cachedMaps).catch((error) => log.error(`The edited map could not be written to the cache: ${error}`));
 
             // Save graveyards and warps properties and reload the map
-            if (saveData.graveyards !== undefined || saveData.warps !== undefined) {
+            if (saveData.graveyards !== undefined || saveData.warps !== undefined || zones) {
               try {
                 log.debug(`[SAVE_MAP] Graveyards: ${saveData.graveyards ? `${saveData.graveyards.length} items` : 'undefined'}`);
                 log.debug(`[SAVE_MAP] Warps: ${saveData.warps ? `${saveData.warps.length} items` : 'undefined'}`);
 
                 // Only call saveMapProperties if there's actual data to save
-                if ((saveData.graveyards && saveData.graveyards.length > 0) || (saveData.warps && saveData.warps.length > 0)) {
-                  await saveMapProperties(saveData.mapName, saveData.graveyards, saveData.warps);
+                const hasPoints = (saveData.graveyards && saveData.graveyards.length > 0) || (saveData.warps && saveData.warps.length > 0);
+                if (hasPoints || zones) {
+                  await saveMapProperties(saveData.mapName, hasPoints ? saveData.graveyards : undefined, hasPoints ? saveData.warps : undefined, zones);
 
                   // Reload the map to refresh mapProperties cache
                   const { reloadMap: reloadMapFunc } = await import("../../modules/assetloader");
@@ -1035,8 +1160,9 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
             log.warn(`Failed to save chunks to disk locally: ${diskError}`);
           }
 
-          // and made the asset server's copy, which this node then holds: the check for maps changed on the asset
-          // server (assetloader.ts followAssetServerMapChanges) does not take the save in a second time
+          // and made the asset server's copy, which this node then holds. The asset server's word of the save
+          // (/map-events), which can come before this, is left to the save (startSaveHere above): the map is not
+          // loaded again for its players, and the editor stays open
           try {
             await syncMapFromAssetServer(saveData.mapName);
           } catch (syncError) {
@@ -1071,12 +1197,16 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
             chunks: saveData.chunks.map((chunk: any) => ({ chunkX: chunk.chunkX, chunkY: chunk.chunkY })),
           };
           showMapSaveHere(saveData.mapName, view, wt.data.id);
-          void tellPeers("map-saved", { mapName: saveData.mapName, view });
+          if (zones) await zonesSavedHere(saveData.mapName, zones);
+          saving?.tell("map-saved", { mapName: saveData.mapName, view, zones });
+          saved = true;
         } catch (error: any) {
           log.error(`Error saving map: ${error.message}`);
           sendPacket(wt, packetManager.notify({
             message: 'Error saving map changes.'
           }));
+        } finally {
+          saving?.end(saved);
         }
 
         // Clear edit history for this map now that it's saved

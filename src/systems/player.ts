@@ -142,6 +142,13 @@ let autoLootColumn = false;
 /** Whether accounts.class_id is there, once a login has found out (null: not asked yet). See GetPlayerLoginData. */
 let classIdColumn: boolean | null = null;
 
+/**
+ * USER REQUEST 2026-11-18 ("by default set the following slider values by default: weather: 60 music: 50
+ * effects: 30 ambience: 50 fps: 60"): the pause menu's sliders as a player starts with them. A new account is given
+ * these, and a player with no saved Ambience or Weather level (a column added after the row was made) is given them.
+ */
+export const DEFAULT_CONFIG = { fps: 60, music_volume: 50, effects_volume: 30, ambience_volume: 50, weather_volume: 60 } as const;
+
 /** Adds a setting's column to clientconfig when it is missing. Whether it is there now; never throws. */
 async function ensureVolumeColumn(column: "ambience_volume" | "weather_volume" | "auto_loot", slider: string, fallback = 100): Promise<boolean> {
   const lite = (process.env.DATABASE_ENGINE || "mysql") === "sqlite";
@@ -173,8 +180,8 @@ async function ensureVolumeColumn(column: "ambience_volume" | "weather_volume" |
 
 /** The Ambience and Weather sliders' columns. Whether the Ambience one is there. */
 export async function ensureAmbienceColumn(): Promise<boolean> {
-  ambienceColumn = await ensureVolumeColumn("ambience_volume", "Ambience");
-  weatherColumn = await ensureVolumeColumn("weather_volume", "Weather");
+  ambienceColumn = await ensureVolumeColumn("ambience_volume", "Ambience", DEFAULT_CONFIG.ambience_volume);
+  weatherColumn = await ensureVolumeColumn("weather_volume", "Weather", DEFAULT_CONFIG.weather_volume);
   autoLootColumn = await ensureVolumeColumn("auto_loot", "Auto loot", 0);
   return ambienceColumn;
 }
@@ -646,9 +653,19 @@ const player = {
         [username, 100, 100, 100, 100, 0, 100, 1, 10, 10]
       );
 
+      // The Ambience and Weather levels are written when their columns are there; a database without them yet
+      // gives the row their defaults when they are added.
+      const levels: [string, number][] = [
+        ["fps", DEFAULT_CONFIG.fps],
+        ["music_volume", DEFAULT_CONFIG.music_volume],
+        ["effects_volume", DEFAULT_CONFIG.effects_volume],
+        ...(ambienceColumn ? [["ambience_volume", DEFAULT_CONFIG.ambience_volume] as [string, number]] : []),
+        ...(weatherColumn ? [["weather_volume", DEFAULT_CONFIG.weather_volume] as [string, number]] : []),
+        ["muted", 0],
+      ];
       await query(
-        "INSERT INTO clientconfig (username, fps, music_volume, effects_volume, muted) VALUES (?, ?, ?, ?, ?)",
-        [username, 60, 50, 50, 0]
+        `INSERT INTO clientconfig (username, ${levels.map(([column]) => column).join(", ")}) VALUES (?, ${levels.map(() => "?").join(", ")})`,
+        [username, ...levels.map(([, value]) => value)]
       );
 
       // (Nothing for the quest log: it holds a row for each quest a player has taken, and a new one has taken
@@ -2092,7 +2109,9 @@ const player = {
       query("SELECT permissions FROM permissions WHERE username = ?", [username]) as Promise<any[]>,
       query("SELECT copper, silver, gold FROM currency WHERE username = ?", [username]) as Promise<any[]>,
       query("SELECT friends FROM friendslist WHERE username = ?", [username]) as Promise<any[]>,
-      query(`SELECT fps, music_volume, effects_volume, ${ambienceColumn ? "ambience_volume, " : ""}${weatherColumn ? "weather_volume, " : ""}${autoLootColumn ? "auto_loot, " : ""}muted, hotbar_config, inventory_config FROM clientconfig WHERE username = ?`, [username]) as Promise<any[]>,
+      // Every column there is. This runs on a login worker, where the step that adds the newer setting columns at start
+      // (ensureAmbienceColumn) never ran, so it cannot know which are there: a column missing is a setting's default below.
+      query("SELECT * FROM clientconfig WHERE username = ?", [username]) as Promise<any[]>,
       query("SELECT quest_id, state, accepted_at, completed_at, times_completed FROM quest_log WHERE username = ?", [username]) as Promise<any[]>,
       query("SELECT quest_id, objective_id, count FROM quest_objective_progress WHERE username = ?", [username]) as Promise<any[]>,
       query("SELECT head, body, helmet, necklace, shoulderguards, chestplate, wristguards, gloves, belt, pants, boots, ring_1, ring_2, trinket_1, trinket_2, weapon FROM equipment WHERE username = ?", [username]) as Promise<any[]>,
@@ -2179,8 +2198,8 @@ const player = {
         fps: config.fps,
         music_volume: config.music_volume,
         effects_volume: config.effects_volume,
-        ambience_volume: config.ambience_volume ?? 100,
-        weather_volume: config.weather_volume ?? 100,
+        ambience_volume: config.ambience_volume ?? DEFAULT_CONFIG.ambience_volume,
+        weather_volume: config.weather_volume ?? DEFAULT_CONFIG.weather_volume,
         auto_loot: Number(config.auto_loot) === 1,
         muted: config.muted,
         hotbar_config: config.hotbar_config || null,

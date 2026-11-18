@@ -33,12 +33,13 @@ import worlds from "../../systems/worlds";
 import { Events } from "../../systems/events";
 import { GuildPermission, refusalText } from "../../systems/guildranks";
 import { audience as chatAudience } from "../../systems/chatgate";
-import { broadcastWorld, deliverToPlayer, isOnline, registerPlayerAction, runOnPlayer, tryOnPlayer, whetherOnline, type PlayerReach } from "../../cluster/deliver";
+import { broadcastWorld, delivery, deliverToPlayer, isOnline, registerPlayerAction, runOnPlayer, tryOnPlayer, whetherOnline, type PlayerReach } from "../../cluster/deliver";
 import { clearShared } from "../../cluster/clearguard";
 import { followServerOrders, sendServerOrder, serverOrdersKept } from "../../cluster/index";
 import { onPeerNews, tellPeers } from "../../cluster/peernews";
 import { settledPick } from "../../systems/weathercycle";
 import { greetContacts, tellContactsOffline } from "../contacts";
+import { registerWhisperReach, whisperReach } from "../stealthoffline";
 import { decryptPrivateKey, decryptRsa, _privateKey } from "../../modules/cipher";
 import { drainQueries } from "../../controllers/sqldatabase";
 import { getPlayerSpriteSheetData, getIconUrl, getMountSpriteUrl } from "../../modules/spriteSheetManager";
@@ -344,6 +345,9 @@ registerPlayerAction("cells-permissions", guardedAction("cells-permissions", asy
   target.permissions = await permissions.held(target.username);
   playerCache.set(target.id, target);
 }));
+
+// Whether a whisper may reach a player on this node: a stealthed one is offline to a player (stealthoffline.ts).
+registerWhisperReach({ registerAction: registerPlayerAction });
 
 /**
  * Reads a plain map again from this node's copy of its file, and has this node's players on it load it again. False
@@ -757,10 +761,12 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
               (p) => p.username.toLowerCase() === username.toLowerCase()
             );
 
-            // In a cluster the target may be online on another node: their name is all there is of them here.
-            if (!targetPlayer && !(await isOnline(username))) {
+            // In a cluster the target may be online on another node: their name is all there is of them here. A
+            // stealthed target is offline to a player (stealthoffline.ts), so the target's node is asked.
+            const reach = await whisperReach(delivery, currentPlayer, targetPlayer?.username ?? username);
+            if (reach !== "reachable") {
               const notifyData = {
-                message: "Player not found or is not online",
+                message: reach === "offline" ? "Player not found or is not online" : "That player could not be reached.",
               };
               sendPacket(wt, packetManager.notify(notifyData));
               break;
