@@ -5,6 +5,7 @@ import { usesSharedCache } from "../services/datacache";
 import { setClusterPlayerLock } from "../services/batch";
 import layerManager from "../services/layermanager";
 import playerCache from "../services/playermanager";
+import { accountCharacterNames, characterIdOf } from "../systems/characterids";
 import { BlockMover, BlockMoveOrders } from "./blockmove";
 import { BlockTable, blockAt, blockKey } from "./blocks";
 import { ClusterBus } from "./bus";
@@ -32,7 +33,7 @@ import { NodeDeath } from "./nodedeath";
 import type { ClusterDebugSource } from "./nodedebug";
 import { LoopLagMeter, NodeRegistry, type LoadReport, type NodeInfo } from "./nodes";
 import { peerNews } from "./peernews";
-import { PlayerLocks } from "./playerlock";
+import { PlayerLocks, characterLockKeys } from "./playerlock";
 import { trackPresence } from "./presence";
 import { RedisStore } from "./redisstore";
 import { SNAPSHOT_EVERY_MS, SnapshotWriter, addSnapshotMap, useSnapshotMaps } from "./snapshots";
@@ -503,11 +504,17 @@ export async function startCluster(
     teardown.rest.push({ what: "detach the settle marks", run: () => tradeSettle.detach() });
     // One node at a time writes a player's rows (Task 5): every batch takes the cluster lock of its players, and a
     // handoff takes it with no wait (Task 17). A player on this node still gets the work done while Redis is away.
+    // The locks are the characters' (char:<id>), so two characters of one account never wait for each other.
     const locks = new PlayerLocks(store, self);
-    const previousLock = setClusterPlayerLock((names, work) =>
-      locks.withLocks(names, work, { isLocal: (username) => playerCache.getByUsername(username) != null }));
+    const localLockKey = (key: string) => {
+      if (key.startsWith("name:")) return playerCache.getByUsername(key.slice(5)) != null;
+      const id = Number(key.slice(5));
+      return Object.values(playerCache.list() as Record<string, any>).some((p) => Number(p?.characterId) === id);
+    };
+    const previousLock = setClusterPlayerLock(async (names, work) =>
+      locks.withLocks(await characterLockKeys(names, characterIdOf), work, { isLocal: localLockKey }));
     teardown.rest.push({ what: "release the cluster player lock", run: () => { setClusterPlayerLock(previousLock); } });
-    const previousHandoffLock = playerHandoff.setLock((username) => holdPlayerLock(locks, username));
+    const previousHandoffLock = playerHandoff.setLock((characterId) => holdPlayerLock(locks, characterId));
     teardown.rest.push({ what: "release the handoff lock", run: () => { playerHandoff.setLock(previousHandoffLock); } });
     invitations.attach(store);
     teardown.rest.push({ what: "detach invitations", run: () => invitations.attach(null) });
@@ -550,12 +557,16 @@ export async function startCluster(
     const stale = await directory.sweepNode(self);
     if (stale > 0) log.warn(`Cleared ${stale} directory entries left by this node's last run`);
     // A login here displaces a session another node still holds: that node closes it.
-    const stopPresence = trackPresence(directory, (previous, username) => {
-      delivery.runOnPlayerAt(previous.nodeId, previous.playerId, "displaced-login", { username })
+    // The directory is kept by character name (names are one character's at a time); a login also displaces the
+    // account's other characters elsewhere, as one account plays one character at a time.
+    const stopPresence = trackPresence(directory, (previous, username, value) => {
+      const accountId = Number(value?.accountId);
+      delivery.runOnPlayerAt(previous.nodeId, previous.playerId, "displaced-login", Number.isSafeInteger(accountId) && accountId > 0 ? { username, accountId } : { username })
         .catch((error) => log.error(`Could not close ${username}'s old session on ${previous.nodeId}: ${error}`));
     }, {
       // A handoff arrival is not a second login: the old node released the player itself.
       quiet: (username) => playerHandoff.arrivedRecently(username),
+      siblings: (value) => accountCharacterNames(Number(value?.accountId)),
       holdReleaseMs: (value) => (value?.handedOff === true ? HANDOFF_PRESENCE_HOLD_MS : 0),
       onLost: (value) => engine?.lost?.(value),
       // Phase 7: a login takes the owner epoch its saves are fenced on (Task 1). The receiver hands the hook in.

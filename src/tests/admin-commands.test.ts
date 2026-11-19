@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
-import { databaseModule } from "./setup";
+import { characterDatabaseModule as databaseModule } from "./setup";
 import { receiverSource } from "./receiver-source";
 
 // ------------------------------------------------------------ fake database
@@ -180,6 +180,8 @@ function names(name: string, args: string[], over: Row = {}): Row {
         if (row) row.banned = 1;
         if (wt) wt.close();
       },
+      // The characters of the account a character belongs to, lower case: here each account is one character.
+      charactersOf: async (username: string) => (accountOf(username) ? [username.toLowerCase()] : []),
       // A location is saved as systems/player.ts saves it: for the session with that id, or for that username.
       // A username handed to the first is no session's id, and saves nothing.
       setLocation: async (...call: any[]) => {

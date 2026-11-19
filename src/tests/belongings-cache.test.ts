@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
-import { databaseModule } from "./setup";
+import { characterDatabaseModule, testCharacterId } from "./setup";
 import { GuardError } from "../controllers/sqltransaction";
 
 // What a player owns (inventory, equipment, bags, currency, collectables) is
@@ -135,7 +135,7 @@ async function ask(sql: string, params: any[] = []) {
   return answer;
 }
 
-mock.module("../controllers/sqldatabase", () => databaseModule({
+mock.module("../controllers/sqldatabase", () => characterDatabaseModule({
   default: ask,
   // All of its statements or none: one that is refused puts the tables back as they were. One that is made
   // with the answer never coming stands for a transaction that was kept whole and never answered.
@@ -239,6 +239,12 @@ const FAILURES: Array<[string, boolean]> = [["refused", false], ["made but never
 /** A player's rows in the database. */
 const of = (table: string, username: string) => tables[table].filter((row) => fold(row.username) === fold(username));
 const stack = (name: string, username = "hero") => of("inventory", username).find((row) => row.item === name);
+/** A row as the systems hold it: by the character's id, where the stand-in keeps it by name. */
+const held = (row: Row | undefined): Row => {
+  if (!row || !("username" in row)) return row as Row;
+  const { username, ...rest } = row;
+  return { ...rest, character_id: testCharacterId(username) };
+};
 const byId = (a: Row, b: Row) => a.id - b.id;
 const five = ({ item: name, quantity, equipped, slot, bag_slot }: Row) => ({ item: name, quantity, equipped, slot, bag_slot });
 const NOTHING: Currency = { copper: 0, silver: 0, gold: 0 };
@@ -261,15 +267,15 @@ async function inventoryIsDatabase(username: string) {
   for (const name of new Set(rows.map((row) => fold(row.item)))) {
     found.push(...((await inventory.find(username, { name, quantity: 0 })) as Row[]));
   }
-  expect(found.sort(byId)).toEqual([...rows].sort(byId));
+  expect(found.sort(byId)).toEqual([...rows].sort(byId).map(held));
 }
 
 async function equipmentIsDatabase(username: string) {
-  expect(await equipment.list(username)).toEqual(of("equipment", username)[0] ?? null);
+  expect(await equipment.list(username)).toEqual(held(of("equipment", username)[0]) ?? null);
 }
 
 async function bagsIsDatabase(username: string) {
-  expect(await bags.get(username)).toEqual(of("bags", username)[0] ?? null);
+  expect(await bags.get(username)).toEqual(held(of("bags", username)[0]) ?? null);
 }
 
 async function currencyIsDatabase(username: string) {
@@ -298,7 +304,7 @@ const readAll = (username: string) => Promise.all([
 
 describe("inventory", () => {
   test("is read from the database once, by whichever read comes first", async () => {
-    expect((await inventory.find("hero", { name: "Health Potion", quantity: 0 })) as Row[]).toEqual([tables.inventory[0]]);
+    expect((await inventory.find("hero", { name: "Health Potion", quantity: 0 })) as Row[]).toEqual([held(tables.inventory[0])]);
     expect(((await inventory.get("hero")) as Row[]).map((entry) => [entry.name, entry.quantity, entry.type])).toEqual([
       ["Health Potion", 3, "consumable"], ["Iron Helmet", 1, "equipment"], ["Leather Cap", 1, "equipment"],
     ]);
@@ -337,7 +343,7 @@ describe("inventory", () => {
     await inventory.add("hero", { name: "Rat Tail", quantity: 2 });
     // The id is the one the database answered the INSERT with; the rest is what was written and the table's defaults.
     expect(stack("Rat Tail")).toEqual({ id: 100, username: "hero", item: "Rat Tail", quantity: 2, equipped: 0, slot: null, bag_slot: null });
-    expect((await fromCache(() => inventory.find("hero", { name: "Rat Tail", quantity: 0 }))) as Row[]).toEqual([stack("Rat Tail")!]);
+    expect((await fromCache(() => inventory.find("hero", { name: "Rat Tail", quantity: 0 }))) as Row[]).toEqual([held(stack("Rat Tail"))]);
     await fromCache(() => inventoryIsDatabase("hero"));
 
     // Written as text ("7"): the database holds the number, and so does the cache.
@@ -548,8 +554,8 @@ describe("inventory", () => {
 
 describe("equipment", () => {
   test("the row is read once, and so is there being none", async () => {
-    expect(await equipment.list("hero")).toEqual(tables.equipment[0]);
-    expect(await equipment.list("Hero")).toEqual(tables.equipment[0]);
+    expect(await equipment.list("hero")).toEqual(held(tables.equipment[0]));
+    expect(await equipment.list("Hero")).toEqual(held(tables.equipment[0]));
     expect(await equipment.list("nobody")).toBeNull();
     expect(await equipment.list("nobody")).toBeNull();
     expect(queries).toEqual(["SELECT * FROM equipment WHERE username = ?", "SELECT * FROM equipment WHERE username = ?"]);
@@ -662,8 +668,8 @@ describe("equipment", () => {
 describe("bags", () => {
   test("the row is read once, and so is there being none", async () => {
     tables.bags.push({ ...TABLES.bags, id: 5, username: "ally", slot_1: "Old Sack" });
-    expect(await bags.get("ally")).toEqual(tables.bags[0]);
-    expect(await bags.get("ALLY")).toEqual(tables.bags[0]);
+    expect(await bags.get("ally")).toEqual(held(tables.bags[0]));
+    expect(await bags.get("ALLY")).toEqual(held(tables.bags[0]));
     expect(await bags.get("hero")).toBeNull();
     expect(await bags.get("hero")).toBeNull();
     expect(await bags.getTotalBagSlots("ally")).toBe(1);
@@ -675,8 +681,8 @@ describe("bags", () => {
   test("ensure makes the row once, and holds it as the database has it", async () => {
     const made = await bags.ensure("hero");
     // The id is the one the database answered the INSERT with.
-    expect(made).toEqual({ id: 100, username: "hero", slot_1: null, slot_2: null, slot_3: null, slot_4: null });
-    expect(tables.bags).toEqual([made]);
+    expect(made).toEqual({ id: 100, character_id: testCharacterId("hero"), slot_1: null, slot_2: null, slot_3: null, slot_4: null });
+    expect(tables.bags.map(held)).toEqual([made]);
 
     expect(await bags.ensure("hero")).toEqual(made);
     expect(await bags.get("HERO")).toEqual(made);
@@ -692,7 +698,7 @@ describe("bags", () => {
 
   test("an INSERT answered without an id: the new row is read, once", async () => {
     answersWithId = false;
-    expect(await bags.ensure("hero")).toEqual(tables.bags[0]);
+    expect(await bags.ensure("hero")).toEqual(held(tables.bags[0]));
     await fromCache(() => bagsIsDatabase("hero"));
     expect(queries).toEqual(["SELECT * FROM bags WHERE username = ?", "INSERT INTO bags (username) VALUES (?)", "SELECT * FROM bags WHERE username = ?"]);
   });
@@ -742,7 +748,7 @@ describe("bags", () => {
 
       // Asked for again, the row is the one the database holds: made at the first try after all, or made now.
       queries = [];
-      expect(await bags.ensure("hero")).toEqual(tables.bags[0]);
+      expect(await bags.ensure("hero")).toEqual(held(tables.bags[0]));
       expect(tables.bags).toHaveLength(1);
       expect(queries).toEqual(made ? [BAGS_READ] : [BAGS_READ, "INSERT INTO bags (username) VALUES (?)"]);
 

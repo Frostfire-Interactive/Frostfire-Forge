@@ -35,17 +35,17 @@ async function writeProgress(username: string, questId: number, objectiveId: num
   const uname = lower(username);
   const same = (row: QuestProgressRow) => ofQuest(questId)(row) && Number(row.objective_id) === Number(objectiveId);
   try {
-    await writeQuestRows(username, async (rows) => {
+    await writeQuestRows(username, async (rows, characterId) => {
       if (rows.progress.some(same)) {
         await query(
-          "UPDATE quest_objective_progress SET count = ? WHERE username = ? AND quest_id = ? AND objective_id = ?",
-          [count, uname, questId, objectiveId]
+          "UPDATE quest_objective_progress SET count = ? WHERE character_id = ? AND quest_id = ? AND objective_id = ?",
+          [count, characterId, questId, objectiveId]
         );
         rows.progress = rows.progress.map((row) => (same(row) ? { ...row, count } : row));
       } else {
         await query(
-          "INSERT INTO quest_objective_progress (username, quest_id, objective_id, count) VALUES (?, ?, ?, ?)",
-          [uname, questId, objectiveId, count]
+          "INSERT INTO quest_objective_progress (character_id, quest_id, objective_id, count) VALUES (?, ?, ?, ?)",
+          [characterId, questId, objectiveId, count]
         );
         rows.progress = [...rows.progress, { quest_id: questId, objective_id: objectiveId, count }];
       }
@@ -79,8 +79,8 @@ function entryIsComplete(quest: Quest, entry: QuestLogEntry): boolean {
 async function markReady(username: string, entry: QuestLogEntry): Promise<boolean> {
   const uname = lower(username);
   try {
-    await writeQuestRows(username, async (rows) => {
-      await query("UPDATE quest_log SET state = 'ready' WHERE username = ? AND quest_id = ?", [uname, entry.quest_id]);
+    await writeQuestRows(username, async (rows, characterId) => {
+      await query("UPDATE quest_log SET state = 'ready' WHERE character_id = ? AND quest_id = ?", [characterId, entry.quest_id]);
       rows.log = rows.log.map((row) => (ofQuest(entry.quest_id)(row) ? { ...row, state: "ready" } : row));
     });
   } catch (error) {
@@ -96,8 +96,8 @@ async function markActive(username: string, entry: QuestLogEntry): Promise<boole
   const uname = lower(username);
   if (entry.state !== "ready") return true;
   try {
-    await writeQuestRows(username, async (rows) => {
-      await query("UPDATE quest_log SET state = 'active' WHERE username = ? AND quest_id = ? AND state = 'ready'", [uname, entry.quest_id]);
+    await writeQuestRows(username, async (rows, characterId) => {
+      await query("UPDATE quest_log SET state = 'active' WHERE character_id = ? AND quest_id = ? AND state = 'ready'", [characterId, entry.quest_id]);
       rows.log = rows.log.map((row) => (ofQuest(entry.quest_id)(row) && row.state === "ready" ? { ...row, state: "active" } : row));
     });
   } catch (error) {
@@ -363,8 +363,8 @@ export function isComplete(username: string, questId: number): boolean {
 export async function clear(username: string, questId: number): Promise<void> {
   const uname = lower(username);
   try {
-    await writeQuestRows(username, async (rows) => {
-      await query("DELETE FROM quest_objective_progress WHERE username = ? AND quest_id = ?", [uname, Number(questId)]);
+    await writeQuestRows(username, async (rows, characterId) => {
+      await query("DELETE FROM quest_objective_progress WHERE character_id = ? AND quest_id = ?", [characterId, Number(questId)]);
       rows.progress = rows.progress.filter((row) => !ofQuest(questId)(row));
     });
   } catch (error) {

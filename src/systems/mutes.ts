@@ -1,6 +1,7 @@
 import query, { transaction } from "../controllers/sqldatabase";
 import log from "../modules/logger";
 import { tableCache } from "../services/datacache";
+import { NoSuchCharacter, accountNameOf } from "./characterids";
 
 /** A row of the mutes table. Times are milliseconds since the epoch; no `expires_at` is a mute until it is lifted. */
 export interface Mute {
@@ -11,7 +12,10 @@ export interface Mute {
   expires_at: number | null;
 }
 
-// Every mute. Whether a player is muted is asked on every line of chat, and is
+// Every mute. A mute is the account's: a character named is muted with every
+// other character of its account, and the table is kept by the account's
+// username (each method below is given a character's name and asks which
+// account it is). Whether a player is muted is asked on every line of chat, and is
 // answered from these rows: a change below is written to the database and then
 // to them, and a write the database does not answer has them read again.
 const rows = tableCache<Mute>("mutes", async () => {
@@ -59,25 +63,32 @@ async function remove(name: string): Promise<void> {
   await rows.remove(of(name));
 }
 
-const mutes = {
-  /** The mute a player is under, or null. One whose time has passed is over, and is taken out when it is found. */
-  async get(username: string, now = Date.now()): Promise<Mute | null> {
-    const name = lower(username);
-    if (!name) return null;
+/** The mute the account with this username is under, or null. One whose time has passed is over, and is taken out. */
+async function muteOfAccount(name: string, now: number): Promise<Mute | null> {
     const mute = await rows.find(of(name));
     if (!mute) return null;
     if (!over(mute, now)) return mute;
     // Left in, it would only be found and passed over again.
     await remove(name).catch((error) => log.error(`Error removing the mute of ${name} that is over: ${error}`));
     return null;
+}
+
+// Mutes are the account's: each is kept by the account's username, and a character is answered with its account's.
+const mutes = {
+  /** The mute the account of the character named is under, or null; null for a name that is no character's. */
+  async get(username: string, now = Date.now()): Promise<Mute | null> {
+    const name = await accountNameOf(lower(username));
+    return name ? muteOfAccount(name, now) : null;
   },
   async isMuted(username: string, now = Date.now()): Promise<boolean> {
     return (await mutes.get(username, now)) !== null;
   },
   /** Mutes a player for `duration` milliseconds, or until it is lifted when there is none. A mute they are under is replaced. */
   async mute(username: string, by: string, duration: number | null, reason: string | null, now = Date.now()): Promise<Mute> {
+    const account = await accountNameOf(lower(username));
+    if (!account) throw new NoSuchCharacter(username);
     const mute: Mute = {
-      username: lower(username),
+      username: account,
       muted_by: lower(by),
       reason: reason?.trim() || null,
       created_at: now,
@@ -96,8 +107,9 @@ const mutes = {
   },
   /** Lifts a player's mute. False when they were under none. */
   async unmute(username: string, now = Date.now()): Promise<boolean> {
-    const name = lower(username);
-    if (!(await mutes.get(name, now))) return false;
+    const name = await accountNameOf(lower(username));
+    // The account's own username is no character's name: its mute is looked up by it directly, not resolved again.
+    if (!name || !(await muteOfAccount(name, now))) return false;
     await remove(name);
     return true;
   },

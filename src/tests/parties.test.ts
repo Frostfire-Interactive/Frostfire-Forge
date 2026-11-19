@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
-import { databaseModule } from "./setup";
+import { characterDatabaseModule as databaseModule } from "./setup";
 import { receiverSource } from "./receiver-source";
 
 // ------------------------------------------------------------ fake database
@@ -37,7 +37,8 @@ function run(sql: string, params: any[]): any {
   switch (sql) {
     case LOAD:
       return partiesTable.map((row) => ({ ...row }));
-    case "INSERT INTO parties (leader, members) VALUES (?, ?)": {
+    // The leader is the character (character_id and leader_id), handed here by name.
+    case "INSERT INTO parties (leader, members, username, leader_id) VALUES (?, ?, ?, ?)": {
       const [leader, members] = params;
       const id = nextPartyId++;
       partiesTable.push({ id, leader, members });
@@ -218,7 +219,7 @@ describe("a party change is written to the database, then to the table held", ()
   test("create makes the party with its leader first", async () => {
     expect(await parties.create("user3", "user7")).toEqual(["user3", "user7"]);
     expect(writes()).toEqual([
-      ["INSERT INTO parties (leader, members) VALUES (?, ?)", ["user3", "user3, user7"]],
+      ["INSERT INTO parties (leader, members, username, leader_id) VALUES (?, ?, ?, ?)", ["user3", "user3, user7", "user3", "user3"]],
       ["UPDATE accounts SET party_id = ? WHERE username IN (?, ?)", [3, "user3", "user7"]],
     ]);
     expect(accountsDropped().sort()).toEqual(["user3", "user7"]);

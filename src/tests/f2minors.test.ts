@@ -93,7 +93,7 @@ function cut(source: string, from: string, until: RegExp): string {
 const receiver = receiverSource();
 const server = read("socket", "server.ts");
 
-const displacedSource = cut(receiver, 'registerPlayerAction("displaced-login", (p) => {', /\r?\n\}\);/) + "\n});";
+const displacedSource = cut(receiver, 'registerPlayerAction("displaced-login", (p, args) => {', /\r?\n\}\);/) + "\n});";
 const stolenInactiveSource = cut(server, 'if (reason === "session_stolen" && stillInCache.wt?.readyState === 1) {', /\r?\n\s*continue;/);
 const stolenDisconnectSource = cut(server, 'if (data.reason === "session_stolen" && playerData.wt?.readyState === 1) {', /\r?\n\s*if \(!playerData\.isGuest\)/);
 
@@ -105,7 +105,7 @@ const sites: Array<{ name: string; source: string; run: (wt: any) => void }> = [
     run: (wt) => {
       let handler: ((p: any) => void) | null = null;
       withNames(["registerPlayerAction", "sendPacket", "packetManager"], displacedSource)({
-        registerPlayerAction: (_name: string, fn: (p: any) => void) => { handler = fn; },
+        registerPlayerAction: (_name: string, fn: (p: any, args?: any) => void) => { handler = fn; },
         sendPacket,
         packetManager: { notify },
       });

@@ -1,6 +1,8 @@
 import query from "../controllers/sqldatabase";
 import log from "../modules/logger";
 import { tableCache, turns } from "../services/datacache";
+import { characterIdOf } from "./characterids";
+import { characterByName } from "./characterstore";
 import type { ChatLine } from "./chatgate";
 
 export const REPORT_CATEGORIES = ["harassment", "spam", "cheating", "name", "other"] as const;
@@ -158,7 +160,7 @@ const reports = {
     return reports.openCount(username);
   },
   /**
-   * Files a report, or says why it was not filed. `target` is the name of an account: whether
+   * Files a report, or says why it was not filed. `target` is the name of a character: whether
    * there is one is for the caller to have asked the player system.
    */
   async file(filing: Filing, now = Date.now()): Promise<{ ok: true; report: Report } | { ok: false; code: RefusedReport }> {
@@ -192,9 +194,13 @@ const reports = {
         resolved_at: null,
         resolution: null,
       };
+      // The row is the reporter's character's; it names the target's character, and the target's account, which a
+      // ban or a mute acts on, by id. The names stay as they were written.
+      const reporterId = await characterIdOf(reporter);
+      const named = await characterByName(target);
       const result = await writing(() => query(
-        "INSERT INTO reports (reporter, target, category, details, chat_log, map, x, y, target_map, target_x, target_y, created_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')",
-        [report.reporter, report.target, report.category, report.details, JSON.stringify(report.chat_log), report.map, report.x, report.y, report.target_map, report.target_x, report.target_y, report.created_at]
+        "INSERT INTO reports (reporter, target, character_id, reporter_id, target_id, target_account_id, category, details, chat_log, map, x, y, target_map, target_x, target_y, created_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')",
+        [report.reporter, report.target, reporterId, reporterId, named?.id ?? null, named?.accountId ?? null, report.category, report.details, JSON.stringify(report.chat_log), report.map, report.x, report.y, report.target_map, report.target_x, report.target_y, report.created_at]
       ));
 
       const id = insertedId(result);

@@ -37,8 +37,8 @@ mock.module("../controllers/sqldatabase", () => databaseModule({
 
 const whitelist = await import("../services/whitelist");
 
-/** The login check, as receiver.ts writes it (the receiver cannot be imported: it starts the server). */
-const LOGIN_CHECK = "if (isWhitelistEnabled() && !realmWhitelist.has(playerData.username.toLowerCase())) {";
+/** The login check, as receiver.ts writes it (the receiver cannot be imported: it starts the server). The whitelist names accounts. */
+const LOGIN_CHECK = "if (isWhitelistEnabled() && !realmWhitelist.has(playerData.accountUsername.toLowerCase())) {";
 const letsIn = (username: string) => !(whitelist.isWhitelistEnabled() && !whitelist.realmWhitelist.has(username.toLowerCase()));
 const sent = () => queries.map(([sql]) => sql);
 

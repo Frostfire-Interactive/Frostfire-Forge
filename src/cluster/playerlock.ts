@@ -213,3 +213,17 @@ export class PlayerLocks {
     }));
   }
 }
+
+/**
+ * The lock keys of the players a batch names: `char:<id>` for each character (the key a handoff takes,
+ * handoff.ts characterLockKey), so a batch and a handoff of one character exclude each other while two characters
+ * of one account never do. A name that is no character's is locked by `name:<name>`, lower case.
+ */
+export async function characterLockKeys(names: string[], resolve: (name: string) => Promise<number | null>): Promise<string[]> {
+  const keys: string[] = [];
+  for (const name of names) {
+    const id = await resolve(name);
+    keys.push(id !== null && Number.isSafeInteger(id) && id > 0 ? `char:${id}` : `name:${lower(name)}`);
+  }
+  return keys;
+}

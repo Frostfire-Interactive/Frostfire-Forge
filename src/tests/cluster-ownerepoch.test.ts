@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { databaseModule } from "./setup";
+import { characterDatabaseModule, testAccountId, withLeaveSaves } from "./setup";
 
 // A small accounts and stats table: the stand-in honours the WHERE of each statement this task writes, so a
 // statement that loses its guard writes where it must not, and the test sees it.
@@ -19,16 +19,25 @@ function run(sql: string, values: any[] = []): any {
     row.owner_epoch = epoch;
     return { affectedRows: 1 };
   }
-  if (sql.startsWith("UPDATE accounts SET map = ?, position = ?, direction = ?, saved_at = ?")) {
-    const [map, position, direction, savedAt, username, epoch, server] = values;
+  if (sql.startsWith("UPDATE accounts SET saved_at = ?")) {
+    // The guard of a fenced save: the account still under the epoch, its session this realm's or nobody's.
+    const [savedAt, username, epoch, server] = values;
     const row = rows.get(username);
     const guarded = sql.includes("owner_epoch = ?");
     const realmGuarded = sql.includes("(session_server = ? OR session_server IS NULL)");
     if (!row || (guarded && row.owner_epoch !== epoch)) return { affectedRows: 0 };
     if (realmGuarded && row.session_server !== null && row.session_server !== server) return { affectedRows: 0 };
     // As MySQL counts them: a row whose columns already hold the values given is matched but not changed.
-    if (row.map === map && row.position === position && row.direction === direction && row.saved_at === savedAt) return { affectedRows: 0 };
-    Object.assign(row, { map, position, direction, saved_at: savedAt });
+    if (row.saved_at === savedAt) return { affectedRows: 0 };
+    row.saved_at = savedAt;
+    return { affectedRows: 1 };
+  }
+  if (sql.startsWith("UPDATE accounts SET map = ?, position = ?, direction = ? WHERE username = ?")) {
+    // The character's location (characters by id, which this stand-in keeps on the account by name).
+    const [map, position, direction, username] = values;
+    const row = rows.get(username);
+    if (!row) return { affectedRows: 0 };
+    Object.assign(row, { map, position, direction });
     return { affectedRows: 1 };
   }
   if (sql.startsWith("UPDATE stats SET health = ?")) {
@@ -37,7 +46,8 @@ function run(sql: string, values: any[] = []): any {
     return { affectedRows: row ? 1 : 0 };
   }
   if (sql.startsWith("SELECT owner_epoch, saved_at FROM accounts")) {
-    const row = rows.get(values[0]);
+    // By the account's id (setup.ts testAccountId), or by its name as the setup's mapping hands it on.
+    const row = typeof values[0] === "number" ? [...rows.values()].find((r) => testAccountId(r.username) === values[0]) : rows.get(values[0]);
     return row ? [{ owner_epoch: row.owner_epoch, saved_at: row.saved_at }] : [];
   }
   return [];
@@ -48,7 +58,7 @@ function run(sql: string, values: any[] = []): any {
 const alone: string[] = [];
 let inTransaction = false;
 mock.module("../controllers/sqldatabase", () => {
-  const database = databaseModule({
+  const database = characterDatabaseModule({
     default: async (sql: string, values?: any[]) => {
       if (!inTransaction) alone.push(sql);
       return run(sql, values);
@@ -92,30 +102,30 @@ const here = { map: "main", position: { x: 10, y: 20, direction: "down" } } as a
 
 test("a claim raises the owner epoch", async () => {
   account("alice", 3);
-  expect(await claimOwnerEpoch("Alice", 4)).toBe(true);
+  expect(await claimOwnerEpoch(testAccountId("Alice"), 4)).toBe(true);
   expect(rows.get("alice")!.owner_epoch).toBe(4);
 });
 
 test("a claim never lowers the owner epoch", async () => {
   account("alice", 9);
-  expect(await claimOwnerEpoch("alice", 4)).toBe(false);
+  expect(await claimOwnerEpoch(testAccountId("alice"), 4)).toBe(false);
   expect(rows.get("alice")!.owner_epoch).toBe(9);
 });
 
 test("a second claim of the epoch already held is taken", async () => {
   account("alice", 4);
-  expect(await claimOwnerEpoch("alice", 4)).toBe(true);
+  expect(await claimOwnerEpoch(testAccountId("alice"), 4)).toBe(true);
 });
 
 test("storedOwnerEpoch reads the column; null for no account", async () => {
   account("alice", 6);
-  expect(await storedOwnerEpoch("alice")).toBe(6);
-  expect(await storedOwnerEpoch("nobody")).toBeNull();
+  expect(await storedOwnerEpoch(testAccountId("alice"))).toBe(6);
+  expect(await storedOwnerEpoch(999)).toBeNull();
 });
 
 test("a save under the held epoch writes the location, saved_at and stats", async () => {
   account("alice", 4);
-  expect(await player.saveFenced("alice", 4, stats, here)).toBe("saved");
+  expect(await player.saveFenced({ username: "alice" }, 4, stats, here)).toBe("saved");
   const row = rows.get("alice")!;
   expect(row.position).toBe("10,20");
   expect(row.saved_at).toBeGreaterThan(0);
@@ -124,7 +134,7 @@ test("a save under the held epoch writes the location, saved_at and stats", asyn
 
 test("a save under an old epoch writes nothing", async () => {
   account("alice", 5);
-  expect(await player.saveFenced("alice", 4, stats, here)).toBe("fenced");
+  expect(await player.saveFenced({ username: "alice" }, 4, stats, here)).toBe("fenced");
   const row = rows.get("alice")!;
   expect(row.position).toBe("0,0");
   expect(row.health).toBe(10);
@@ -134,7 +144,7 @@ test("a save under an old epoch writes nothing", async () => {
 test("a save under the held epoch is refused when another realm took the session", async () => {
   // A realm outside the cluster (or the Gateway) never raises the owner epoch: the session's realm fences it.
   account("alice", 4).session_server = "another-realm";
-  expect(await player.saveFenced("alice", 4, stats, here)).toBe("fenced");
+  expect(await player.saveFenced({ username: "alice" }, 4, stats, here)).toBe("fenced");
   const row = rows.get("alice")!;
   expect(row.position).toBe("0,0");
   expect(row.health).toBe(10);
@@ -142,25 +152,25 @@ test("a save under the held epoch is refused when another realm took the session
 
 test("a save under the held epoch lands when the session is this realm's, or nobody's", async () => {
   account("alice", 4).session_server = SESSION_SERVER;
-  expect(await player.saveFenced("alice", 4, stats, here)).toBe("saved");
+  expect(await player.saveFenced({ username: "alice" }, 4, stats, here)).toBe("saved");
   account("bob", 4);
-  expect(await player.saveFenced("bob", 4, stats, here)).toBe("saved");
+  expect(await player.saveFenced({ username: "bob" }, 4, stats, here)).toBe("saved");
 });
 
 test("the realm compared is the one a login here writes into session_server", () => {
   const source = readFileSync(join(import.meta.dir, "..", "systems", "player.ts"), "utf8");
   const claims = source.match(/SET session_id = \?, online = 1, session_server = \?, session_seen = \?[\s\S]*?\[sid, SESSION_SERVER, Date\.now\(\), token, sid\]/g) ?? [];
   expect(claims.length).toBe(2);
-  expect(source).toContain("values: [location.map, at, direction, savedAt, name, epoch, SESSION_SERVER],");
+  expect(source).toContain("values: [savedAt, accountId, epoch, SESSION_SERVER] as unknown[],");
 });
 
 test("two fenced saves in the same millisecond at the same place both land", async () => {
   account("alice", 4);
   const now = spyOn(Date, "now").mockReturnValue(Date.now());
   try {
-    expect(await player.saveFenced("alice", 4, null, here)).toBe("saved");
+    expect(await player.saveFenced({ username: "alice" }, 4, null, here)).toBe("saved");
     const first = rows.get("alice")!.saved_at;
-    expect(await player.saveFenced("alice", 4, null, here)).toBe("saved");
+    expect(await player.saveFenced({ username: "alice" }, 4, null, here)).toBe("saved");
     expect(rows.get("alice")!.saved_at).toBeGreaterThan(first);
   } finally {
     now.mockRestore();
@@ -169,7 +179,7 @@ test("two fenced saves in the same millisecond at the same place both land", asy
 
 test("saveStamp answers the owner epoch and the last save time", async () => {
   account("alice", 2).saved_at = 1234;
-  expect(await player.saveStamp("alice")).toEqual({ ownerEpoch: 2, savedAt: 1234 });
+  expect(await player.saveStamp(testAccountId("alice"))).toEqual({ ownerEpoch: 2, savedAt: 1234 });
 });
 
 function directoryFor(nodeId: string, store = new MemoryStore()) {
@@ -180,7 +190,7 @@ test("adoptOwnerEpoch claims the directory epoch and fences saves on it", async 
   account("alice", 0);
   const { directory } = directoryFor("n1");
   const { entry } = await directory.claim("alice", "p1", "main");
-  const alice: any = { id: "p1", username: "alice" };
+  const alice: any = { id: "p1", username: "alice", accountId: testAccountId("alice") };
   expect(await adoptOwnerEpoch(alice, entry.epoch, { directory, kick: () => { throw new Error("no kick"); } })).toBe(entry.epoch);
   expect(alice.ownerEpoch).toBe(entry.epoch);
   expect(fencedSaves(alice)).toBe(true);
@@ -192,7 +202,7 @@ test("a counter that went back is lifted past the stored epoch", async () => {
   const { directory } = directoryFor("n1");
   const { entry } = await directory.claim("alice", "p1", "main");
   expect(entry.epoch).toBe(1);
-  const alice: any = { id: "p1", username: "alice" };
+  const alice: any = { id: "p1", username: "alice", accountId: testAccountId("alice") };
   const warn = spyOn(log, "warn").mockImplementation(() => {});
   try {
     const epoch = await adoptOwnerEpoch(alice, entry.epoch, { directory, kick: () => { throw new Error("no kick"); } });
@@ -215,7 +225,7 @@ test("a fenced claim whose directory entry is another node's kicks the player", 
   const kicked: string[] = [];
   const warn = spyOn(log, "warn").mockImplementation(() => {});
   try {
-    const alice: any = { id: "p1", username: "alice" };
+    const alice: any = { id: "p1", username: "alice", accountId: testAccountId("alice") };
     expect(await adoptOwnerEpoch(alice, entry.epoch, { directory: mine, kick: (p, why) => kicked.push(`${p.username}:${why}`) })).toBeNull();
     expect(kicked).toEqual(["alice:owner"]);
     expect(alice.ownerEpoch).toBeUndefined();
@@ -243,7 +253,7 @@ test("a stale session whose entry is this node's under a newer epoch (same id) i
   const { entry } = await directory.claim("alice", "p1", "main");
   // The name was claimed here again since, under the same id (a hand-back keeps it).
   const { entry: newer } = await directory.claim("alice", "p1", "main");
-  const alice: any = { id: "p1", username: "alice" };
+  const alice: any = { id: "p1", username: "alice", accountId: testAccountId("alice") };
   expect(await adoptRefused(alice, entry.epoch, directory)).toEqual({ answer: null, kicked: ["alice:owner"] });
   expect(alice.ownerEpoch).toBeUndefined();
   expect((await directory.get("alice"))!.epoch).toBe(newer.epoch);
@@ -254,7 +264,7 @@ test("an entry of this node under another player id is kicked", async () => {
   account("alice", 50);
   const { directory } = directoryFor("n1");
   const { entry } = await directory.claim("alice", "p1", "main");
-  const other: any = { id: "p2", username: "alice" };
+  const other: any = { id: "p2", username: "alice", accountId: testAccountId("alice") };
   expect(await adoptRefused(other, entry.epoch, directory)).toEqual({ answer: null, kicked: ["alice:owner"] });
   expect(other.ownerEpoch).toBeUndefined();
   expect((await directory.get("alice"))!.epoch).toBe(entry.epoch);
@@ -276,7 +286,7 @@ test("a lift whose database claim then loses releases the lifted entry before th
       return lifted;
     },
   };
-  const alice: any = { id: "p1", username: "alice" };
+  const alice: any = { id: "p1", username: "alice", accountId: testAccountId("alice") };
   expect(await adoptRefused(alice, entry.epoch, racing)).toEqual({ answer: null, kicked: ["alice:owner"] });
   expect(alice.ownerEpoch).toBeUndefined();
   // No entry is left naming this node for a player who is gone.
@@ -286,7 +296,7 @@ test("a lift whose database claim then loses releases the lifted entry before th
 
 test("a guest is never fenced", async () => {
   const { directory } = directoryFor("n1");
-  const guest: any = { id: "g1", username: "guest_1", isGuest: true };
+  const guest: any = { id: "g1", username: "guest_1", accountId: testAccountId("guest_1"), isGuest: true };
   expect(await adoptOwnerEpoch(guest, 3, { directory, kick: () => {} })).toBeNull();
   expect(fencedSaves(guest)).toBe(false);
   expect(statements.length).toBe(0);
@@ -425,12 +435,13 @@ describe("the disconnect save", () => {
       "playerCache", "packetManager", "effectManager", "dots", "getStunsForPlayer", "getSlowsForPlayer", "saveSicknessOnDisconnect",
       "loot", "cleanupPlayerState", "releaseDraggedBy", "listener", "Events", "removeFromAuthenticationQueues", "worlds", "log", "player",
       "console", "forgetPlayer", "fencedSaves", "clusterEnabled", "isOnline", "tellContactsOffline", "takeAchievementProgress", "settleFencedLeave",
+      "saveLeavingEffects", "saveLeavingState",
     ],
     `return ${cut(serverSource, 'listener.on("onDisconnect", ', /\r?\n}\);\r?\n/).replace('listener.on("onDisconnect", ', "")}\n};`,
   );
   let online: Record<string, any> = {};
   const errors: string[] = [];
-  const onDisconnect = make({
+  const onDisconnect = make(withLeaveSaves({
     playerCache: { get: (id: string) => online[id], getByUsername: () => undefined },
     packetManager: { notify: () => [{}], updateOnlineStatus: () => [{}] },
     effectManager: { saveDots: () => {}, saveBarriers: () => {}, saveStuns: () => {}, saveSlows: () => {} },
@@ -455,7 +466,7 @@ describe("the disconnect save", () => {
     clusterEnabled: () => false,
     isOnline: async () => false,
     tellContactsOffline: async () => {},
-  });
+  }));
   const leave = async (live: any) => {
     online = { [live.id]: live };
     errors.length = 0;

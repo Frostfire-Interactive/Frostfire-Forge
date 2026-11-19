@@ -2,7 +2,8 @@ import { parentPort, workerData } from "worker_threads";
 import player from "../systems/player.ts";
 import query from "../controllers/sqldatabase.ts";
 import log from "../modules/logger.ts";
-import collectables from "../systems/collectables.ts";
+import { characterById } from "../systems/characterstore.ts";
+import { loginCharacterOf } from "../systems/logincharacter.ts";
 
 const items = workerData?.assets?.items ? JSON.parse(workerData.assets.items) : [];
 const spells = workerData?.assets?.spells ? JSON.parse(workerData.assets.spells) : [];
@@ -25,10 +26,13 @@ for (const spell of spells) {
 
 const authentication = {
     /**
-     * Claims the session of the token's account for connection `id`, then reads the player's rows. `known`: the rows of
-     * that player were read already (loginprefetch.ts), so a token of that account reads nothing more.
+     * Claims the session of the token's account for connection `id`, then reads the rows of the account's active
+     * character. An account with no active character to play (none chosen, deleted, or another account's) is refused
+     * with `characterRequired`, and the session is let go. `known`: the rows of that character were read already
+     * (loginprefetch.ts, by character id), so a token of its account reads nothing more. `characterId`: the character
+     * a handoff brings (handoff.ts arrivingCharacter), played in place of the active one, which is not read again.
      */
-    async process(token: string, id: string, known?: string): Promise<Authentication> {
+    async process(token: string, id: string, known?: number, characterId?: number): Promise<Authentication> {
         try {
 
             const session = await player.setSessionId(token, id);
@@ -41,11 +45,16 @@ const authentication = {
                 } as Authentication;
             }
 
-            const username = session as string;
-            if (known && known === username) {
+            const chosen = await loginCharacterOf(session as string, characterId);
+            if (!chosen.ok) {
+                log.debug(`Login of ${session} refused: ${chosen.reason}`);
+                await player.clearSessionId(id);
+                return { authenticated: true, completed: true, characterRequired: true, data: null, error: null };
+            }
+            if (known !== undefined && known !== null && Number(known) === chosen.characterId) {
                 return { authenticated: true, completed: true, prefetched: true, data: null, error: null };
             }
-            return await authentication.load(username);
+            return await authentication.load(chosen.accountId, chosen.characterId);
         } catch (err) {
             return {
                 authenticated: false,
@@ -55,10 +64,30 @@ const authentication = {
         }
     },
 
-    /** The player's rows a login sends: no session is claimed (the caller has, or will). */
-    async load(username: string): Promise<Authentication> {
+    /**
+     * The rows of character `characterId` read ahead of the login of a player arriving by handoff: none (data null)
+     * when it is deleted or not account `accountId`'s.
+     */
+    async prefetch(characterId: number, accountId: number): Promise<Authentication> {
+        const character = await characterById(Number(characterId)).catch(() => null);
+        if (!character || character.deletedAt !== null || character.accountId !== Number(accountId)) {
+            return { authenticated: false, completed: true, data: null, error: "Character not found" } as Authentication;
+        }
+        return authentication.load(character.accountId, character.id);
+    },
+
+    /** The rows a login sends of character `characterId` of account `accountId`: no session is claimed (the caller has, or will). */
+    async load(accountId: number, characterId: number): Promise<Authentication> {
         try {
-            const playerData = await player.GetPlayerLoginData(username) as unknown as PlayerData;
+            const playerData = await player.GetPlayerLoginData(accountId, characterId) as unknown as PlayerData;
+            if (!playerData) {
+                return {
+                    authenticated: true,
+                    completed: true,
+                    error: "Player data not found"
+                } as Authentication;
+            }
+            const username = playerData.username;
 
             for (const slot in playerData.equipment) {
 
@@ -78,9 +107,9 @@ const authentication = {
             }
 
             const [inventoryData, collectablesData, learnedSpellsData] = await Promise.all([
-                query("SELECT item, quantity, equipped, slot, bag_slot FROM inventory WHERE username = ?", [username]) as Promise<any[]>,
-                collectables.list(username) as Promise<Collectable[]>,
-                query("SELECT spell FROM learned_spells WHERE username = ?", [username]) as Promise<any[]>,
+                query("SELECT item, quantity, equipped, slot, bag_slot FROM inventory WHERE character_id = ?", [characterId]) as Promise<any[]>,
+                query("SELECT item, type FROM collectables WHERE character_id = ?", [characterId]) as Promise<Collectable[]>,
+                query("SELECT spell FROM learned_spells WHERE character_id = ?", [characterId]) as Promise<any[]>,
             ]);
 
             collectablesData.filter((c) => c.type === "mount" && !mountsByName.has(String(c.item || "").toLowerCase())).forEach((invalidMount) => {
@@ -124,11 +153,11 @@ const authentication = {
             // systems hold no copy of their tables and would read every row.
             // Guild members come from guild_members, leader (rank 0) first.
             const membersOf = (rows: any) => String(rows?.[0]?.members ?? "").split(",").map((member) => member.trim()).filter((member) => member);
-            const namesOf = (rows: any) => ((rows || []) as any[]).map((row) => String(row.username));
+            const namesOf = (rows: any) => ((rows || []) as any[]).map((row) => String(row.member));
             const [partyMembers, guildMembers] = await Promise.all([
                 playerData.party_id ? query("SELECT members FROM parties WHERE id = ?", [Number(playerData.party_id)]).then(membersOf) : null,
                 // A guild list that cannot be read (setup not run yet) does not stop the login.
-                playerData.guild_id ? query("SELECT username FROM guild_members WHERE guild_id = ? ORDER BY rank_index, username", [Number(playerData.guild_id)]).then(namesOf).catch((error) => {
+                playerData.guild_id ? query("SELECT c.name AS member FROM guild_members g JOIN characters c ON c.id = g.character_id WHERE g.guild_id = ? ORDER BY g.rank_index, c.name", [Number(playerData.guild_id)]).then(namesOf).catch((error) => {
                     log.error(`The guild members of ${username} could not be read: ${error}`);
                     return null;
                 }) : null,
@@ -187,14 +216,6 @@ const authentication = {
 
             playerData.learnedSpells = learnedSpells;
 
-            if (!playerData) {
-                return {
-                    authenticated: true,
-                    completed: true,
-                    error: "Player data not found"
-                } as Authentication;
-            }
-
             return {
                 authenticated: true,
                 completed: true,
@@ -212,7 +233,7 @@ const authentication = {
     }
 }
 
-parentPort?.on("message", async (data: { token: string, id: string, known?: string, prefetch?: string, spells?: string | null, items?: string | null, mounts?: string | null }) => {
+parentPort?.on("message", async (data: { token: string, id: string, known?: number, characterId?: number, prefetch?: number, accountId?: number, spells?: string | null, items?: string | null, mounts?: string | null }) => {
     // The spell editor changed the spell list: replace the copy taken at startup.
     if (data.spells !== undefined) {
         for (const name of Object.keys(spellsByName)) delete spellsByName[name];
@@ -239,10 +260,14 @@ parentPort?.on("message", async (data: { token: string, id: string, known?: stri
     }
     // The rows of a player arriving by handoff, read before their AUTH (loginprefetch.ts).
     if (data.prefetch !== undefined) {
-        const result = await authentication.load(data.prefetch);
+        // `prefetch` is the character's id, as the handoff carries it, of account `accountId`.
+        const result = Number.isSafeInteger(Number(data.prefetch))
+            ? await authentication.prefetch(data.prefetch, Number(data.accountId))
+            : { authenticated: false, completed: true, data: null, error: "Character not found" } as Authentication;
         parentPort?.postMessage({ ...result, prefetch: true, token: data.token, id: data.id });
         return;
     }
-    const result = await authentication.process(data.token, data.id, data.known);
+    const result = await authentication.process(data.token, data.id, data.known, data.characterId);
     parentPort?.postMessage({ ...result, token: data.token, id: data.id });
 });
+export default authentication;

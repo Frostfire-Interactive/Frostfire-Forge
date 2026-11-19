@@ -1,12 +1,15 @@
 import query from "../controllers/sqldatabase";
 import type { Batch } from "../services/batch";
 import { rowCache, turns } from "../services/datacache";
+import { characterIdOf, needCharacterId } from "./characterids";
 import { Events, listener, type CollectableAddedEvent } from "./events";
 
-// Each player's collectables: the item and type of every row.
-const rows = rowCache<any[]>("collectables", async (username) =>
-    (await query("SELECT item, type FROM collectables WHERE username = ?", [username])) as any[] || []
-, { perPlayer: true });
+// Each player's collectables: the item and type of every row. Held under the character's name, kept by its id.
+const rows = rowCache<any[]>("collectables", async (username) => {
+    const characterId = await characterIdOf(String(username));
+    if (characterId === null) return [];
+    return (await query("SELECT item, type FROM collectables WHERE character_id = ?", [characterId])) as any[] || [];
+}, { perPlayer: true });
 
 // One change to a player's collectables at a time. Each works from the list held and puts back what its write left,
 // so two running side by side would each put back a list without the other's change (and both would pass the
@@ -75,11 +78,12 @@ const collectables = {
         if (batch) {
             const state = await pendingIn(batch, collectable.username);
             if (state.held.some(is(collectable))) return false;
+            const characterId = await needCharacterId(collectable.username);
             state.held = [...state.held, { item: collectable.item, type: collectable.type }];
             state.written = true;
             batch.add({
-                sql: "INSERT INTO collectables (type, item, username) VALUES (?, ?, ?)",
-                values: [collectable.type, collectable.item, collectable.username],
+                sql: "INSERT INTO collectables (type, item, character_id) VALUES (?, ?, ?)",
+                values: [collectable.type, collectable.item, characterId],
                 mustChange: true,
             });
             batch.after(() => added(collectable));
@@ -93,8 +97,8 @@ const collectables = {
             if (held.some(is(collectable))) return;
 
             const result = await query(
-                "INSERT INTO collectables (type, item, username) VALUES (?, ?, ?)",
-                [collectable.type, collectable.item, collectable.username]
+                "INSERT INTO collectables (type, item, character_id) VALUES (?, ?, ?)",
+                [collectable.type, collectable.item, await needCharacterId(collectable.username)]
             );
             said.wrote = true;
             await rows.set(collectable.username, [...held, { item: collectable.item, type: collectable.type }]);
@@ -107,8 +111,8 @@ const collectables = {
         if (!collectable?.type || !collectable?.item || !collectable?.username) return;
         return change(collectable.username, async () => {
             const result = await query(
-                "DELETE FROM collectables WHERE type = ? AND item = ? AND username = ?",
-                [collectable.type, collectable.item, collectable.username]
+                "DELETE FROM collectables WHERE type = ? AND item = ? AND character_id = ?",
+                [collectable.type, collectable.item, await needCharacterId(collectable.username)]
             );
             const held = (await rows.get(collectable.username)) ?? [];
             await rows.set(collectable.username, held.filter((row) => !is(collectable)(row)));

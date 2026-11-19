@@ -1,9 +1,10 @@
 
-import query, { transaction } from "../controllers/sqldatabase";
+import query, { setQueryTimeout, transaction } from "../controllers/sqldatabase";
 import log from "../modules/logger";
 import { CLASSES_TABLE } from "../systems/classtable";
 import { DEFAULT_SOUNDS, soundsText } from "../systems/weathersounds";
 import { migrateGuildRanks } from "./guild_ranks_migration";
+import { CHARACTER_TABLES } from "./charactertables";
 const database = process.env.DATABASE_NAME || "TEMP_Mystika";
 
 const createDatabase = async () => {
@@ -1595,6 +1596,147 @@ const dropLegacyQuestTables = async () => {
   }
 };
 
+/**
+ * What each character table needs besides `character_id`. `unique`: the columns that, with it, are unique (what the
+ * account-name key was unique together with); a table with a list gets a unique key, one without only an index.
+ * `nameKey`: the table's primary key was on the account name: it becomes a unique key (below). `twins`: the id twins of
+ * its name-pointer columns. They hold no foreign key: a log row outlives the character it names. `guilds` is not a
+ * character table but has a leader to point at.
+ */
+const CHARACTER_KEY_SPECS: Record<string, { unique?: string[]; nameKey?: string[]; twins?: string[] }> = {
+  inventory: {},
+  stats: { unique: [] },
+  clientconfig: { unique: [] },
+  quest_log: { unique: ["quest_id"], nameKey: ["quest_id"] },
+  quest_objective_progress: { unique: ["quest_id", "objective_id"], nameKey: ["quest_id", "objective_id"] },
+  friendslist: { unique: [], twins: ["friend_id"], nameKey: [] },
+  ignores: { unique: ["ignored_id"], twins: ["ignored_id"], nameKey: ["ignored"] },
+  player_home: { unique: [], nameKey: [] },
+  currency: { unique: [], nameKey: [] },
+  guild_members: { unique: [], nameKey: [] },
+  cutscene_views: { unique: ["cutscene"], nameKey: ["cutscene"] },
+  collectables: {},
+  learned_spells: {},
+  equipment: { unique: [] },
+  bags: { unique: [] },
+  player_achievements: { unique: ["achievement_id"], nameKey: ["achievement_id"] },
+  parties: { twins: ["leader_id"] },
+  mail: { twins: ["sender_id", "recipient_id"] },
+  trade_log: { twins: ["player_a_id", "player_b_id"] },
+  reports: { twins: ["reporter_id", "target_id", "target_account_id"] },
+};
+
+const columnInfo = async (table: string, column: string): Promise<{ type: string; nullable: boolean } | null> => {
+  const rows = (await query(
+    `SELECT COLUMN_TYPE AS type, IS_NULLABLE AS nullable FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
+    [table, column]
+  )) as any[];
+  return rows[0] ? { type: String(rows[0].type), nullable: String(rows[0].nullable) === "YES" } : null;
+};
+
+const indexExists = async (table: string, name: string): Promise<boolean> => {
+  const rows = (await query(
+    `SELECT COUNT(*) AS count FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = ?`,
+    [table, name]
+  )) as any[];
+  return Number(rows[0]?.count) > 0;
+};
+
+const foreignKeyExists = async (table: string, name: string): Promise<boolean> => {
+  const rows = (await query(
+    `SELECT COUNT(*) AS count FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND CONSTRAINT_NAME = ? AND CONSTRAINT_TYPE = 'FOREIGN KEY'`,
+    [table, name]
+  )) as any[];
+  return Number(rows[0]?.count) > 0;
+};
+
+const addColumnIfMissing = async (table: string, column: string, definition: string) => {
+  if (!(await columnInfo(table, column))) await query(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+};
+
+const addIndexIfMissing = async (table: string, name: string, sql: string) => {
+  if (!(await indexExists(table, name))) await query(sql);
+};
+
+/**
+ * Many characters per account: the `characters` table, accounts.active_character_id, and a `character_id` (foreign key,
+ * cascading) on every character table, as the add-column and add-index steps above: each part is added only when it is
+ * missing, so this is safe to run on a database that has it, and on one that has rows. Existing rows get no
+ * character_id here (a later migration fills it); the keys that were on the account name are therefore not dropped but
+ * eased: a primary key on it becomes a unique key (which takes NULL, so a character row without the account name is
+ * allowed) and the column may be NULL. The primary keys on character_id are for when every row has one.
+ */
+const addCharacterKeys = async () => {
+  log.info("Adding characters table and character_id keys...");
+  // accounts.id is INT here, and a foreign key must match its column's type.
+  await query(`
+    CREATE TABLE IF NOT EXISTS characters (
+      id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      account_id INT NOT NULL,
+      name VARCHAR(255) NOT NULL,
+      name_key VARCHAR(191) NOT NULL,
+      class_id INT DEFAULT NULL,
+      map VARCHAR(255) DEFAULT 'overworld' NOT NULL,
+      position VARCHAR(255) DEFAULT '0,0' NOT NULL,
+      direction VARCHAR(10) DEFAULT 'down' NOT NULL,
+      is_dead TINYINT DEFAULT 0 NOT NULL,
+      corpse_map VARCHAR(64) DEFAULT NULL,
+      corpse_x INT DEFAULT NULL,
+      corpse_y INT DEFAULT NULL,
+      stealth INT DEFAULT 0 NOT NULL,
+      noclip INT DEFAULT 0 NOT NULL,
+      party_id INT DEFAULT NULL,
+      guild_id INT DEFAULT NULL,
+      created_at BIGINT NOT NULL,
+      deleted_at BIGINT DEFAULT NULL,
+      UNIQUE KEY uk_characters_name_key (name_key),
+      INDEX idx_characters_account (account_id),
+      CONSTRAINT fk_characters_account FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+    )
+  `);
+  // Existing account names are kept whole (guest names are 30 characters): a table made narrower is widened. The 3-15 rule is for names players pick later.
+  for (const [column, width] of [["name", 255], ["name_key", 191]] as const) {
+    const info = await columnInfo("characters", column);
+    const now = /varchar\((\d+)\)/i.exec(info?.type || "");
+    if (now && Number(now[1]) < width) await query(`ALTER TABLE characters MODIFY ${column} VARCHAR(${width}) NOT NULL`);
+  }
+  await addIndexIfMissing("characters", "idx_characters_account", "CREATE INDEX idx_characters_account ON characters (account_id)");
+
+  await addColumnIfMissing("accounts", "active_character_id", "BIGINT NULL DEFAULT NULL");
+  if (!(await foreignKeyExists("accounts", "fk_accounts_active_character"))) {
+    await query(`ALTER TABLE accounts ADD CONSTRAINT fk_accounts_active_character FOREIGN KEY (active_character_id) REFERENCES characters(id) ON DELETE SET NULL`);
+  }
+
+  for (const table of CHARACTER_TABLES) {
+    const spec = CHARACTER_KEY_SPECS[table] || {};
+    await addColumnIfMissing(table, "character_id", "BIGINT NULL DEFAULT NULL");
+    for (const twin of spec.twins || []) await addColumnIfMissing(table, twin, "BIGINT NULL DEFAULT NULL");
+
+    // The account name: a primary key on it (with the columns in spec.nameKey) becomes a unique key, then the column may be NULL.
+    const name = await columnInfo(table, "username");
+    if (name) {
+      if (spec.nameKey && (await indexExists(table, "PRIMARY"))) {
+        const columns = ["username", ...spec.nameKey].join(", ");
+        await query(`ALTER TABLE ${table} DROP PRIMARY KEY, ADD UNIQUE KEY uk_${table}_username (${columns})`);
+      }
+      if (!name.nullable) await query(`ALTER TABLE ${table} MODIFY COLUMN username ${name.type} NULL DEFAULT NULL`);
+    }
+
+    await addIndexIfMissing(table, `idx_${table}_character`, `CREATE INDEX idx_${table}_character ON ${table} (character_id)`);
+    if (spec.unique) {
+      await addIndexIfMissing(table, `uk_${table}_character`, `CREATE UNIQUE INDEX uk_${table}_character ON ${table} (${["character_id", ...spec.unique].join(", ")})`);
+    }
+    if (!(await foreignKeyExists(table, `fk_${table}_character`))) {
+      await query(`ALTER TABLE ${table} ADD CONSTRAINT fk_${table}_character FOREIGN KEY (character_id) REFERENCES characters(id) ON DELETE CASCADE`);
+    }
+  }
+
+  await addColumnIfMissing("guilds", "leader_id", "BIGINT NULL DEFAULT NULL");
+  await addIndexIfMissing("guilds", "idx_guilds_leader_id", "CREATE INDEX idx_guilds_leader_id ON guilds (leader_id)");
+  await addIndexIfMissing("mail", "idx_mail_recipient_id", "CREATE INDEX idx_mail_recipient_id ON mail (recipient_id)");
+  await addIndexIfMissing("parties", "idx_parties_leader_id", "CREATE INDEX idx_parties_leader_id ON parties (leader_id)");
+};
+
 const setupDatabase = async () => {
   await createDatabase();
   await useDatabase();
@@ -1656,10 +1798,13 @@ const setupDatabase = async () => {
   await insertHomeItem();
   await insertDemoQuests();
   await createIndexes();
+  await addCharacterKeys();
 };
 
 try {
   log.info("Setting up database...");
+  // An ALTER TABLE on a large table (bags) rebuilds it, which can take minutes.
+  setQueryTimeout(15 * 60 * 1000);
   await setupDatabase();
   log.success("Database setup complete!");
   process.exit(0);

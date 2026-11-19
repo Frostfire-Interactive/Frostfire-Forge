@@ -60,7 +60,7 @@ function node(name: string, link: any, over: Partial<HandoffDeps> = {}) {
     player: (id) => players.get(id) ?? null,
     playerByUsername: (username) => [...players.values()].find((p) => p.username === username) ?? null,
     drain: async () => { log.push("drain"); },
-    snapshot: (p): any => ({ id: String(p.id), username: p.username, map: "main", x: p.x ?? 0, y: 0, direction: "down", creatureIds: [], playerIds: [], state: { walk: p.walk ?? null, big: "x".repeat(100) } }),
+    snapshot: (p): any => ({ id: String(p.id), username: p.username, characterId: Number(p.characterId ?? p.id), accountId: 1, accountUsername: "acct", map: "main", x: p.x ?? 0, y: 0, direction: "down", creatureIds: [], playerIds: [], state: { walk: p.walk ?? null, big: "x".repeat(100) } }),
     ghostRecord: (p) => ({ id: String(p.id) }),
     ticket: (_p, target) => ticketFor(target),
     node: (target) => ({ nodeId: target, publicHost: "h", port: 1, wtPort: 2, useSSL: true }),
@@ -111,7 +111,7 @@ test("a player walking toward a border to another node is found within the prepa
 });
 
 function walker(over: any = {}): any {
-  return { id: "7", username: "ann", moving: true, _movementState: { targetDirection: "right" }, location: { map: "main", position: { x: 3796, y: 100, direction: "right" } }, ...over };
+  return { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", moving: true, _movementState: { targetDirection: "right" }, location: { map: "main", position: { x: 3796, y: 100, direction: "right" } }, ...over };
 }
 
 test("the watch prepares a walker once as they approach, and not when they walk away or stand", () => {
@@ -135,7 +135,7 @@ test("the watch prepares a walker once as they approach, and not when they walk 
     prepareWalkers([away], [], ownerAt, "a", checks, walkOf, hand);
     expect(a.prepares.map((p) => p.node === null)).toEqual([false, true]);
     // A walker who was never prepared and walks away sends nothing.
-    const other = walker({ id: "8", username: "bob", _movementState: { targetDirection: "left" } });
+    const other = walker({ id: "8", username: "bob", characterId: 8, accountId: 1, accountUsername: "acct", _movementState: { targetDirection: "left" } });
     prepareWalkers([other], [], ownerAt, "a", checks, walkOf, hand);
     expect(a.prepares).toHaveLength(2);
   } finally {
@@ -165,8 +165,8 @@ test("the watch does not prepare a player who is picked this tick, blocked, or a
   try {
     const picked = walker();
     prepareWalkers([picked], [{ player: picked, target: "b" }], ownerAt, "a", checks, walkOf, a.handoff);
-    prepareWalkers([walker({ id: "8", username: "bob" })], [], ownerAt, "a", { ...checks, trading: () => true }, walkOf, a.handoff);
-    prepareWalkers([walker({ id: "9", username: "cat", remote: true })], [], ownerAt, "a", checks, walkOf, a.handoff);
+    prepareWalkers([walker({ id: "8", username: "bob", characterId: 8, accountId: 1, accountUsername: "acct" })], [], ownerAt, "a", { ...checks, trading: () => true }, walkOf, a.handoff);
+    prepareWalkers([walker({ id: "9", username: "cat", characterId: 9, accountId: 1, accountUsername: "acct", remote: true })], [], ownerAt, "a", checks, walkOf, a.handoff);
     expect(a.prepares).toHaveLength(0);
   } finally {
     stop();
@@ -215,7 +215,7 @@ test("a handoff refused for good withdraws the prepare, one that clears in a mom
   {
     const { a, stop } = pair({}, { ownerAt: () => "c" });
     try {
-      const player: any = { id: "7", username: "ann" };
+      const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct" };
       a.players.set("7", player);
       expect(a.handoff.prepare(player, "b")).toBe(true);
       expect(await a.handoff.handOff(player, "b")).toBe("refused");
@@ -230,7 +230,7 @@ test("a handoff refused for good withdraws the prepare, one that clears in a mom
   {
     const { a, stop } = pair();
     try {
-      const player: any = { id: "7", username: "ann" };
+      const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct" };
       a.players.set("7", player);
       a.handoff.setLock(async () => null);
       expect(a.handoff.prepare(player, "b")).toBe(true);
@@ -402,7 +402,7 @@ test("a resumed arrival goes on walking: the MOVEXY handler is run for its direc
   const compile = new Function(`"use strict";\n${transpiler.transformSync(`function make({ handlerRoutes, playerCache, trackPacket, log }: any) {\n${code}\nreturn resumeArrivalWalk;\n}`)}\nreturn make;`)();
   const handled: any[] = [];
   const tracked: string[] = [];
-  const me: any = { id: "7", username: "ann" };
+  const me: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct" };
   const make = () => compile({
     handlerRoutes: { route: (type: string) => (type === "MOVEXY" ? { handle: async (ctx: any) => { handled.push(ctx); } } : undefined) },
     playerCache: { get: (id: string) => (id === "7" ? me : undefined) },
@@ -426,7 +426,7 @@ test("a resumed arrival goes on walking: the MOVEXY handler is run for its direc
 test("a busy player lock refuses before the player is stopped, and a free one is let go before the drain", async () => {
   const { a, stop } = pair();
   try {
-    const player: any = { id: "7", username: "ann", x: 10 };
+    const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10 };
     a.players.set("7", player);
     let taken = 0;
     a.handoff.setLock(async () => { taken++; return null; });
@@ -450,7 +450,7 @@ test("a busy player lock refuses before the player is stopped, and a free one is
 test("what an arrival keeps until its first move is the identity and the marks, not the snapshot's state", async () => {
   const { a, b, stop } = pair();
   try {
-    const snapshot = { id: "100", username: "dan", map: "main", x: 1, y: 0, direction: "down", creatureIds: [1, 2, 3], playerIds: ["9"], state: { walk: "right", blob: "y".repeat(5000) } };
+    const snapshot = { id: "100", username: "dan", characterId: 100, accountId: 1, accountUsername: "acct", map: "main", x: 1, y: 0, direction: "down", creatureIds: [1, 2, 3], playerIds: ["9"], state: { walk: "right", blob: "y".repeat(5000) } };
     const answer = await a.calls.call<{ ok: boolean }>("b", "HANDOFF", { snapshot, token: "tok", fullLoad: false });
     expect(answer.ok && answer.answer.ok).toBe(true);
     a.calls.cast("b", "HANDOFF_COMMIT", { username: "dan", token: "tok", snapshot });

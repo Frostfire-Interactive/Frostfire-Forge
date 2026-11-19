@@ -83,6 +83,8 @@ async function database(sql: string, params: any[] = []): Promise<any> {
 mock.module("../controllers/sqldatabase", () => databaseModule({ default: database }));
 mock.module("../services/assetCache", () => ({
   default: {
+    // The quest definitions call onChange as they load: a file loaded later is handed this stand-in (mock.module outlives its file).
+    onChange: () => () => {},
     get: async (key: string) => (key === "items" ? [{ name: "Iron Sword", quality: "common" }, { name: "Wolf Pelt", quality: "common" }, { name: "Frostbite", quality: "epic" }] : undefined),
   },
 }));

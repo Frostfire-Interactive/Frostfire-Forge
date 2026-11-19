@@ -751,16 +751,18 @@ export const CUTSCENES_TABLE: Record<"mysql" | "sqlite", string> = {
 
 export const CUTSCENE_VIEWS_TABLE: Record<"mysql" | "sqlite", string> = {
   mysql: `CREATE TABLE IF NOT EXISTS cutscene_views (
-    username VARCHAR(255) NOT NULL,
+    character_id BIGINT NOT NULL,
     cutscene VARCHAR(64) NOT NULL,
     seen_at BIGINT NOT NULL DEFAULT 0,
-    PRIMARY KEY (username, cutscene)
+    UNIQUE KEY uk_cutscene_views_character (character_id, cutscene),
+    INDEX idx_cutscene_views_character (character_id),
+    CONSTRAINT fk_cutscene_views_character FOREIGN KEY (character_id) REFERENCES characters(id) ON DELETE CASCADE
   )`,
   sqlite: `CREATE TABLE IF NOT EXISTS cutscene_views (
-    username TEXT NOT NULL,
+    character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
     cutscene TEXT NOT NULL,
     seen_at INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (username, cutscene)
+    UNIQUE (character_id, cutscene)
   )`,
 };
 

@@ -2,7 +2,7 @@ import { expect, mock, setSystemTime, spyOn, test } from "bun:test";
 import { MemoryStore } from "../cluster/memorystore";
 import { LateError, NotStartedError, runTransaction, runWithRetries } from "../controllers/sqltransaction";
 import { settle } from "./cluster-fakelink";
-import { databaseModule } from "./setup";
+import { characterDatabaseModule } from "./setup";
 
 // Settle marks shared through the cluster's store (cluster/tradesettle.ts), and the open-by deadline of a swap's
 // transaction (controllers/sqltransaction.ts). Two TradeSettle objects on one MemoryStore play two nodes.
@@ -13,7 +13,7 @@ const transactionCalls: Array<{ arity: number; options: unknown }> = [];
 const plainWrites: string[] = [];
 /** The inventory rows the fake database holds, by player. */
 const inventoryRows: Record<string, Array<Record<string, unknown>>> = {};
-mock.module("../controllers/sqldatabase", () => databaseModule({
+mock.module("../controllers/sqldatabase", () => characterDatabaseModule({
   default: async (sql: string, values: any[] = []) => {
     const text = sql.replace(/\s+/g, " ").trim();
     if (text === "SELECT * FROM inventory WHERE username = ?") return (inventoryRows[String(values[0]).toLowerCase()] ?? []).map((row) => ({ ...row }));

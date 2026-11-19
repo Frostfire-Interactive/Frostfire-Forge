@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
-import { databaseModule } from "./setup";
+import { characterDatabaseModule } from "./setup";
 import { GuardError } from "../controllers/sqltransaction";
 
 // Mail between players: where mailboxes stand, and sending, taking, deleting,
@@ -33,14 +33,15 @@ function run(sql: string, params: any[] = []): any {
   if (failing?.(text)) throw new Error("database gone");
 
   if (ACCOUNT.test(text)) return tables.accounts.filter(mine(params[0])).map((row) => ({ ...row }));
-  if (text === "SELECT ignored FROM ignores WHERE username = ?") return tables.ignores.filter(mine(params[0])).map(({ ignored }) => ({ ignored }));
+  if (text === "SELECT ignored FROM ignores WHERE username = ? ORDER BY created_at") return tables.ignores.filter(mine(params[0])).map(({ ignored }) => ({ ignored }));
   if (text === "SELECT * FROM inventory WHERE username = ?") return tables.inventory.filter(mine(params[0])).map((row) => ({ ...row }));
   if (text === "SELECT copper, silver, gold FROM currency WHERE username = ?") {
     return tables.currency.filter(mine(params[0])).map(({ copper, silver, gold }) => ({ copper, silver, gold }));
   }
   if (text === "SELECT * FROM equipment WHERE username = ?") return tables.equipment.filter(mine(params[0])).map((row) => ({ ...row }));
   if (text === "SELECT * FROM bags WHERE username = ?") return tables.bags.filter(mine(params[0])).map((row) => ({ ...row }));
-  if (text === `SELECT ${MAIL_COLUMNS} FROM mail WHERE recipient = ? ORDER BY id`) {
+  // A mail is its recipient's (character_id, handed here as the name): a row's `recipient` is whose mailbox it is in.
+  if (text === `SELECT ${MAIL_COLUMNS} FROM mail WHERE username = ? ORDER BY id`) {
     return tables.mail.filter((row) => row.recipient === params[0]).sort((a, b) => a.id - b.id).map((row) => ({ ...row }));
   }
   if (text === "SELECT map, spots FROM mailbox_spots") return tables.mailbox_spots.map((row) => ({ ...row }));
@@ -85,31 +86,33 @@ function run(sql: string, params: any[] = []): any {
     else tables.currency.push({ username, copper, silver, gold });
     return { affectedRows: row ? 2 : 1 };
   }
-  if (text === "INSERT INTO mail (recipient, sender, subject, body, items, copper, silver, gold, sent_at, expires_at, is_read, returned) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)") {
-    const [recipient, sender, subject, body, items, copper, silver, gold, sent_at, expires_at] = params;
+  if (text === "INSERT INTO mail (recipient, sender, username, recipient_id, sender_id, subject, body, items, copper, silver, gold, sent_at, expires_at, is_read, returned) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)") {
+    const [recipient, sender, owner, recipient_id, sender_id, subject, body, items, copper, silver, gold, sent_at, expires_at] = params;
+    if (owner !== recipient || recipient_id !== recipient || sender_id !== sender) throw new Error("A mail is kept by the ids of its recipient and sender");
     const row = { id: nextId++, recipient, sender, subject, body, items, copper, silver, gold, sent_at, expires_at, is_read: 0, returned: 0 };
     tables.mail.push(row);
     return { affectedRows: 1, lastInsertRowid: row.id };
   }
   const mailRow = (id: any, recipient: any) => tables.mail.filter((row) => row.id === Number(id) && row.recipient === recipient);
-  if (text === "UPDATE mail SET items = ?, copper = ?, silver = ?, gold = ?, is_read = 1 WHERE id = ? AND recipient = ?") {
+  if (text === "UPDATE mail SET items = ?, copper = ?, silver = ?, gold = ?, is_read = 1 WHERE id = ? AND username = ?") {
     const [items, copper, silver, gold, id, recipient] = params;
     const rows = mailRow(id, recipient);
     rows.forEach((row) => Object.assign(row, { items, copper, silver, gold, is_read: 1 }));
     return { affectedRows: rows.length };
   }
-  if (text === "UPDATE mail SET is_read = 1 WHERE id = ? AND recipient = ?") {
+  if (text === "UPDATE mail SET is_read = 1 WHERE id = ? AND username = ?") {
     const rows = mailRow(params[0], params[1]);
     rows.forEach((row) => { row.is_read = 1; });
     return { affectedRows: rows.length };
   }
-  if (text === "UPDATE mail SET recipient = ?, sender = ?, sent_at = ?, expires_at = ?, is_read = 0, returned = 1 WHERE id = ? AND recipient = ?") {
-    const [recipient, sender, sent_at, expires_at, id, owner] = params;
+  if (text === "UPDATE mail SET recipient = ?, sender = ?, username = ?, recipient_id = ?, sender_id = ?, sent_at = ?, expires_at = ?, is_read = 0, returned = 1 WHERE id = ? AND username = ?") {
+    const [recipient, sender, newOwner, recipient_id, sender_id, sent_at, expires_at, id, owner] = params;
+    if (newOwner !== recipient || recipient_id !== recipient || sender_id !== sender) throw new Error("A mail is kept by the ids of its recipient and sender");
     const rows = mailRow(id, owner);
     rows.forEach((row) => Object.assign(row, { recipient, sender, sent_at, expires_at, is_read: 0, returned: 1 }));
     return { affectedRows: rows.length };
   }
-  if (text === "DELETE FROM mail WHERE id = ? AND recipient = ?") {
+  if (text === "DELETE FROM mail WHERE id = ? AND username = ?") {
     const before = tables.mail.length;
     tables.mail = tables.mail.filter((row) => !(row.id === Number(params[0]) && row.recipient === params[1]));
     return { affectedRows: before - tables.mail.length };
@@ -117,7 +120,7 @@ function run(sql: string, params: any[] = []): any {
   throw new Error(`The fake database does not understand: ${text}`);
 }
 
-mock.module("../controllers/sqldatabase", () => databaseModule({
+mock.module("../controllers/sqldatabase", () => characterDatabaseModule({
   default: async (sql: string, params: any[] = []) => run(sql, params),
   // All of its statements or none.
   transaction: async (statements: Array<{ sql: string; values?: any[]; mustChange?: boolean }>) => {
@@ -141,6 +144,8 @@ const assets = new Map<string, any>([
 ]);
 mock.module("../services/assetCache", () => ({
   default: {
+    // The quest definitions call onChange as they load: a file loaded later is handed this stand-in (mock.module outlives its file).
+    onChange: () => () => {},
     get: async (key: string) => assets.get(key) ?? null,
     set: async (key: string, value: any) => assets.set(key, value),
     add: async (key: string, value: any) => assets.set(key, value),

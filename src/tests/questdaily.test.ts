@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
-import { databaseModule, standInFor } from "./setup";
+import { characterDatabaseModule, standInFor } from "./setup";
 
 const repeatable: Quest = {
   id: 10, name: "Daily Grind", zone: null, offer_text: "", description: "", progress_text: "", completion_text: "",
@@ -35,7 +35,7 @@ function resetDb() {
 }
 resetDb();
 
-mock.module("../controllers/sqldatabase", () => databaseModule({
+mock.module("../controllers/sqldatabase", () => characterDatabaseModule({
   default: async (sql: string, params: any[] = []) => {
     if (sql.startsWith("SELECT") && sql.includes("FROM quest_log WHERE username = ? AND quest_id = ?")) {
       return logRows.filter((r) => r.username === params[0] && r.quest_id === params[1]);

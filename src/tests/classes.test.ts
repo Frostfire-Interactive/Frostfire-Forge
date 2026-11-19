@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
-import { databaseModule } from "./setup";
+import { characterDatabaseModule } from "./setup";
 
 // USER REQUEST 2026-10-14: character classes (systems/classes.ts) and the class editor (systems/classeditor.ts).
 
@@ -47,13 +47,15 @@ function run(sql: string, params: any[] = []): any {
   throw new Error(`The fake database does not understand: ${text}`);
 }
 
-mock.module("../controllers/sqldatabase", () => databaseModule({
+mock.module("../controllers/sqldatabase", () => characterDatabaseModule({
   default: async (sql: string, params: any[] = []) => run(sql, params),
 }));
 
 const cache = new Map<string, any>();
 mock.module("../services/assetCache", () => ({
   default: {
+    // The quest definitions call onChange as they load: a file loaded later is handed this stand-in (mock.module outlives its file).
+    onChange: () => () => {},
     get: async (key: string) => cache.get(key),
     set: async (key: string, value: any) => cache.set(key, value),
     add: async (key: string, value: any) => cache.set(key, value),

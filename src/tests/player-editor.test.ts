@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
-import { databaseModule } from "./setup";
+import { characterDatabaseModule, testCharacterId } from "./setup";
 import { DEFAULT_RANKS } from "../systems/guildranks";
 
 // Generated at server start (`bun create-config`) and gitignored, so CI has
@@ -114,7 +114,7 @@ function run(sql: string, params: any[] = []): any {
   throw new Error(`The fake database does not understand: ${text}`);
 }
 
-mock.module("../controllers/sqldatabase", () => databaseModule({
+mock.module("../controllers/sqldatabase", () => characterDatabaseModule({
   default: async (sql: string, params: any[] = []) => run(sql, params),
 }));
 
@@ -363,13 +363,15 @@ describe("player editor snapshot", () => {
     expect(result.data.snapshot.totals).toMatchObject({ max_health: 100 });
   });
 
-  test("is put together from what the systems hold: opened again, it reads nothing", async () => {
+  test("is put together from what the systems hold: opened again, it reads nothing but the account's characters", async () => {
     tables.quest_log.push({ username: "hero", quest_id: 1, state: "active", accepted_at: 1, completed_at: 0, times_completed: 0 });
+    // The account's characters are read each time: the gateway makes characters without the engine hearing of it.
+    const ACCOUNT_CHARACTERS = "SELECT username FROM accounts WHERE id = ?";
     for (const username of ["hero", "ally"]) {
       const first = await editor.buildSnapshot(username);
       queries.length = 0;
       expect(await editor.buildSnapshot(username)).toEqual(first);
-      expect(queries).toEqual([]);
+      expect(queries).toEqual([ACCOUNT_CHARACTERS]);
     }
 
     // The same for a player who is online.
@@ -377,7 +379,7 @@ describe("player editor snapshot", () => {
     const first = await editor.buildSnapshot("hero");
     queries.length = 0;
     expect(await editor.buildSnapshot("hero")).toEqual(first);
-    expect(queries).toEqual([]);
+    expect(queries).toEqual([ACCOUNT_CHARACTERS]);
   });
 
   test("shows of an account what a login reads of it", async () => {
@@ -391,9 +393,18 @@ describe("player editor snapshot", () => {
     );
     tables.quest_objective_progress.push({ username: "hero", quest_id: 1, objective_id: 10, count: 3 });
 
+    // The login reads the character (multiple characters per account): one per account, named after it, with its rows
+    // keyed by character_id (the stand-in keeps them by name: characterKeyedByName).
+    tables.characters = tables.accounts.map((a) => ({
+      id: testCharacterId(a.username), account_id: a.id, name: a.username, class_id: null, map: a.map, position: a.position, direction: a.direction,
+      stealth: a.stealth, noclip: a.noclip, party_id: a.party_id, guild_id: a.guild_id, is_dead: a.is_dead,
+      corpse_map: a.corpse_map, corpse_x: a.corpse_x, corpse_y: a.corpse_y, deleted_at: null,
+    }));
+
     // An account with every row, one with no stats or currency of its own, and a guest.
     for (const username of ["hero", "boss", "guest_7"]) {
-      const data = (await player.GetPlayerLoginData(username)) as any;
+      const id = tables.accounts.find((a) => a.username === username)!.id;
+      const data = (await player.GetPlayerLoginData(id, testCharacterId(username))) as any;
       const snapshot = (await editor.buildSnapshot(username))!;
       expect(snapshot).toMatchObject({
         username: data.username,
@@ -427,6 +438,38 @@ describe("player editor snapshot", () => {
     expect((await editor.buildSnapshot("boss"))!).toMatchObject({ isAdmin: true, currency: { copper: 0, silver: 0, gold: 0 }, stats: { level: 1, health: 0 } });
     expect((await editor.buildSnapshot("guest_7"))!.isGuest).toBe(true);
     expect(await editor.buildSnapshot("nobody")).toBeNull();
+  });
+
+  test("holds what is the account's under account, and the same values at the top", async () => {
+    const { default: mutes } = await import("../systems/mutes");
+    Object.assign(heroRow("accounts"), { banned: 1, role: 1 });
+    tables.permissions.push({ username: "hero", permissions: "admin.kick" });
+    const muted = { username: "hero", muted_by: "boss", reason: "spam", created_at: 5, expires_at: 99 };
+    const asked = spyOn(mutes, "get").mockResolvedValue(muted);
+    try {
+      const snapshot = (await editor.buildSnapshot("hero"))!;
+      expect(snapshot.account).toEqual({
+        id: 4203,
+        characters: [{ name: "hero", classId: null, level: 1 }],
+        banned: true,
+        mutes: { muted_by: "boss", reason: "spam", created_at: 5, expires_at: 99 },
+        role: 1,
+        permissions: ["admin.kick"],
+      });
+      expect(snapshot).toMatchObject({ banned: true, isAdmin: true, permissions: ["admin.kick"] });
+      expect(asked).toHaveBeenCalledWith("hero");
+    } finally {
+      asked.mockRestore();
+    }
+  });
+
+  test("of an account with no character is none: its login username is not shown in a character's place", async () => {
+    const asked = spyOn(player, "getAccount").mockResolvedValue({ id: 4203, username: "acct_hero", role: 0, banned: 0, guest_mode: 0 } as any);
+    try {
+      expect(await editor.buildSnapshot("acct_hero")).toBeNull();
+    } finally {
+      asked.mockRestore();
+    }
   });
 });
 

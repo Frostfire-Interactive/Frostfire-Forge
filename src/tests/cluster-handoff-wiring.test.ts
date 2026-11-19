@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, expect, mock, spyOn, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { databaseModule } from "./setup";
+import { characterDatabaseModule, withLeaveSaves } from "./setup";
 import type { SealedStore } from "../cluster/storeseal";
 
 // The wiring of phase 6 into the engine. The AOI, presence, sickness and cluster start are run for real (only the
 // database is stubbed); server.ts cannot be imported (it starts the server), so its wiring is read from its source.
-mock.module("../controllers/sqldatabase", () => databaseModule({
+mock.module("../controllers/sqldatabase", () => characterDatabaseModule({
   default: async (_sql: string, _params?: any[]) => [],
 }));
 
@@ -610,8 +610,8 @@ test("the handoff state carries the consumable cooldown", () => {
 
 test("the handed-off save names its twin, the disconnect's saves", () => {
   const save = body("async function saveHandedOff(", "\n}\n");
-  expect(has(save, "await player.setStats(p.username, p.stats)")).toBe(true);
-  expect(has(save, "await player.setLocation(p.id, p.location.map, p.location.position)")).toBe(true);
+  expect(has(save, "await player.setStats(p, p.stats)")).toBe(true);
+  expect(has(save, "await player.setLocation(p.id, p.location.map, p.location.position, p)")).toBe(true);
   expect(has(save, "await achievements.onLeave({ player: p })")).toBe(true);
   // A warp hands off with the location already at the destination: the count it leaves is the old map's.
   expect(has(save, 'await worlds.adjustPlayerCount(p?.handoffFromMap || p?.location?.map || "", -1)')).toBe(true);
@@ -795,13 +795,14 @@ test("a player who leaves while a warp's handoff runs is counted off the map the
     "playerCache", "packetManager", "console", "effectManager", "dots", "getStunsForPlayer", "getSlowsForPlayer",
     "saveSicknessOnDisconnect", "loot", "cleanupPlayerState", "releaseDraggedBy", "listener", "Events",
     "removeFromAuthenticationQueues", "worlds", "log", "player", "clusterEnabled", "isOnline", "tellContactsOffline", "forgetPlayer",
+    "saveLeavingEffects", "saveLeavingState",
   ];
   const source = sourceCut('listener.on("onDisconnect", ', /\r?\n}\);\r?\n/).replace('listener.on("onDisconnect", ', "");
   const make = withNames(names, `return ${source}\n};`);
   const run = async (playerData: any) => {
     const counted: string[] = [];
     const errors: unknown[] = [];
-    const handler = make({
+    const handler = make(withLeaveSaves({
       playerCache: { get: (id: string) => (id === playerData.id ? playerData : undefined), getByUsername: () => playerData },
       packetManager: {},
       console: { error() {} },
@@ -828,7 +829,7 @@ test("a player who leaves while a warp's handoff runs is counted off the map the
       isOnline: async () => false,
       tellContactsOffline: async () => {},
       forgetPlayer: async () => {},
-    });
+    }));
     await handler({ id: playerData.id, reason: "player_left" });
     expect(errors).toEqual([]);
     return counted;

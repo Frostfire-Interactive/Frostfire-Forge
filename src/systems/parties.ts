@@ -1,6 +1,7 @@
 import query from "../controllers/sqldatabase";
 import log from "../modules/logger";
 import { tableCache, dropRows } from "../services/datacache";
+import { needCharacterId } from "./characterids";
 
 /** A party as the table has it: `members` is the comma-separated list, the leader first. */
 type PartyRow = { id: number; leader: string; members: string | null };
@@ -9,8 +10,9 @@ type PartyRow = { id: number; leader: string; members: string | null };
 // written to the database and then to them. A write the database does not
 // answer has them read again instead (see `writing`).
 //
-// Who is in a party is who its member list names. accounts.party_id says the
-// same after each change here, and is what a login reads.
+// Who is in a party is who its member list names (characters, by name).
+// characters.party_id says the same after each change here, and is what a
+// login reads. The row is its leader's character's (character_id, leader_id).
 const rows = tableCache<PartyRow>("parties", async () => {
     const result = await query("SELECT id, leader, members FROM parties", []) as any[];
     return (result || []).map((row: any) => ({ id: row.id, leader: row.leader, members: row.members }));
@@ -135,7 +137,8 @@ const parties = {
 
             if (members.includes(username)) return [];
 
-            await writing([username], () => query("UPDATE accounts SET party_id = ? WHERE username = ?", [partyId, username]));
+            const joiningId = await needCharacterId(username);
+            await writing([username], () => query("UPDATE characters SET party_id = ? WHERE id = ?", [partyId, joiningId]));
             const updatedMembers = [...members, username].join(", ");
             await writing([], () => query("UPDATE parties SET members = ? WHERE id = ?", [updatedMembers, partyId]));
             await change(partyId, { members: updatedMembers });
@@ -152,7 +155,8 @@ const parties = {
             if (!partyId) return [];
 
             const leader = await this.getPartyLeader(partyId);
-            await writing([username], () => query("UPDATE accounts SET party_id = NULL WHERE username = ?", [username]));
+            const leavingId = await needCharacterId(username);
+            await writing([username], () => query("UPDATE characters SET party_id = NULL WHERE id = ?", [leavingId]));
 
             const members = await this.getPartyMembers(partyId);
 
@@ -183,7 +187,7 @@ const parties = {
 
             // The accounts that pointed at it: its members.
             const freed = party ? [...listed(party.members), party.leader] : [];
-            await writing(freed, () => query("UPDATE accounts SET party_id = NULL WHERE party_id = ?", [partyId]));
+            await writing(freed, () => query("UPDATE characters SET party_id = NULL WHERE party_id = ?", [partyId]));
             log.info(`Party with ID ${partyId} deleted successfully.`);
             return true;
         } catch (error) {
@@ -202,13 +206,15 @@ const parties = {
             if (memberParty) return false;
 
             const members = [leader, username].join(", ");
-            const result = await writing([], () => query("INSERT INTO parties (leader, members) VALUES (?, ?)", [leader, members])) as any;
+            const leaderId = await needCharacterId(leader);
+            const memberId = await needCharacterId(username);
+            const result = await writing([], () => query("INSERT INTO parties (leader, members, character_id, leader_id) VALUES (?, ?, ?, ?)", [leader, members, leaderId, leaderId])) as any;
             const partyId = result.lastInsertRowid;
             // Without the id the database gave it, the new row can only be had by reading the table again.
             if (Number(partyId) > 0) await rows.put({ id: Number(partyId), leader, members }, byId(partyId));
             else await rows.reload();
 
-            await writing([leader, username], () => query("UPDATE accounts SET party_id = ? WHERE username IN (?, ?)", [partyId, leader, username]));
+            await writing([leader, username], () => query("UPDATE characters SET party_id = ? WHERE id IN (?, ?)", [partyId, leaderId, memberId]));
             return members.split(", ").map((member: string) => member.trim());
         } catch (error) {
             log.error(`Error creating party: ${error}`);
@@ -242,7 +248,7 @@ const parties = {
             const members = await this.getPartyMembers(partyId);
             if (members.length === 0) return false;
 
-            await writing(members, () => query("UPDATE accounts SET party_id = NULL WHERE party_id = ?", [partyId]));
+            await writing(members, () => query("UPDATE characters SET party_id = NULL WHERE party_id = ?", [partyId]));
 
             return await this.delete(partyId);
         } catch (error) {

@@ -1920,7 +1920,11 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
               break;
             }
 
-            if (targetPlayer.username.toLowerCase() === currentPlayer.username.toLowerCase()) {
+            // A ban is the account's: another character of one's own account is oneself.
+            if (
+              targetPlayer.username.toLowerCase() === currentPlayer.username.toLowerCase() ||
+              (await player.charactersOf(targetPlayer.username)).includes(currentPlayer.username.toLowerCase())
+            ) {
               const notifyData = {
                 message: "You cannot ban yourself",
               };
@@ -1949,8 +1953,12 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
             }
 
             await player.ban(targetPlayer.username, targetPlayer.wt);
-            // The account is banned; a session on another node is ended where it is.
-            if (!heldHere) await runOnPlayer(targetPlayer.username, "admin-kick");
+            // The account is banned, and with it each of its characters: one online here was logged out by the ban,
+            // and a session on another node is ended where it is.
+            for (const name of await player.charactersOf(targetPlayer.username)) {
+              const here = name.toLowerCase() === targetPlayer.username.toLowerCase() ? heldHere : !!playerCache.getByUsername(name);
+              if (!here) await runOnPlayer(name, "admin-kick");
+            }
             const notifyData = {
               message: `Banned ${targetPlayer.username.charAt(0).toUpperCase() +
                 targetPlayer.username.slice(1)

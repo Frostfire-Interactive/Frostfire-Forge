@@ -140,11 +140,12 @@ test("a running node attaches the settle marks, grants, player locks, block part
   expect(lock).not.toBeNull();
   let held: string | null = null;
   expect(await lock!(["ann"], async () => {
-    held = await store.get("cells:plock:ann");
+    // A batch locks its players by character id (char:<id>); "ann" is no character here, so its name is locked.
+    held = await store.get("cells:plock:name:ann");
     return 7;
   })).toBe(7);
   expect(held).not.toBeNull();
-  expect(await store.get("cells:plock:ann")).toBeNull();
+  expect(await store.get("cells:plock:name:ann")).toBeNull();
 
   const handoffLock = playerHandoff.setLock(null);
   playerHandoff.setLock(handoffLock);

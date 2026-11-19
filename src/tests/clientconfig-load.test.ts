@@ -35,6 +35,13 @@ const ACCOUNTS = `CREATE TABLE accounts (
   party_id INTEGER, guild_id INTEGER, is_dead INTEGER DEFAULT 0, corpse_map TEXT, corpse_x INTEGER, corpse_y INTEGER,
   subscribed INTEGER DEFAULT 0
 )`;
+/** The character a login reads (multiple characters per account): one, of the one account. */
+const CHARACTERS = `CREATE TABLE characters (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, account_id INTEGER NOT NULL, name TEXT NOT NULL, name_key TEXT NOT NULL UNIQUE,
+  class_id INTEGER, map TEXT DEFAULT 'overworld', position TEXT DEFAULT '0,0', direction TEXT DEFAULT 'down',
+  is_dead INTEGER DEFAULT 0, corpse_map TEXT, corpse_x INTEGER, corpse_y INTEGER, stealth INTEGER DEFAULT 0,
+  noclip INTEGER DEFAULT 0, party_id INTEGER, guild_id INTEGER, created_at INTEGER NOT NULL DEFAULT 0, deleted_at INTEGER
+)`;
 /** clientconfig as the setup scripts make it now. */
 const CLIENTCONFIG = `CREATE TABLE clientconfig (
   id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL UNIQUE,
@@ -53,7 +60,11 @@ function setUp(clientconfig: string) {
   db = new Database(":memory:");
   db.run(ACCOUNTS);
   db.run(clientconfig);
+  db.run(CHARACTERS);
+  // The login reads clientconfig by character_id, which the character migration adds to the table.
+  db.run("ALTER TABLE clientconfig ADD COLUMN character_id INTEGER");
   db.run("INSERT INTO accounts (username) VALUES ('loot_fan')");
+  db.run("INSERT INTO characters (account_id, name, name_key) VALUES (1, 'loot_fan', 'loot_fan')");
 }
 
 beforeEach(async () => {
@@ -65,10 +76,10 @@ describe("a login's settings", () => {
   // these columns at start (ensureAmbienceColumn) never ran. Nothing in this file runs it either.
   test("are every setting saved, read on a thread that never added the newer columns", async () => {
     setUp(CLIENTCONFIG);
-    db.run(`INSERT INTO clientconfig (username, fps, music_volume, effects_volume, ambience_volume, weather_volume, muted, auto_loot)
-      VALUES ('loot_fan', 90, 23, 29, 37, 41, 0, 1)`);
+    db.run(`INSERT INTO clientconfig (username, character_id, fps, music_volume, effects_volume, ambience_volume, weather_volume, muted, auto_loot)
+      VALUES ('loot_fan', 1, 90, 23, 29, 37, 41, 0, 1)`);
 
-    const data = (await player.GetPlayerLoginData("loot_fan")) as any;
+    const data = (await player.GetPlayerLoginData(1, 1)) as any;
 
     expect(data.config).toHaveLength(1);
     expect(data.config[0]).toMatchObject({
@@ -79,9 +90,9 @@ describe("a login's settings", () => {
 
   test("are the newer settings' defaults on a database from before them", async () => {
     setUp(OLD_CLIENTCONFIG);
-    db.run("INSERT INTO clientconfig (username, fps, music_volume, effects_volume, muted) VALUES ('loot_fan', 90, 23, 29, 1)");
+    db.run("INSERT INTO clientconfig (username, character_id, fps, music_volume, effects_volume, muted) VALUES ('loot_fan', 1, 90, 23, 29, 1)");
 
-    const data = (await player.GetPlayerLoginData("loot_fan")) as any;
+    const data = (await player.GetPlayerLoginData(1, 1)) as any;
 
     expect(data.config[0]).toMatchObject({
       fps: 90, music_volume: 23, effects_volume: 29, ambience_volume: 50, weather_volume: 60, auto_loot: false,

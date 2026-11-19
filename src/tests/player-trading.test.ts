@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
-import { databaseModule } from "./setup";
+import { characterDatabaseModule } from "./setup";
 import { GuardError } from "../controllers/sqltransaction";
 
 // Two players trading: the window's rules, and the swap. The real trade,
@@ -30,6 +30,8 @@ let beforeTransaction: (() => void) | null;
 
 const fold = (value: any) => String(value).toLowerCase();
 const mine = (username: string) => (row: Row) => fold(row.username) === fold(username);
+
+const CHARACTER_ID = "(SELECT id FROM characters WHERE name_key = ? AND deleted_at IS NULL LIMIT 1)";
 
 function run(sql: string, params: any[] = []): any {
   const text = sql.replace(/\s+/g, " ").trim();
@@ -79,8 +81,10 @@ function run(sql: string, params: any[] = []): any {
     else tables.currency.push({ username, copper, silver, gold });
     return { affectedRows: row ? 2 : 1 };
   }
-  if (text === "INSERT INTO trade_log (player_a, player_b, a_gave, b_gave, created_at) VALUES (?, ?, ?, ?, ?)") {
-    const [player_a, player_b, a_gave, b_gave, created_at] = params;
+  // The trade is kept by the ids of both characters (character_id, here `username`, is the first's), found by name.
+  if (text === `INSERT INTO trade_log (player_a, player_b, username, player_a_id, player_b_id, a_gave, b_gave, created_at) VALUES (?, ?, ${CHARACTER_ID}, ${CHARACTER_ID}, ${CHARACTER_ID}, ?, ?, ?)`) {
+    const [player_a, player_b, owner, a_id, b_id, a_gave, b_gave, created_at] = params;
+    if (owner !== player_a || a_id !== player_a || b_id !== player_b) throw new Error("A trade is kept by the ids of both characters");
     const row = { id: nextId++, player_a, player_b, a_gave, b_gave, created_at };
     tables.trade_log.push(row);
     return { affectedRows: 1, lastInsertRowid: row.id };
@@ -88,7 +92,7 @@ function run(sql: string, params: any[] = []): any {
   throw new Error(`The fake database does not understand: ${text}`);
 }
 
-mock.module("../controllers/sqldatabase", () => databaseModule({
+mock.module("../controllers/sqldatabase", () => characterDatabaseModule({
   default: async (sql: string, params: any[] = []) => run(sql, params),
   // All of its statements or none.
   transaction: async (statements: Array<{ sql: string; values?: any[]; mustChange?: boolean }>) => {
@@ -121,6 +125,8 @@ const assets = new Map<string, any>([
 ]);
 mock.module("../services/assetCache", () => ({
   default: {
+    // The quest definitions call onChange as they load: a file loaded later is handed this stand-in (mock.module outlives its file).
+    onChange: () => () => {},
     get: async (key: string) => assets.get(key) ?? null,
     set: async (key: string, value: any) => assets.set(key, value),
     add: async (key: string, value: any) => assets.set(key, value),

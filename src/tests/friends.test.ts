@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
-import { databaseModule } from "./setup";
+import { characterDatabaseModule as databaseModule } from "./setup";
 
 // Generated at server start (`bun create-config`) and gitignored, so CI has
 // no copy on disk. Mock the values instead of requiring the file.
@@ -101,7 +101,9 @@ describe("a friends list is answered from the row held, read once", () => {
   test("asked again, the database is not", async () => {
     expect(await friends.list("user1")).toEqual(["user2", "user3"]);
     expect(await friends.list("user1")).toEqual(["user2", "user3"]);
-    expect(queries).toEqual([[LOAD, ["user1"]]]);
+    // The row, and once the names on it are the characters' as they go by them now.
+    expect(queries.filter(([sql]) => !ACCOUNT.test(sql))).toEqual([[LOAD, ["user1"]]]);
+    expect(accountReads()).toEqual(["user2", "user3"]);
   });
 
   test("a name in any case is the same player's row", async () => {
@@ -161,11 +163,14 @@ describe("a change to a friends list is written to the database, then to the row
     expect(friendReads()).toEqual([LOAD]);
   });
 
-  test("whether the friend has an account is asked of the player system, which reads it once", async () => {
+  test("whether the friend is a character is asked of the database at each add, and not at a remove", async () => {
+    await friends.list("user1");
+    await friends.list("user2");
+    queries = [];
     await friends.add("user1", "user4");
     await friends.add("user2", "user4");
     await friends.remove("user1", "user4");
-    expect(accountReads()).toEqual(["user4"]);
+    expect(accountReads()).toEqual(["user4", "user4"]);
   });
 
   test("add of someone with no account, or who is a friend already, writes nothing", async () => {
@@ -194,7 +199,8 @@ describe("a change to a friends list is written to the database, then to the row
 
   test("remove of someone who is not a friend, or has no account, writes nothing", async () => {
     expect(await friends.remove("user1", "user4")).toEqual(["user2", "user3"]);
-    expect(await friends.remove("user1", "nobody")).toEqual([]);
+    // The list as it stands: a name on no list changes nothing.
+    expect(await friends.remove("user1", "nobody")).toEqual(["user2", "user3"]);
     expect(await friends.remove("", "user2")).toEqual([]);
     expect(writes()).toEqual([]);
   });

@@ -1,13 +1,13 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { databaseModule } from "./setup";
+import { characterDatabaseModule, withLeaveSaves } from "./setup";
 
 // Row 41(b) of cells phase 7: a leave (a disconnect or a handoff) writes the achievement progress, and keeps the
 // effects and sickness for a later login here, only while this node owns the player. server.ts cannot be imported (it
 // starts the server), so the leave paths are run from its source with the names they use handed in. The achievement
 // store, the effect manager and the sickness map are the real ones; only the database is stubbed.
-mock.module("../controllers/sqldatabase", () => databaseModule({
+mock.module("../controllers/sqldatabase", () => characterDatabaseModule({
   default: async (_sql: string, _params?: any[]) => [],
 }));
 
@@ -206,6 +206,7 @@ describe("the disconnect", () => {
     "playerCache", "packetManager", "effectManager", "dots", "getStunsForPlayer", "getSlowsForPlayer", "saveSicknessOnDisconnect",
     "loot", "cleanupPlayerState", "releaseDraggedBy", "listener", "Events", "removeFromAuthenticationQueues", "worlds", "log", "player",
     "console", "forgetPlayer", "fencedSaves", "clusterEnabled", "isOnline", "tellContactsOffline", "takeAchievementProgress", "settleFencedLeave",
+    "saveLeavingEffects", "saveLeavingState",
   ];
   const make = withNames(
     listenerNames,
@@ -214,7 +215,7 @@ describe("the disconnect", () => {
 
   /** The listener, with the save answering `answer` and the PLAYER_DISCONNECT flush seen as the achievement module does it. */
   function onDisconnect(answer: "saved" | "fenced", over: Record<string, any> = {}) {
-    return make({
+    return make(withLeaveSaves({
       playerCache: { ...playerCache },
       packetManager: { notify: () => [{}], updateOnlineStatus: () => [{}] },
       effectManager,
@@ -245,7 +246,7 @@ describe("the disconnect", () => {
       takeAchievementProgress,
       settleFencedLeave,
       ...over,
-    });
+    }));
   }
 
   const alice = (more: Record<string, any> = {}) => ({
@@ -366,5 +367,208 @@ describe("the handoff save", () => {
     await saveHandedOff("fenced")(handed());
     expect(order).toEqual(["flush", "setStats", "setLocation"]);
     expect(flushed).toEqual([{ username: "alice", progress: [[1, 5]] }]);
+  });
+});
+
+describe("the kick save (a newer login of the account)", () => {
+  const kickNames = [
+    "effectManager", "dots", "getStunsForPlayer", "getSlowsForPlayer", "saveSicknessOnDisconnect", "loot", "fencedSaves",
+    "takeAchievementProgress", "settleFencedLeave", "player", "log", "achievements", "saveLeavingEffects", "saveLeavingState",
+  ];
+  const makeKick = withNames(kickNames, `${functionOf("export async function saveKickedPlayer(").replace("export ", "")}\nreturn saveKickedPlayer;`);
+  const disconnectNames = [
+    "playerCache", "packetManager", "effectManager", "dots", "getStunsForPlayer", "getSlowsForPlayer", "saveSicknessOnDisconnect",
+    "loot", "cleanupPlayerState", "releaseDraggedBy", "listener", "Events", "removeFromAuthenticationQueues", "worlds", "log", "player",
+    "console", "forgetPlayer", "fencedSaves", "clusterEnabled", "isOnline", "tellContactsOffline", "takeAchievementProgress", "settleFencedLeave",
+    "saveLeavingEffects", "saveLeavingState",
+  ];
+  const makeDisconnect = withNames(
+    disconnectNames,
+    `return ${cut(serverSource, 'listener.on("onDisconnect", ', /\r?\n}\);\r?\n/).replace('listener.on("onDisconnect", ', "")}\n};`,
+  );
+
+  // What each leave wrote, in order: the effects, the loot cleanup, the flush, and the player's rows.
+  let wrote: string[] = [];
+  const recordingDeps = (answer: "saved" | "fenced") => ({
+    effectManager: {
+      saveDots: (u: string) => { wrote.push(`dots ${u}`); },
+      saveBarriers: (u: string) => { wrote.push(`barriers ${u}`); },
+      saveStuns: (u: string) => { wrote.push(`stuns ${u}`); },
+      saveSlows: (u: string) => { wrote.push(`slows ${u}`); },
+    },
+    dots: { getPlayerDots: () => [] },
+    getStunsForPlayer: () => [],
+    getSlowsForPlayer: () => [],
+    saveSicknessOnDisconnect: (p: any) => { wrote.push(`sickness ${p.username}`); },
+    loot: { scheduleCleanup: (u: string) => { wrote.push(`loot cleanup ${u}`); } },
+    fencedSaves,
+    takeAchievementProgress,
+    settleFencedLeave,
+    log: quiet,
+    achievements: { onLeave: async (payload: any) => { wrote.push("flush"); await achievements.onLeave(payload); } },
+    player: {
+      saveFenced: async (who: any) => { wrote.push(`saveFenced ${who.username}`); return answer; },
+      setStats: async (who: any) => { wrote.push(`stats ${who.username}`); },
+      setLocation: async () => { wrote.push("location by session"); },
+      setLocationByUsername: async (u: string) => { wrote.push(`location of ${u}`); },
+      clearSessionId: async () => {},
+    },
+  });
+  const kick = (answer: "saved" | "fenced" = "saved") => makeKick(withLeaveSaves(recordingDeps(answer)));
+  const disconnect = (answer: "saved" | "fenced" = "saved", emit?: (event: string, payload: any) => void) => {
+    const deps = recordingDeps(answer);
+    return makeDisconnect(withLeaveSaves({
+      ...deps,
+      playerCache: { ...playerCache },
+      packetManager: { notify: () => [{}], updateOnlineStatus: () => [{}] },
+      cleanupPlayerState: (p: any) => { delete live[p.id]; },
+      releaseDraggedBy: () => {},
+      // PLAYER_DISCONNECT: the achievement module's flush, as the module registers it.
+      listener: { emit: emit ?? ((_event: string, payload: any) => void deps.achievements.onLeave(payload)) },
+      Events: { PLAYER_DISCONNECT: "onPlayerDisconnect" },
+      removeFromAuthenticationQueues: () => {},
+      worlds: { adjustPlayerCount: async () => 0 },
+      console: { error: () => {} },
+      forgetPlayer: async () => {},
+      clusterEnabled: () => false,
+      isOnline: async () => false,
+      tellContactsOffline: async () => {},
+    }));
+  };
+  const bob = (more: Record<string, any> = {}) => ({
+    id: "k1", username: "bob", stats: { health: 3 }, location: { map: "main", position: { x: 4, y: 5 } }, ...more,
+  });
+
+  beforeEach(() => { wrote = []; });
+  afterEach(() => { clearLeftovers("bob"); });
+
+  test("writes what a disconnect writes, the location by the character instead of the old session", async () => {
+    store.markChanged("bob", 1, 5);
+    await kick()(bob());
+    const kicked = wrote;
+    const kickFlushed = flushed;
+    wrote = [];
+    flushed = [];
+    store.markChanged("bob", 1, 5);
+    live = { k1: bob() };
+    await disconnect()({ id: "k1", reason: "player_left" });
+    expect(kicked).toEqual(wrote.map((w) => (w === "location by session" ? "location of bob" : w)));
+    expect(kicked).toEqual([
+      "dots bob", "barriers bob", "stuns bob", "slows bob", "sickness bob", "loot cleanup bob", "flush", "stats bob", "location of bob",
+    ]);
+    expect(kickFlushed).toEqual([{ username: "bob", progress: [[1, 5]] }]);
+    expect(flushed).toEqual([{ username: "bob", progress: [[1, 5]] }]);
+  });
+
+  // The flush after a fenced save is settleFencedLeave's (its own achievements stand-in): seen in what was flushed.
+  test("fenced and owned: the fenced save, then the progress flushed, as a fenced disconnect", async () => {
+    store.markChanged("bob", 1, 5);
+    await kick("saved")(bob({ ownerEpoch: 4 }));
+    expect(wrote).toEqual(["dots bob", "barriers bob", "stuns bob", "slows bob", "sickness bob", "loot cleanup bob", "saveFenced bob"]);
+    expect(flushed).toEqual([{ username: "bob", progress: [[1, 5]] }]);
+  });
+
+  test("fenced and refused: no progress flushed, the leftovers kept here dropped", async () => {
+    store.markChanged("bob", 1, 5);
+    await kick("fenced")(bob({ ownerEpoch: 4 }));
+    expect(flushed).toEqual([]);
+    expect(store.changedOf("bob").size).toBe(0);
+    expect(forgottenRows).toEqual(["bob"]);
+  });
+
+  test("a guest is not saved", async () => {
+    await kick()(bob({ isGuest: true }));
+    expect(wrote).toEqual([]);
+  });
+
+  test("the kicked session's own close, while the kick saves it, saves nothing again (no second loot cleanup either)", async () => {
+    const kicked = bob();
+    live = { k1: kicked };
+    const saving = kick()(kicked);
+    await disconnect()({ id: "k1", reason: "player_left" });
+    await saving;
+    expect(wrote.filter((w) => w === "loot cleanup bob")).toHaveLength(1);
+    expect(wrote.filter((w) => w === "stats bob")).toHaveLength(1);
+    expect(wrote).not.toContain("location by session");
+  });
+
+  // The PLAYER_DISCONNECT listeners as the systems register them: some look up by the player's id (creatures, fishing,
+  // gathering, the cutscene's "inside"), some by its name (vendor buyback and trade end, the cutscene's seen views, the
+  // achievement flush). Each records the player it ran for and clears what it holds for it.
+  const makeLeave = withNames(["listener", "Events"], `${functionOf("export function leaveKickedPlayer(").replace("export ", "")}
+return leaveKickedPlayer;`);
+  const PLAYER_DISCONNECT = "onPlayerDisconnect";
+  const systems = () => {
+    const ran: string[] = [];
+    const byId = new Map<string, Set<string>>();
+    const byName = new Map<string, Set<string>>();
+    const hold = (map: Map<string, Set<string>>, key: string, what: string) => (map.get(key) ?? map.set(key, new Set()).get(key)!).add(what);
+    const idListeners = ["creatures", "fishing", "gathering", "cutscene inside"];
+    const nameListeners = ["vendor buyback", "trade", "cutscene views", "achievements"];
+    const emit = (event: string, payload: any) => {
+      if (event !== PLAYER_DISCONNECT) return;
+      const p = payload?.player;
+      for (const what of idListeners) { ran.push(`${what} ${p.id}`); byId.get(String(p.id))?.delete(what); }
+      for (const what of nameListeners) { ran.push(`${what} ${p.username}`); byName.get(String(p.username))?.delete(what); }
+    };
+    const enter = (p: any) => {
+      for (const what of idListeners) hold(byId, String(p.id), what);
+      for (const what of nameListeners) hold(byName, String(p.username), what);
+    };
+    return { ran, byId, byName, emit, enter, idListeners, nameListeners };
+  };
+
+  test("a kick runs each PLAYER_DISCONNECT listener once for the old session; its close runs none; the new session keeps its state", async () => {
+    const world = systems();
+    const leave = makeLeave({ listener: { emit: world.emit }, Events: { PLAYER_DISCONNECT } });
+    const old = bob({ id: "k1" });
+    live = { k1: old };
+    world.enter(old);
+
+    // kickDuplicateSessions: saved, left, told, dropped.
+    await kick()(old);
+    leave(old);
+    leave(old);
+    delete live.k1;
+    expect(world.ran).toEqual([...world.idListeners.map((w) => `${w} k1`), ...world.nameListeners.map((w) => `${w} bob`)]);
+    expect([...(world.byId.get("k1") ?? [])]).toEqual([]);
+    expect([...(world.byName.get("bob") ?? [])]).toEqual([]);
+
+    // The new login of the same character is added, and plays.
+    const newer = bob({ id: "k2" });
+    live = { k2: newer };
+    world.enter(newer);
+    world.ran.length = 0;
+
+    // The old socket's close, then: nothing runs, and the new session keeps all it holds.
+    await disconnect("saved", world.emit)({ id: "k1", reason: "player_left" });
+    expect(world.ran).toEqual([]);
+    expect([...(world.byId.get("k2") ?? [])].sort()).toEqual([...world.idListeners].sort());
+    expect([...(world.byName.get("bob") ?? [])].sort()).toEqual([...world.nameListeners].sort());
+  });
+
+  test("a kicked session still in the cache (a drop that threw before taking it out) runs no listener at its close", async () => {
+    const world = systems();
+    const leave = makeLeave({ listener: { emit: world.emit }, Events: { PLAYER_DISCONNECT } });
+    const old = bob({ id: "k1" });
+    live = { k1: old };
+    await kick()(old);
+    leave(old);
+    world.ran.length = 0;
+    wrote = [];
+    await disconnect("saved", world.emit)({ id: "k1", reason: "player_left" });
+    expect(world.ran).toEqual([]);
+    expect(wrote).toEqual([]);
+  });
+
+  test("a kicked guest is left too (its listeners run once), though nothing is saved for it", async () => {
+    const world = systems();
+    const leave = makeLeave({ listener: { emit: world.emit }, Events: { PLAYER_DISCONNECT } });
+    const guest = bob({ id: "g1", isGuest: true });
+    await kick()(guest);
+    leave(guest);
+    leave(guest);
+    expect(world.ran).toHaveLength(world.idListeners.length + world.nameListeners.length);
+    expect(wrote).toEqual([]);
   });
 });

@@ -1,15 +1,18 @@
 import query from "../controllers/sqldatabase";
 import assetCache from "../services/assetCache";
 import { rowCache, turns } from "../services/datacache";
+import { characterIdOf, needCharacterId } from "./characterids";
 
 const BAG_SLOTS = ["slot_1", "slot_2", "slot_3", "slot_4"] as const;
 
 /** Inventory slots a player has with no bag equipped. */
 const BASE_INVENTORY_SLOTS = 25;
 
-// Each player's bags row (null: not made yet, see ensure).
+// Each player's bags row (null: not made yet, see ensure). Held under the character's name, kept by its id.
 const rows = rowCache<any>("bags", async (username) => {
-  const found = await query("SELECT * FROM bags WHERE username = ?", [username]) as any[];
+  const characterId = await characterIdOf(String(username));
+  if (characterId === null) return null;
+  const found = await query("SELECT * FROM bags WHERE character_id = ?", [characterId]) as any[];
   return found[0] ?? null;
 }, { perPlayer: true });
 
@@ -43,12 +46,13 @@ const bags = {
     return change(username, async () => {
       let row = await bags.get(username);
       if (!row) {
-        const result: any = await query("INSERT INTO bags (username) VALUES (?)", [username]);
-        // The new row is the name it was given, an empty bag in every slot, and the id the database answered
+        const characterId = await needCharacterId(username);
+        const result: any = await query("INSERT INTO bags (character_id) VALUES (?)", [characterId]);
+        // The new row is the character it was given, an empty bag in every slot, and the id the database answered
         // with. An answer without one leaves the row unknown, so it is read.
         const id = Number(result?.lastInsertRowid);
         if (Number.isInteger(id) && id > 0) {
-          row = { id, username, slot_1: null, slot_2: null, slot_3: null, slot_4: null };
+          row = { id, character_id: characterId, slot_1: null, slot_2: null, slot_3: null, slot_4: null };
           await rows.set(username, row);
         } else {
           await rows.drop(username);
@@ -63,7 +67,7 @@ const bags = {
     await bags.ensure(username);
     if (!BAG_SLOTS.includes(slot as any)) return false;
     await change(username, async () => {
-      await query(`UPDATE bags SET ${slot} = ? WHERE username = ?`, [itemName, username]);
+      await query(`UPDATE bags SET ${slot} = ? WHERE character_id = ?`, [itemName, await needCharacterId(username)]);
       await rows.patch(username, { [slot]: itemName });
     });
     return true;

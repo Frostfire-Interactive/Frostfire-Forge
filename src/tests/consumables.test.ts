@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
-import { databaseModule } from "./setup";
+import { characterDatabaseModule } from "./setup";
 import { GuardError } from "../controllers/sqltransaction";
 
 // Using an item, and going home. The real consumable, home, inventory and bag
@@ -73,7 +73,7 @@ function run(sql: string, params: any[] = []): any {
   throw new Error(`The fake database does not understand: ${text}`);
 }
 
-mock.module("../controllers/sqldatabase", () => databaseModule({
+mock.module("../controllers/sqldatabase", () => characterDatabaseModule({
   default: async (sql: string, params: any[] = []) => run(sql, params),
   // All of its statements or none.
   transaction: async (statements: Array<{ sql: string; values?: any[]; mustChange?: boolean }>) => {
@@ -106,6 +106,8 @@ const inn = (over: Row = {}): any => ({ id: 7, name: "The Rusty Anchor", map: "h
 const assets = new Map<string, any>();
 mock.module("../services/assetCache", () => ({
   default: {
+    // The quest definitions call onChange as they load: a file loaded later is handed this stand-in (mock.module outlives its file).
+    onChange: () => () => {},
     get: async (key: string) => assets.get(key) ?? null,
     set: async (key: string, value: any) => assets.set(key, value),
     add: async (key: string, value: any) => assets.set(key, value),

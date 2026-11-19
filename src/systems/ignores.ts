@@ -1,5 +1,7 @@
 import query from "../controllers/sqldatabase";
 import { rowCache, turns } from "../services/datacache";
+import { characterIdOf, needCharacterId } from "./characterids";
+import { characterByName } from "./characterstore";
 import player from "./player";
 
 /** The most players one player ignores. */
@@ -8,12 +10,15 @@ export const IGNORE_LIMIT = 100;
 /** What became of asking to ignore someone. "staff": the one asking is an admin. "admin": the one named is. */
 export type IgnoreResult = "added" | "already" | "self" | "unknown" | "full" | "staff" | "admin";
 
-// The names each player ignores, in the order they were added. A line of chat
-// asks this of everyone it would go to, and is answered from these rows: a
-// change below is written to the database and then to them.
-const rows = rowCache<string[]>("ignores", async (username) =>
-  ((await query("SELECT ignored FROM ignores WHERE username = ?", [username])) as { ignored: string }[] || []).map((row) => lower(row.ignored))
-, { perPlayer: true });
+// The names each character ignores, in the order they were added. The rows are the character's (ignores.character_id)
+// and name the ignored character by its id as well (ignored_id), so another character of either account is not on
+// them. A line of chat asks this of everyone it would go to, and is answered from these rows: a change below is
+// written to the database and then to them.
+const rows = rowCache<string[]>("ignores", async (username) => {
+  const id = await characterIdOf(username);
+  if (id === null) return [];
+  return ((await query("SELECT ignored FROM ignores WHERE character_id = ? ORDER BY created_at", [id])) as { ignored: string }[] || []).map((row) => lower(row.ignored));
+}, { perPlayer: true });
 
 // One change to a player's list at a time: each works from the list held and
 // puts back what its statement left, so two side by side would each put back
@@ -65,12 +70,11 @@ const ignores = {
     }
     return kept;
   },
-  /** Puts `other` on a player's list, by the name their account has. */
+  /** Puts the character named `other` on a character's list. */
   async add(username: string, other: string, now = Date.now()): Promise<IgnoreResult> {
     const name = lower(username);
-    // Whether there is such an account is the player system's to say, from the accounts it holds.
-    const account = (await player.findByUsername(other)) as { username: string }[] | undefined;
-    const ignored = lower(account?.[0]?.username ?? "");
+    const target = other ? await characterByName(other) : null;
+    const ignored = lower(target?.name ?? "");
     if (!name || !ignored) return "unknown";
     if (ignored === name) return "self";
     // Admins have to reach every player, and to see what every player says.
@@ -80,7 +84,7 @@ const ignores = {
     return change(name, async (held) => {
       if (held.includes(ignored)) return "already";
       if (held.length >= IGNORE_LIMIT) return "full";
-      await query("INSERT INTO ignores (username, ignored, created_at) VALUES (?, ?, ?)", [name, ignored, now]);
+      await query("INSERT INTO ignores (character_id, ignored, ignored_id, created_at) VALUES (?, ?, ?, ?)", [await needCharacterId(name), ignored, target!.id, now]);
       await rows.set(name, [...held, ignored]);
       return "added";
     });
@@ -93,7 +97,7 @@ const ignores = {
 
     return change(name, async (held) => {
       if (!held.includes(ignored)) return false;
-      await query("DELETE FROM ignores WHERE username = ? AND ignored = ?", [name, ignored]);
+      await query("DELETE FROM ignores WHERE character_id = ? AND ignored = ?", [await needCharacterId(name), ignored]);
       await rows.set(name, held.filter((entry) => entry !== ignored));
       return true;
     });

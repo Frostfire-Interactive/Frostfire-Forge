@@ -21,6 +21,7 @@ import playerCache from "../services/playermanager";
 import { packetManager } from "../socket/packet_manager";
 import { bareMap, canUseEditor, findScene, allScenes, resolveForPlay, type CameraKey, type CutsceneDoc, type Trigger, type TriggerKind } from "./cutscenes";
 import { isHeld } from "./cutsceneheld";
+import { characterIdOf, needCharacterId } from "./characterids";
 import { Events, listener, type CutsceneEndedEvent, type CutsceneMarkEvent, type CutsceneStartedEvent } from "./events";
 
 export { isHeld };
@@ -536,7 +537,8 @@ async function seenBy(username: string): Promise<Set<string> | null> {
   if (!pending) {
     pending = (async () => {
       try {
-        const rows = ((await query("SELECT cutscene FROM cutscene_views WHERE username = ?", [user])) || []) as any[];
+        const characterId = await characterIdOf(user);
+        const rows = (characterId === null ? [] : (await query("SELECT cutscene FROM cutscene_views WHERE character_id = ?", [characterId])) || []) as any[];
         const set = new Set<string>(Array.from(rows, (row) => lower(row?.cutscene)));
         // A disconnect while the rows were read leaves nothing behind.
         if (loadingSeen.get(user) === pending) seen.set(user, set);
@@ -558,9 +560,9 @@ function markSeen(username: string, scene: string): void {
   const user = lower(username);
   if (!user) return;
   seen.get(user)?.add(lower(scene));
-  void Promise.resolve(query(
-    `INSERT ${sqlite() ? "OR IGNORE" : "IGNORE"} INTO cutscene_views (username, cutscene, seen_at) VALUES (?, ?, ?)`,
-    [user, scene, Date.now()],
+  void needCharacterId(user).then((characterId) => query(
+    `INSERT ${sqlite() ? "OR IGNORE" : "IGNORE"} INTO cutscene_views (character_id, cutscene, seen_at) VALUES (?, ?, ?)`,
+    [characterId, scene, Date.now()],
   )).catch((error: unknown) => log.warn(`[Cutscenes] ${user} having seen ${scene} could not be written: ${error}`));
 }
 
@@ -572,12 +574,16 @@ function forgetUser(username: unknown): void {
   pendingLogins.delete(user);
 }
 
+/** For tests on a real database (sqlite-belongings.fixture.ts): a character's views, written and read as a once trigger does. */
+export const viewsForTests = { seenBy, markSeen, forgetUser };
+
 /** Clears a character's view of a scene, so its once triggers play for them again. False when there is no such scene. */
 export async function resetViews(sceneName: string, username: string): Promise<boolean> {
   const scene = await findScene(sceneName);
   const user = lower(username);
   if (!scene || !user) return false;
-  await query("DELETE FROM cutscene_views WHERE username = ? AND cutscene = ?", [user, scene.name]);
+  const characterId = await characterIdOf(user);
+  if (characterId !== null) await query("DELETE FROM cutscene_views WHERE character_id = ? AND cutscene = ?", [characterId, scene.name]);
   forgetView(user, scene.name);
   void tellPeers("cutscene-views-reset", { username: user, scene: scene.name });
   return true;

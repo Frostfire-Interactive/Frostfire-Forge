@@ -142,7 +142,7 @@ export class AchievementService {
       // Room is looked at before the batch, as a vendor does.
       const mailed = item !== null && !(await this.deps.hasRoomFor(username, item));
       await atomically([username], async (batch) => {
-        for (const statement of store.completionStatements(username, def.id, progress, at)) batch.add(statement);
+        for (const statement of await store.completionStatements(username, def.id, progress, at)) batch.add(statement);
         if (item && !mailed && !(await inventory.add(username, { name: item, quantity }, batch))) {
           throw new Error(`${item} could not be added to the bags`);
         }

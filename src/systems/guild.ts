@@ -6,10 +6,13 @@ import {
     cleanText, containsSwear, demotedRank, hasPermission, lowestRank, outranks, promotedRank, validRankName,
     type GuildRank, type GuildRefusal, type GuildResult,
 } from "./guildranks";
+import { needCharacterId } from "./characterids";
+import { characterByName } from "./characterstore";
 
 type GuildRow = { id: number; name: string; leader: string; motd: string };
 type RankRow = { guild_id: number; rank_index: number; name: string; permissions: number };
-export type MemberRow = { username: string; guild_id: number; rank_index: number; public_note: string; officer_note: string };
+/** A member: `username` is the member character's name (characters.name), `character_id` its id. */
+export type MemberRow = { username: string; character_id: number; guild_id: number; rank_index: number; public_note: string; officer_note: string };
 
 export type GuildPacket = {
     guild_name: string | null;
@@ -24,20 +27,25 @@ export type GuildPacket = {
 // change below is written to the database and then to them. A write the
 // database does not answer has all three read again (see `writing`).
 //
-// Who is in a guild is who guild_members names. accounts.guild_id says the
-// same after each change here, and is what a login reads.
+// Who is in a guild is who guild_members names: characters, by id, shown by
+// the names they go by (characters.name). characters.guild_id says the same
+// after each change here, and is what a login reads. A guild's leader is
+// guilds.leader_id, with the name in guilds.leader as it was written.
 const guildRows = tableCache<GuildRow>("guilds", async () => {
-    const result = await query("SELECT id, name, leader, motd FROM guilds", []) as any[];
-    return (result || []).map((row: any) => ({ id: Number(row.id), name: row.name, leader: row.leader, motd: row.motd ?? "" }));
+    const result = await query("SELECT g.id, g.name, g.leader, g.motd, c.name AS leader_name FROM guilds g LEFT JOIN characters c ON c.id = g.leader_id", []) as any[];
+    return (result || []).map((row: any) => ({ id: Number(row.id), name: row.name, leader: row.leader_name ?? row.leader, motd: row.motd ?? "" }));
 });
 const rankRows = tableCache<RankRow>("guild_ranks", async () => {
     const result = await query("SELECT guild_id, rank_index, name, permissions FROM guild_ranks", []) as any[];
     return (result || []).map((row: any) => ({ guild_id: Number(row.guild_id), rank_index: Number(row.rank_index), name: row.name, permissions: Number(row.permissions) }));
 });
 const memberRows = tableCache<MemberRow>("guild_members", async () => {
-    const result = await query("SELECT username, guild_id, rank_index, public_note, officer_note FROM guild_members", []) as any[];
+    const result = await query(
+        "SELECT c.name AS member_name, gm.character_id, gm.guild_id, gm.rank_index, gm.public_note, gm.officer_note FROM guild_members gm JOIN characters c ON c.id = gm.character_id WHERE c.deleted_at IS NULL",
+        []
+    ) as any[];
     return (result || []).map((row: any) => ({
-        username: row.username, guild_id: Number(row.guild_id), rank_index: Number(row.rank_index),
+        username: String(row.member_name), character_id: Number(row.character_id), guild_id: Number(row.guild_id), rank_index: Number(row.rank_index),
         public_note: row.public_note ?? "", officer_note: row.officer_note ?? "",
     }));
 });
@@ -110,7 +118,7 @@ async function saving(write: () => Promise<unknown>, cache: () => Promise<unknow
 
 async function setRank(row: MemberRow, rank: number): Promise<GuildResult> {
     return saving(
-        () => query("UPDATE guild_members SET rank_index = ? WHERE username = ?", [rank, row.username]),
+        () => query("UPDATE guild_members SET rank_index = ? WHERE character_id = ?", [rank, row.character_id]),
         () => memberRows.put({ ...row, rank_index: rank }, named(row.username)),
     );
 }
@@ -155,10 +163,10 @@ async function setLeaderIn(guildId: number, username: string): Promise<string[]>
         if (!guild || !target || Number(target.guild_id) !== Number(guildId)) return [];
         const old = await memberRows.find(named(guild.leader));
         const statements = [
-            { sql: "UPDATE guilds SET leader = ? WHERE id = ?", values: [target.username, guildId] },
-            { sql: "UPDATE guild_members SET rank_index = ? WHERE username = ?", values: [0, target.username] },
+            { sql: "UPDATE guilds SET leader = ?, leader_id = ? WHERE id = ?", values: [lower(target.username), target.character_id, guildId] },
+            { sql: "UPDATE guild_members SET rank_index = ? WHERE character_id = ?", values: [0, target.character_id] },
         ];
-        if (old && lower(old.username) !== lower(target.username)) statements.push({ sql: "UPDATE guild_members SET rank_index = ? WHERE username = ?", values: [1, old.username] });
+        if (old && lower(old.username) !== lower(target.username)) statements.push({ sql: "UPDATE guild_members SET rank_index = ? WHERE character_id = ?", values: [1, old.character_id] });
         await writing([], () => transaction(statements));
         await guildRows.put({ ...guild, leader: target.username }, byId(guildId));
         await memberRows.put({ ...target, rank_index: 0 }, named(target.username));
@@ -178,8 +186,8 @@ async function removeIn(seen: MemberRow): Promise<string[]> {
         // The leader may have changed since the caller looked: rank 0 hands over or disbands, it never leaves.
         if (me.rank_index === 0) return [];
         await writing([me.username], () => transaction([
-            { sql: "UPDATE accounts SET guild_id = NULL WHERE username = ?", values: [me.username] },
-            { sql: "DELETE FROM guild_members WHERE username = ?", values: [me.username] },
+            { sql: "UPDATE characters SET guild_id = NULL WHERE id = ?", values: [me.character_id] },
+            { sql: "DELETE FROM guild_members WHERE character_id = ?", values: [me.character_id] },
         ]));
         await memberRows.remove(named(me.username));
         return (await membersOf(me.guild_id)).map((row) => row.username);
@@ -197,7 +205,7 @@ async function deleteIn(guildId: number): Promise<boolean> {
             { sql: "DELETE FROM guild_members WHERE guild_id = ?", values: [guildId] },
             { sql: "DELETE FROM guild_ranks WHERE guild_id = ?", values: [guildId] },
             { sql: "DELETE FROM guilds WHERE id = ?", values: [guildId] },
-            { sql: "UPDATE accounts SET guild_id = NULL WHERE guild_id = ?", values: [guildId] },
+            { sql: "UPDATE characters SET guild_id = NULL WHERE guild_id = ?", values: [guildId] },
         ]));
         await memberRows.remove(inGuild(guildId));
         await rankRows.remove(inGuild(guildId));
@@ -301,11 +309,13 @@ const guilds = {
                 const members = await membersOf(guildId);
                 if (members.length === 0 || members.length >= MAX_MEMBERS) return [];
                 const rank = lowestRank(await ranksOf(guildId));
+                const joining = await characterByName(username);
+                if (!joining) return [];
                 await writing([username], () => transaction([
-                    { sql: "UPDATE accounts SET guild_id = ? WHERE username = ?", values: [guildId, username] },
-                    { sql: "INSERT INTO guild_members (username, guild_id, rank_index, public_note, officer_note) VALUES (?, ?, ?, '', '')", values: [username, guildId, rank] },
+                    { sql: "UPDATE characters SET guild_id = ? WHERE id = ?", values: [guildId, joining.id] },
+                    { sql: "INSERT INTO guild_members (character_id, guild_id, rank_index, public_note, officer_note) VALUES (?, ?, ?, '', '')", values: [joining.id, guildId, rank] },
                 ]));
-                await memberRows.put({ username, guild_id: guildId, rank_index: rank, public_note: "", officer_note: "" }, named(username));
+                await memberRows.put({ username: joining.name, character_id: joining.id, guild_id: guildId, rank_index: rank, public_note: "", officer_note: "" }, named(username));
                 return await this.getGuildMembers(guildId);
             } catch (error) {
                 log.error(`Error adding user to guild: ${error}`);
@@ -363,24 +373,27 @@ const guilds = {
             }
             if (await this.exists(trimmed)) return false;
             if (await this.isInGuild(username)) return false;
+            const founder = await characterByName(username);
+            if (!founder) return false;
+            const founderId = await needCharacterId(username);
 
             const results = await writing([username], () => transaction([
-                { sql: "INSERT INTO guilds (leader, name, motd) VALUES (?, ?, '')", values: [username, trimmed] },
+                { sql: "INSERT INTO guilds (leader, leader_id, name, motd) VALUES (?, ?, ?, '')", values: [username, founderId, trimmed] },
                 ...DEFAULT_RANKS.map((rank) => ({
                     sql: "INSERT INTO guild_ranks (guild_id, rank_index, name, permissions) SELECT id, ?, ?, ? FROM guilds WHERE name = ?",
                     values: [rank.index, rank.name, rank.permissions, trimmed],
                 })),
-                { sql: "INSERT INTO guild_members (username, guild_id, rank_index, public_note, officer_note) SELECT ?, id, 0, '', '' FROM guilds WHERE name = ?", values: [username, trimmed] },
-                { sql: "UPDATE accounts SET guild_id = (SELECT id FROM guilds WHERE name = ?) WHERE username = ?", values: [trimmed, username] },
+                { sql: "INSERT INTO guild_members (character_id, guild_id, rank_index, public_note, officer_note) SELECT ?, id, 0, '', '' FROM guilds WHERE name = ?", values: [founderId, trimmed] },
+                { sql: "UPDATE characters SET guild_id = (SELECT id FROM guilds WHERE name = ?) WHERE id = ?", values: [trimmed, founderId] },
             ]));
             const guildId = Number(results?.[0]?.lastInsertRowid);
             // Without the id the database gave it, the new rows can only be had by reading the tables again.
             if (guildId > 0) {
-                await guildRows.put({ id: guildId, name: trimmed, leader: username, motd: "" }, byId(guildId));
+                await guildRows.put({ id: guildId, name: trimmed, leader: founder.name, motd: "" }, byId(guildId));
                 for (const rank of DEFAULT_RANKS) {
                     await rankRows.put({ guild_id: guildId, rank_index: rank.index, name: rank.name, permissions: rank.permissions }, (row) => row.guild_id === guildId && row.rank_index === rank.index);
                 }
-                await memberRows.put({ username, guild_id: guildId, rank_index: 0, public_note: "", officer_note: "" }, named(username));
+                await memberRows.put({ username: founder.name, character_id: founderId, guild_id: guildId, rank_index: 0, public_note: "", officer_note: "" }, named(username));
             } else {
                 for (const table of [guildRows, rankRows, memberRows]) await table.reload();
             }
@@ -449,7 +462,7 @@ const guilds = {
             const column = officer ? "officer_note" : "public_note";
             if (pair.target[column] === text) return unchanged();
             return saving(
-                () => query(`UPDATE guild_members SET ${column} = ? WHERE username = ?`, [text, pair.target.username]),
+                () => query(`UPDATE guild_members SET ${column} = ? WHERE character_id = ?`, [text, pair.target.character_id]),
                 () => memberRows.put({ ...pair.target, [column]: text }, named(pair.target.username)),
             );
         });

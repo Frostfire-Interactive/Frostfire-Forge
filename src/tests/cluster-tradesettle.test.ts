@@ -3,7 +3,7 @@ import { LinkCalls } from "../cluster/linkcalls";
 import { TradeLink, type TradeHandlers } from "../cluster/tradelink";
 import { DB_QUERY_TIMEOUT_MS, SETTLE_MS, SWAP_START_MS, TradeSettle, tradeSettle } from "../cluster/tradesettle";
 import { linkPair, settle } from "./cluster-fakelink";
-import { databaseModule, standInFor } from "./setup";
+import { characterDatabaseModule, standInFor } from "./setup";
 import { receiverSource } from "./receiver-source";
 
 // The settle fence (cluster/tradesettle.ts): after a trade across a border is lost, the bags and coins of this node's
@@ -59,7 +59,7 @@ function fakeQuery(sql: string, values: any[] = []): any {
 
 // The database layer cannot be loaded for real in a test (it opens its pool at load), so, as the other trade tests
 // do, it is replaced with mock.module and not put back.
-mock.module("../controllers/sqldatabase", () => databaseModule({
+mock.module("../controllers/sqldatabase", () => characterDatabaseModule({
   default: async (sql: string, values?: any[]) => fakeQuery(sql, values),
   transaction: async (list: Array<{ sql: string; values?: any[] }>) => {
     transactions++;
@@ -514,7 +514,7 @@ test("a trade is not accepted while one of its players is settling", async () =>
 test("the window is longer than a swap the host started can take to end", async () => {
   // The client's query timeout is a literal in sqldatabase.ts: read there, so the two cannot drift apart.
   const source = await Bun.file(new URL("../controllers/sqldatabase.ts", import.meta.url)).text();
-  const found = source.match(/reject\(new Error\('Query timeout[^']*'\)\);\s*\},\s*([\d_]+)\);/);
+  const found = source.match(/const CLIENT_QUERY_TIMEOUT_MS = ([\d_]+);/);
   expect(found).not.toBeNull();
   expect(Number(found![1].replace(/_/g, ""))).toBe(DB_QUERY_TIMEOUT_MS);
   expect(SETTLE_MS).toBeGreaterThan(SWAP_START_MS + DB_QUERY_TIMEOUT_MS);

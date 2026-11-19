@@ -35,7 +35,7 @@ function node(name: string, link: any, over: Partial<HandoffDeps> = {}): Node {
     player: (id) => players.get(id) ?? null,
     playerByUsername: (username) => [...players.values()].find((p) => p.username === username) ?? null,
     drain: async () => { log.push("drain"); },
-    snapshot: (p): PlayerSnapshot => ({ id: String(p.id), username: p.username, map: "main", x: p.x, y: 0, direction: "down", creatureIds: [], playerIds: [], state: { hp: p.hp } }),
+    snapshot: (p): PlayerSnapshot => ({ id: String(p.id), username: p.username, characterId: Number(p.characterId ?? p.id), accountId: 1, accountUsername: "acct", map: "main", x: p.x, y: 0, direction: "down", creatureIds: [], playerIds: [], state: { hp: p.hp } }),
     ghostRecord: (p) => ({ id: String(p.id) }),
     ticket: (_p, target) => ticketFor(target),
     node: (target) => ({ nodeId: target, publicHost: "h", port: 1, wtPort: 2, useSSL: true }),
@@ -58,7 +58,7 @@ function pair(overA: Partial<HandoffDeps> = {}, overB: Partial<HandoffDeps> = {}
   return { a, b, la, lb, stop };
 }
 
-const annSnapshot = (): PlayerSnapshot => ({ id: "7", username: "ann", map: "main", x: 1, y: 0, direction: "down", creatureIds: [], playerIds: [], state: {} });
+const annSnapshot = (): PlayerSnapshot => ({ id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", map: "main", x: 1, y: 0, direction: "down", creatureIds: [], playerIds: [], state: {} });
 
 /** Records the casts a node sends, and still sends them. */
 function recordCasts(n: Node): Array<{ name: string; body: any }> {
@@ -80,7 +80,7 @@ async function annFreeOn(a: Node): Promise<boolean> {
 test("a handoff hands the mirrors over, releases the player, keeps a mirror, forwards, then saves and switches", async () => {
   const { a, b, stop } = pair();
   try {
-    const player: any = { id: "7", username: "ann", x: 10, hp: 50 };
+    const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10, hp: 50 };
     a.players.set("7", player);
     expect(await a.handoff.handOff(player, "b")).toBe("switched");
     // Guard: the order. A mirror handed over after the release would be despawned by the next scan in between.
@@ -102,10 +102,10 @@ test("a handoff hands the mirrors over, releases the player, keeps a mirror, for
 test("the commit's snapshot replaces the one sent with the call", async () => {
   const { a, b, stop } = pair();
   try {
-    const player: any = { id: "7", username: "ann", x: 10, hp: 50 };
+    const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10, hp: 50 };
     a.players.set("7", player);
     let calls = 0;
-    a.deps.snapshot = (p) => ({ id: "7", username: "ann", map: "main", x: p.x, y: 0, direction: "down", creatureIds: [], playerIds: [], state: { hp: p.hp, n: ++calls } });
+    a.deps.snapshot = (p) => ({ id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", map: "main", x: p.x, y: 0, direction: "down", creatureIds: [], playerIds: [], state: { hp: p.hp, n: ++calls } });
     await a.handoff.handOff(player, "b");
     await settle();
     expect(b.handoff.takeArrival(player.ticket.token, "ann", "7")?.snapshot.state).toEqual({ hp: 50, n: 2 });
@@ -117,9 +117,9 @@ test("the commit's snapshot replaces the one sent with the call", async () => {
 test("the new node refuses a player who is live there", async () => {
   const { a, b, stop } = pair();
   try {
-    const player: any = { id: "7", username: "ann", x: 10, hp: 50 };
+    const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10, hp: 50 };
     a.players.set("7", player);
-    b.players.set("9", { id: "9", username: "ann" });
+    b.players.set("9", { id: "9", username: "ann", characterId: 9, accountId: 1, accountUsername: "acct" });
     // Guard: the "here" check. Without it the player would be live on both nodes.
     expect(await a.handoff.handOff(player, "b")).toBe("refused");
     expect(a.players.get("7")).toBe(player);
@@ -160,7 +160,7 @@ test("a parked token sent again by another node, or for another player, is refus
 test("the new node refuses a point it does not own", async () => {
   const { a, stop } = pair({}, { ownerAt: () => "c" });
   try {
-    const player: any = { id: "7", username: "ann", x: 10, hp: 50 };
+    const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10, hp: 50 };
     a.players.set("7", player);
     // Guard: the owner check on B.
     expect(await a.handoff.handOff(player, "b")).toBe("refused");
@@ -174,7 +174,7 @@ test("a refused handoff is cast as aborted, and not tried again for a while", as
   const { a, stop } = pair({}, { ownerAt: () => "c" });
   try {
     const casts = recordCasts(a);
-    const player: any = { id: "7", username: "ann", x: 10, hp: 50 };
+    const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10, hp: 50 };
     a.players.set("7", player);
     let token = "";
     a.deps.ticket = (_p, target) => { const t = ticketFor(target); token = t.token; return t; };
@@ -195,7 +195,7 @@ test("a refused handoff is cast as aborted, and not tried again for a while", as
 test("a handoff whose answer is lost removes the arrival parked on the new node", async () => {
   const { a, lb, stop } = pair({ ackMs: 50 });
   try {
-    const player: any = { id: "7", username: "ann", x: 1, hp: 50 };
+    const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 1, hp: 50 };
     a.players.set("7", player);
     // B parks the arrival, but its yes never reaches A: A times out and refuses.
     lb.blackhole = true;
@@ -243,7 +243,7 @@ test("an abort after the commit does not remove the arrival", async () => {
 test("a player who left during the drain is not handed off, and the arrival is aborted", async () => {
   const { a, b, stop } = pair();
   try {
-    const player: any = { id: "7", username: "ann", x: 10, hp: 50 };
+    const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10, hp: 50 };
     a.players.set("7", player);
     a.deps.drain = async () => { a.players.delete("7"); };
     let token = "";
@@ -264,7 +264,7 @@ test("a player who left during the drain is not handed off, and the arrival is a
 test("a warp's handoff drains first: a player who left during that drain gets no ticket", async () => {
   const { a, stop } = pair();
   try {
-    const player: any = { id: "7", username: "ann", x: 10, hp: 50 };
+    const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10, hp: 50 };
     a.players.set("7", player);
     a.deps.drain = async () => { a.players.delete("7"); };
     let tickets = 0;
@@ -280,7 +280,7 @@ test("a warp's handoff drains first: a player who left during that drain gets no
 test("a player who left during the call is not released, and the arrival is aborted", async () => {
   const { a, b, stop } = pair();
   try {
-    const player: any = { id: "7", username: "ann", x: 10, hp: 50 };
+    const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10, hp: 50 };
     a.players.set("7", player);
     let token = "";
     a.deps.ticket = (_p, target) => { const t = ticketFor(target); token = t.token; return t; };
@@ -308,7 +308,7 @@ test("a second handoff of the same player while one runs is refused", async () =
   let release: () => void = () => {};
   const { a, stop } = pair({ drain: () => new Promise<void>((resolve) => { release = resolve; }) });
   try {
-    const player: any = { id: "7", username: "ann", x: 10, hp: 50 };
+    const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10, hp: 50 };
     a.players.set("7", player);
     const first = a.handoff.handOff(player, "b");
     // Guard: `leaving`. Without it two handoffs of one player run at once.
@@ -326,7 +326,7 @@ test("a second handoff of the same player while one runs is refused", async () =
 test("a failure before the release keeps the player here and aborts the arrival", async () => {
   const { a, stop } = pair();
   try {
-    const player: any = { id: "7", username: "ann", x: 10, hp: 50 };
+    const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10, hp: 50 };
     a.players.set("7", player);
     a.deps.ghostRecord = () => { throw new Error("no record"); };
     // Guard: the try around the step before the release.
@@ -344,7 +344,7 @@ test("a failure before the release keeps the player here and aborts the arrival"
 test("a release that throws with the player still here gives the handoff up", async () => {
   const { a, stop } = pair();
   try {
-    const player: any = { id: "7", username: "ann", x: 10, hp: 50 };
+    const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10, hp: 50 };
     a.players.set("7", player);
     a.deps.release = () => { throw new Error("busy"); };
     // Guard: the still-here check on a failed release. Without it the player would be live on both nodes.
@@ -361,7 +361,7 @@ test("a release that throws with the player still here gives the handoff up", as
 test("a release that throws after removing the player still commits", async () => {
   const { a, b, stop } = pair();
   try {
-    const player: any = { id: "7", username: "ann", x: 10, hp: 50 };
+    const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10, hp: 50 };
     a.players.set("7", player);
     a.deps.release = (p) => { a.players.delete(String(p.id)); throw new Error("late"); };
     // Guard: the release failure goes on when the player is gone. Without it the player is on neither node and no SWITCH is sent.
@@ -377,7 +377,7 @@ test("a mirror or forwarding failure after the release does not stop the commit"
   for (const broken of ["ghosts", "forward"] as const) {
     const { a, b, stop } = pair();
     try {
-      const player: any = { id: "7", username: "ann", x: 10, hp: 50 };
+      const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10, hp: 50 };
       a.players.set("7", player);
       if (broken === "ghosts") a.deps.ghosts = { handOver: () => {}, adoptMirror: () => { throw new Error("no mirror"); } };
       else a.deps.forward = () => { throw new Error("no table"); };
@@ -437,7 +437,7 @@ test("an arrival's id is not given while a player with that id is live on the ne
     await a.calls.call("b", "HANDOFF", { snapshot, token: "switch-1", fullLoad: false });
     a.calls.cast("b", "HANDOFF_COMMIT", { username: "ann", token: "switch-1", snapshot });
     await settle();
-    b.players.set("7", { id: "7", username: "zed" });
+    b.players.set("7", { id: "7", username: "zed", characterId: 7, accountId: 1, accountUsername: "acct" });
     // Guard: the live-id check in claimArrivalId. Two connections would share one id.
     expect(b.handoff.claimArrivalId("switch-1")).toBe(null);
     b.players.delete("7");
@@ -452,7 +452,7 @@ test("an arrival with another id, or for a full load, does not resume", async ()
   try {
     const snapshot = annSnapshot();
     for (const [token, id, fullLoad] of [["switch-1", "7", false], ["switch-2", "8", true]] as const) {
-      const s = { ...snapshot, id, username: token };
+      const s = { ...snapshot, id, characterId: Number(id), username: token };
       expect(await a.calls.call("b", "HANDOFF", { snapshot: s, token, fullLoad })).toEqual({ ok: true, answer: { ok: true } });
       a.calls.cast("b", "HANDOFF_COMMIT", { username: token, token, snapshot: s });
     }
@@ -467,7 +467,7 @@ test("an arrival with another id, or for a full load, does not resume", async ()
 test("a full-load handoff sends a SWITCH that does not resume", async () => {
   const { a, stop } = pair();
   try {
-    const player: any = { id: "7", username: "ann", x: 10, hp: 50 };
+    const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10, hp: 50 };
     a.players.set("7", player);
     expect(await a.handoff.handOff(player, "b", { fullLoad: true })).toBe("switched");
     expect(a.log).toContain("switch 7 false");
@@ -484,9 +484,9 @@ test("a handoff refused as too big is logged at warn, once per player, not on ev
   const debug = spyOn(log, "debug").mockImplementation(() => {});
   try {
     const big = "x".repeat(1024 * 1024 + 1);
-    a.deps.snapshot = (p): PlayerSnapshot => ({ id: String(p.id), username: p.username, map: "main", x: p.x, y: 0, direction: "down", creatureIds: [], playerIds: [], state: { big } });
-    const ann: any = { id: "7", username: "ann", x: 10, hp: 50 };
-    const bob: any = { id: "8", username: "bob", x: 10, hp: 50 };
+    a.deps.snapshot = (p): PlayerSnapshot => ({ id: String(p.id), username: p.username, characterId: Number(p.characterId ?? p.id), accountId: 1, accountUsername: "acct", map: "main", x: p.x, y: 0, direction: "down", creatureIds: [], playerIds: [], state: { big } });
+    const ann: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10, hp: 50 };
+    const bob: any = { id: "8", username: "bob", characterId: 8, accountId: 1, accountUsername: "acct", x: 10, hp: 50 };
     a.players.set("7", ann);
     a.players.set("8", bob);
     expect(await a.handoff.handOff(ann, "b")).toBe("refused");
@@ -540,7 +540,7 @@ test("a commit or abort from a node other than the one that parked the arrival i
 test("a handoff to this node itself, or with no ticket, is refused", async () => {
   const { a, stop } = pair();
   try {
-    const player: any = { id: "7", username: "ann", x: 10, hp: 50 };
+    const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10, hp: 50 };
     a.players.set("7", player);
     // Guard: the self check. Refused before anything starts: no drain, no cooldown.
     expect(await a.handoff.handOff(player, "a")).toBe("refused");
@@ -572,7 +572,7 @@ test("a failure before the answer is a refusal with a cooldown, and the player s
     const { a, stop } = pair(over);
     try {
       if (name === "call") (a.deps.calls as any).call = boom;
-      const player: any = { id: "7", username: "ann", x: 10, hp: 50 };
+      const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10, hp: 50 };
       a.players.set("7", player);
       // Guard: the try around steps 1-2. Without it handOff rejects and sets no cooldown.
       expect(await a.handoff.handOff(player, "b")).toBe("refused");
@@ -596,7 +596,7 @@ test("an abort that cannot be sent still ends in a refusal with a cooldown", asy
       if (name === "HANDOFF_ABORT") throw new Error("cannot encode");
       return original(peer, name, body);
     };
-    const player: any = { id: "7", username: "ann", x: 10, hp: 50 };
+    const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10, hp: 50 };
     a.players.set("7", player);
     // Guard: the try around the abort cast.
     expect(await a.handoff.handOff(player, "b")).toBe("refused");
@@ -674,7 +674,7 @@ test("the new node parks at most MAX_ARRIVALS arrivals", () => {
   const { b, stop } = pair();
   try {
     for (let i = 0; i < MAX_ARRIVALS; i++) {
-      const reply = (b.handoff as any).onHandoff({ snapshot: { ...annSnapshot(), id: String(100 + i), username: `u${i}` }, token: `t${i}` }, "a");
+      const reply = (b.handoff as any).onHandoff({ snapshot: { ...annSnapshot(), id: String(100 + i), characterId: 100 + i, username: `u${i}` }, token: `t${i}` }, "a");
       if (!reply.ok) throw new Error(`arrival ${i} refused: ${reply.reason}`);
     }
     // Guard: the cap on parked arrivals.
@@ -689,7 +689,7 @@ test("the id halves of the here and arriving checks refuse on their own", async 
   try {
     const bob = { ...annSnapshot(), username: "bob" };
     // Guard: the id half of "here". Another account with the same live id on B.
-    b.players.set("7", { id: "7", username: "zed" });
+    b.players.set("7", { id: "7", username: "zed", characterId: 7, accountId: 1, accountUsername: "acct" });
     expect(await a.calls.call("b", "HANDOFF", { snapshot: annSnapshot(), token: "switch-1", fullLoad: false })).toEqual({ ok: true, answer: { ok: false, reason: "here" } });
     b.players.delete("7");
     // Guard: the id half of "arriving". Two arrivals would claim the same id.
@@ -748,7 +748,7 @@ test("a commit that cannot be sent still sends the client on, without resume", a
         if (failure === "throws") throw new Error("cannot encode");
         return false;
       };
-      const player: any = { id: "7", username: "ann", x: 10, hp: 50 };
+      const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10, hp: 50 };
       a.players.set("7", player);
       // Guard: the try around the commit (throws), and resume only with a sent commit (not sent).
       expect(await a.handoff.handOff(player, "b")).toBe("switched");
@@ -772,7 +772,7 @@ test("a handoff still running after a stop keeps to its own tables, and idle wai
     turns.push(() => resolve(first ? (original as any)(...args) : { ok: true, answer: { ok: true } }));
   });
   try {
-    const player: any = { id: "7", username: "ann", x: 10, hp: 50 };
+    const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10, hp: 50 };
     a.players.set("7", player);
     const first = a.handoff.handOff(player, "b");
     a.handoff.stop();
@@ -800,13 +800,13 @@ test("a handoff still running after a stop keeps to its own tables, and idle wai
 test("cooldowns and the recently tables are swept", async () => {
   const { a, b, stop } = pair();
   try {
-    const ann: any = { id: "7", username: "ann", x: 10, hp: 50 };
+    const ann: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10, hp: 50 };
     a.players.set("7", ann);
     expect(await a.handoff.handOff(ann, "b")).toBe("switched");
     await settle();
     expect(b.handoff.takeArrival(ann.ticket.token, "ann", "7")).not.toBe(null);
     // A refusal for bob leaves a cooldown.
-    const bob: any = { id: "8", username: "bob", x: 10, hp: 50 };
+    const bob: any = { id: "8", username: "bob", characterId: 8, accountId: 1, accountUsername: "acct", x: 10, hp: 50 };
     a.players.set("8", bob);
     a.deps.ticket = () => null;
     expect(await a.handoff.handOff(bob, "b")).toBe("refused");
@@ -817,7 +817,7 @@ test("cooldowns and the recently tables are swept", async () => {
     a.clock.now += Math.max(RECENT_MS, RETRY_AFTER_MS) + 10_000;
     b.clock.now += RECENT_MS + 10_000;
     // The next handoff on A, and the next HANDOFF on B, sweep.
-    const cid: any = { id: "9", username: "cid", x: 10, hp: 50 };
+    const cid: any = { id: "9", username: "cid", characterId: 9, accountId: 1, accountUsername: "acct", x: 10, hp: 50 };
     a.players.set("9", cid);
     await a.handoff.handOff(cid, "b");
     expect(await a.calls.call("b", "HANDOFF", { snapshot: { ...annSnapshot(), id: "10", username: "dan" }, token: "switch-x", fullLoad: false })).toEqual({ ok: true, answer: { ok: true } });
@@ -883,7 +883,7 @@ test("a drained player kept here gets their movement back; one switched or gone 
     undrained.length = 0;
     const { a, stop } = pair(overA, overB);
     try {
-      const player: any = { id: "7", username: "ann", x: 10, hp: 50 };
+      const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10, hp: 50 };
       a.players.set("7", player);
       expect(`${name}: ${await a.handoff.handOff(player, "b")}`).toBe(`${name}: ${result}`);
       expect(`${name}: ${undrained.length}`).toBe(`${name}: ${calls}`);
@@ -899,7 +899,7 @@ test("a walking handoff tells the client as the player is stopped (begin, right 
   const steps: string[] = [];
   const begin = (p: any) => { steps.push(`begin ${p.id} ${p.handoff}`); };
   const drain = async () => { steps.push("drain"); };
-  const player = (): any => ({ id: "7", username: "ann", x: 10, hp: 50 });
+  const player = (): any => ({ id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10, hp: 50 });
   const cases: Array<[string, Partial<HandoffDeps>, { fullLoad?: boolean }, string, string[]]> = [
     // The old node stops stepping the player at the drain: the client walks them on from there, not from the SWITCH.
     ["walking", {}, {}, "switched", ["begin 7 true", "drain"]],
@@ -943,7 +943,7 @@ test("a begun handoff that keeps the player here tells the client to stay, befor
     steps.length = 0;
     const { a, stop } = pair({ ...hooks(), ...overA }, overB);
     try {
-      const p: any = { id: "7", username: "ann", x: 10, hp: 50 };
+      const p: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10, hp: 50 };
       a.players.set("7", p);
       expect(`${name}: ${await a.handoff.handOff(p, "b")}`).toBe(`${name}: ${result}`);
       expect({ name, steps }).toEqual({ name, steps: expected });
@@ -955,7 +955,7 @@ test("a begun handoff that keeps the player here tells the client to stay, befor
   steps.length = 0;
   const { a, stop } = pair(hooks());
   try {
-    const p: any = { id: "7", username: "ann", x: 10, hp: 50 };
+    const p: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10, hp: 50 };
     a.players.set("7", p);
     a.deps.drain = async () => { steps.push("drain"); a.players.delete("7"); };
     expect(await a.handoff.handOff(p, "b")).toBe("gone");
@@ -970,7 +970,7 @@ test("a begin or stay that throws is logged: the handoff goes on, and the moveme
   try {
     const { a, stop } = pair({ begin: () => { throw new Error("no wt"); } });
     try {
-      const p: any = { id: "7", username: "ann", x: 10, hp: 50 };
+      const p: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10, hp: 50 };
       a.players.set("7", p);
       expect(await a.handoff.handOff(p, "b")).toBe("switched");
       expect(warn.mock.calls.some((c) => String(c[0]).includes("not told the walk is handed on"))).toBe(true);
@@ -981,7 +981,7 @@ test("a begin or stay that throws is logged: the handoff goes on, and the moveme
     let undrained = 0;
     const kept = pair({ recheck: () => "trading", begin: () => {}, stay: () => { throw new Error("no wt"); }, undrain: () => { undrained++; } });
     try {
-      const p: any = { id: "7", username: "ann", x: 10, hp: 50 };
+      const p: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10, hp: 50 };
       kept.a.players.set("7", p);
       expect(await kept.a.handoff.handOff(p, "b")).toBe("refused");
       expect(undrained).toBe(1);
@@ -999,7 +999,7 @@ test("a player who left during the drain, or who was never drained, gets no move
   const undrain = () => { undrained++; };
   const { a, stop } = pair({ undrain });
   try {
-    const player: any = { id: "7", username: "ann", x: 10, hp: 50 };
+    const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10, hp: 50 };
     a.players.set("7", player);
     a.deps.drain = async () => { a.players.delete("7"); };
     expect(await a.handoff.handOff(player, "b")).toBe("gone");
@@ -1016,7 +1016,7 @@ test("a restore that throws is logged and the handoff still ends as refused", as
   const { a, stop } = pair({ undrain: () => { throw new Error("no wt"); }, release: () => { throw new Error("no release"); } });
   const warn = spyOn(log, "warn").mockImplementation(() => {});
   try {
-    const player: any = { id: "7", username: "ann", x: 10, hp: 50 };
+    const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10, hp: 50 };
     a.players.set("7", player);
     expect(await a.handoff.handOff(player, "b")).toBe("refused");
     expect(warn.mock.calls.some((c) => String(c[0]).includes("movement not restored"))).toBe(true);
@@ -1033,7 +1033,7 @@ test("a drain that gives up (HandoffGiveUp) is not logged as an error; another f
       error.mockClear();
       const { a, stop } = pair({ drain: async () => { throw thrown; } });
       try {
-        const player: any = { id: "7", username: "ann", x: 10, hp: 50 };
+        const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10, hp: 50 };
         a.players.set("7", player);
         expect(await a.handoff.handOff(player, "b")).toBe("refused");
         expect(a.handoff.coolingDown("ann")).toBe(true);

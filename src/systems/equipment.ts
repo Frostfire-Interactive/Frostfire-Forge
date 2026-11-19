@@ -1,6 +1,7 @@
 import query from "../controllers/sqldatabase";
 import assetCache from "../services/assetCache";
 import { rowCache, turns } from "../services/datacache";
+import { characterIdOf, needCharacterId } from "./characterids";
 import inventory from "./inventory";
 import log from "../modules/logger";
 
@@ -10,9 +11,11 @@ export const EQUIPMENT_SLOTS = [
     "pants", "boots", "ring_1", "ring_2", "trinket_1", "trinket_2", "weapon", "off_hand_weapon",
 ] as const;
 
-// Each player's equipment row (null: they have none).
+// Each player's equipment row (null: they have none). Held under the character's name, kept by its id.
 const rows = rowCache<any>("equipment", async (username) => {
-    const response = await query("SELECT * FROM equipment WHERE username = ?", [username]) as any[];
+    const characterId = await characterIdOf(String(username));
+    if (characterId === null) return null;
+    const response = await query("SELECT * FROM equipment WHERE character_id = ?", [characterId]) as any[];
     return response[0] ?? null;
 }, { perPlayer: true });
 
@@ -67,7 +70,7 @@ const equipment = {
                     return false;
                 }
 
-                await setSlot(username, slot, itemObj.name, () => query(`UPDATE equipment SET ${slot} = ? WHERE username = ?`, [itemObj.name, username]));
+                await setSlot(username, slot, itemObj.name, () => needCharacterId(username).then((characterId) => query(`UPDATE equipment SET ${slot} = ? WHERE character_id = ?`, [itemObj.name, characterId])));
                 await inventory.setEquipped(username, itemObj.name, true);
                 return true;
             }
@@ -83,7 +86,7 @@ const equipment = {
             return false;
         }
         try {
-            await setSlot(username, slot, null, () => query(`UPDATE equipment SET ${slot} = NULL WHERE username = ?`, [username]));
+            await setSlot(username, slot, null, () => needCharacterId(username).then((characterId) => query(`UPDATE equipment SET ${slot} = NULL WHERE character_id = ?`, [characterId])));
             await inventory.setEquipped(username, item, false);
             return true;
         } catch (error) {

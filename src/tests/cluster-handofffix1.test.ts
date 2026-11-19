@@ -40,7 +40,7 @@ function node(name: string, link: any, over: Partial<HandoffDeps> = {}): Node {
     player: (id) => players.get(id) ?? null,
     playerByUsername: (username) => [...players.values()].find((p) => p.username === username) ?? null,
     drain: async () => { log.push("drain"); },
-    snapshot: (p): PlayerSnapshot => ({ id: String(p.id), username: p.username, map: "main", x: p.x, y: 0, direction: "down", creatureIds: [], playerIds: [], state: {} }),
+    snapshot: (p): PlayerSnapshot => ({ id: String(p.id), username: p.username, characterId: Number(p.characterId ?? p.id), accountId: 1, accountUsername: "acct", map: "main", x: p.x, y: 0, direction: "down", creatureIds: [], playerIds: [], state: {} }),
     ghostRecord: (p) => ({ id: String(p.id) }),
     ticket: (_p, target) => ticketFor(target),
     node: (target) => ({ nodeId: target, publicHost: "h", port: 1, wtPort: 2, useSSL: true }),
@@ -79,14 +79,14 @@ async function infoLines(run: () => Promise<void>): Promise<string[]> {
 
 test("the player keeps walking until the drain: the ticket and the HANDOFF come first, the lock follows the drain, and the snapshot is taken after the last move", async () => {
   const events: string[] = [];
-  const player: any = { id: "7", username: "ann", x: 10 };
+  const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10 };
   let handoffFlag = false;
   Object.defineProperty(player, "handoff", { get: () => handoffFlag, set: (v) => { handoffFlag = v; events.push(`handoff=${v}`); }, configurable: true });
   const { a, b, stop } = pair({
     ticket: (_p, target) => { events.push(`ticket(handoff=${handoffFlag})`); return ticketFor(target); },
     snapshot: (p): PlayerSnapshot => {
       events.push(`snapshot x=${p.x} handoff=${handoffFlag}`);
-      return { id: String(p.id), username: p.username, map: "main", x: p.x, y: 0, direction: "down", creatureIds: [], playerIds: [], state: {} };
+      return { id: String(p.id), username: p.username, characterId: Number(p.characterId ?? p.id), accountId: 1, accountUsername: "acct", map: "main", x: p.x, y: 0, direction: "down", creatureIds: [], playerIds: [], state: {} };
     },
     // The last move lands while the packets in flight finish: the drain is where the walk ends.
     drain: async (p) => { events.push(`drain parked=${(b.handoff as any).arrivals.size}`); p.x = 50; },
@@ -122,7 +122,7 @@ test("the player keeps walking until the drain: the ticket and the HANDOFF come 
 test("the new node is given the position the player had after the last move", async () => {
   const { a, b, stop } = pair({ drain: async (p) => { p.x = 50; } });
   try {
-    const player: any = { id: "7", username: "ann", x: 10 };
+    const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10 };
     a.players.set("7", player);
     expect(await a.handoff.handOff(player, "b")).toBe("switched");
     await settle();
@@ -134,7 +134,7 @@ test("the new node is given the position the player had after the last move", as
 
 test("a refused handoff never stops the player", async () => {
   const sets: unknown[] = [];
-  const player: any = { id: "7", username: "ann", x: 10 };
+  const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10 };
   let flag = false;
   Object.defineProperty(player, "handoff", { get: () => flag, set: (v) => { flag = v; sets.push(v); }, configurable: true });
   let drains = 0;
@@ -161,7 +161,7 @@ test("a refused handoff never stops the player", async () => {
 
 test("a refusal after the drain gives the player their movement back", async () => {
   const sets: unknown[] = [];
-  const player: any = { id: "7", username: "ann", x: 10 };
+  const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10 };
   let flag = false;
   Object.defineProperty(player, "handoff", { get: () => flag, set: (v) => { flag = v; sets.push(v); }, configurable: true });
   let undrains = 0;
@@ -213,7 +213,7 @@ test("a transient refusal is tried again after TRANSIENT_RETRY_MS, a hard one af
     const { a, stop } = pair(overA, overB);
     try {
       setup(a);
-      const player: any = { id: "7", username: "ann", x: 10 };
+      const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10 };
       a.players.set("7", player);
       expect(`${name}: ${await a.handoff.handOff(player, "b")}`).toBe(`${name}: refused`);
       expect(`${name} at ${wait - 1}: ${(a.clock.now += wait - 1, a.handoff.coolingDown("ann"))}`).toBe(`${name} at ${wait - 1}: true`);
@@ -227,10 +227,10 @@ test("a transient refusal is tried again after TRANSIENT_RETRY_MS, a hard one af
 test("a target that still holds an earlier try is a transient refusal", async () => {
   const { a, b, stop } = pair();
   try {
-    const player: any = { id: "7", username: "ann", x: 10 };
+    const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10 };
     a.players.set("7", player);
     // An arrival for ann is parked on B already.
-    (b.handoff as any).arrivals.set("old", { snapshot: { id: "7", username: "ann" }, from: "a", fullLoad: false, expiresAt: Infinity, committed: false, idClaimed: false, marks: [], takenAt: 0 });
+    (b.handoff as any).arrivals.set("old", { snapshot: { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct" }, from: "a", fullLoad: false, expiresAt: Infinity, committed: false, idClaimed: false, marks: [], takenAt: 0 });
     expect(await a.handoff.handOff(player, "b")).toBe("refused");
     a.clock.now += TRANSIENT_RETRY_MS;
     expect(a.handoff.coolingDown("ann")).toBe(false);
@@ -242,7 +242,7 @@ test("a target that still holds an earlier try is a transient refusal", async ()
 test("every refusal is said at info with the player, the target, the reason and the time, once per player and reason in 10 s", async () => {
   const { a, stop } = pair({}, { ownerAt: () => "c" });
   try {
-    const player: any = { id: "7", username: "ann", x: 10 };
+    const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10 };
     a.players.set("7", player);
     const lines = await infoLines(async () => {
       await a.handoff.handOff(player, "b");
@@ -262,7 +262,7 @@ test("every refusal is said at info with the player, the target, the reason and 
 test("a different reason for the same player is said as well", async () => {
   const { a, stop } = pair();
   try {
-    const player: any = { id: "7", username: "ann", x: 10 };
+    const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10 };
     a.players.set("7", player);
     const lines = await infoLines(async () => {
       a.handoff.setLock(async () => null);
@@ -282,7 +282,7 @@ test("a different reason for the same player is said as well", async () => {
 test("a drain that gives up is said with its count of packets, and tried again after the long wait", async () => {
   const { a, stop } = pair({ drain: async () => { throw new HandoffGiveUp("packets still running after 2000 ms (1 in flight)"); } });
   try {
-    const player: any = { id: "7", username: "ann", x: 10 };
+    const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10 };
     a.players.set("7", player);
     const lines = await infoLines(async () => { await a.handoff.handOff(player, "b"); });
     expect(lines.some((line) => line.includes("packets still running after 2000 ms (1 in flight)") && line.includes("tried again in 5000 ms"))).toBe(true);
@@ -296,7 +296,7 @@ const owner = (_map: string, x: number): string | null => (x < 4096 ? "a" : "b")
 const checks = (over: Partial<HandoffChecks> = {}): HandoffChecks => ({
   trading: () => false, dragged: () => false, pending: () => false, coolingDown: () => false, linkUp: () => true, settling: () => false, storeUp: () => true, ...over,
 });
-const at = (x: number) => ({ id: "7", username: "ann", location: { map: "main", position: { x, y: 500 } } });
+const at = (x: number) => ({ id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", location: { map: "main", position: { x, y: 500 } } });
 
 test("a player handed here from a node is not handed straight back, unless well inside it", () => {
   expect(DWELL_MARGIN_PX).toBe(2 * EDGE_MARGIN_PX);
@@ -315,7 +315,7 @@ test("the dwell lasts HANDOFF_DWELL_MS from the arrival and only against the nod
   expect(HANDOFF_DWELL_MS).toBe(3_000);
   const { a, b, stop } = pair();
   try {
-    const player: any = { id: "7", username: "ann", x: 10 };
+    const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10 };
     a.players.set("7", player);
     expect(await a.handoff.handOff(player, "b")).toBe("switched");
     await settle();
@@ -346,7 +346,7 @@ test("a finished handoff says one line on the old node with the time of each ste
     save: async () => { a.clock.now += 20; },
   });
   try {
-    const player: any = { id: "7", username: "ann", x: 10 };
+    const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10 };
     a.players.set("7", player);
     a.handoff.setLock(async () => { a.clock.now += 2; return async () => { a.clock.now += 1; }; });
     const lines = await infoLines(async () => { expect(await a.handoff.handOff(player, "b")).toBe("switched"); });
@@ -362,7 +362,7 @@ test("a finished handoff says one line on the old node with the time of each ste
 test("a refused handoff says no summary line", async () => {
   const { a, stop } = pair({}, { ownerAt: () => "c" });
   try {
-    const player: any = { id: "7", username: "ann", x: 10 };
+    const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10 };
     a.players.set("7", player);
     const lines = await infoLines(async () => { await a.handoff.handOff(player, "b"); });
     expect(lines.filter((line) => line.includes("total="))).toEqual([]);
@@ -374,7 +374,7 @@ test("a refused handoff says no summary line", async () => {
 test("the new node says one line when the player first moves, with the time of each step", async () => {
   const { a, b, stop } = pair();
   try {
-    const player: any = { id: "7", username: "ann", x: 10 };
+    const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10 };
     a.players.set("7", player);
     await a.handoff.handOff(player, "b");
     await settle();
@@ -408,7 +408,7 @@ test("the new node says one line when the player first moves, with the time of e
 test("an arrival who never moves is said once, without the last step, when the table is next swept", async () => {
   const { a, b, stop } = pair();
   try {
-    const player: any = { id: "7", username: "ann", x: 10 };
+    const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10 };
     a.players.set("7", player);
     await a.handoff.handOff(player, "b");
     await settle();
@@ -419,7 +419,7 @@ test("an arrival who never moves is said once, without the last step, when the t
     b.clock.now += 40_000;
     const lines = await infoLines(async () => {
       // Another player's handoff to b sweeps the tables.
-      (b.handoff as any).onHandoff({ snapshot: { id: "9", username: "bob", map: "main", x: 1, y: 0 }, token: "other" }, "a");
+      (b.handoff as any).onHandoff({ snapshot: { id: "9", username: "bob", characterId: 9, accountId: 1, accountUsername: "acct", map: "main", x: 1, y: 0 }, token: "other" }, "a");
       (b.handoff as any).sweep(b.deps);
     });
     expect(lines.filter((line) => line.startsWith("[handoff] ann a->b total="))).toHaveLength(1);
@@ -476,13 +476,13 @@ test("a batch of the player's own that is running when the handoff reaches the d
   const { a, stop } = pair({
     // The drain waits for the player's packets as the node's does. A packet of the player's is running when it begins.
     drain: async (p) => {
-      batch = trackPacket("7", () => locks.withLocks(["ann"], async () => { await new Promise((resolve) => setTimeout(resolve, 20)); return "done"; }));
+      batch = trackPacket("7", () => locks.withLocks(["char:7"], async () => { await new Promise((resolve) => setTimeout(resolve, 20)); return "done"; }));
       if (!(await waitIdle(String(p.id), 2_000))) throw new HandoffGiveUp("packets still running");
     },
   });
   try {
-    a.handoff.setLock((username) => holdPlayerLock(locks, username));
-    const player: any = { id: "7", username: "ann", x: 10 };
+    a.handoff.setLock((characterId) => holdPlayerLock(locks, characterId));
+    const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct", x: 10 };
     a.players.set("7", player);
     // The packet takes the cluster lock for its batch, as services/batch.ts does.
     const started = Date.now();
@@ -502,7 +502,7 @@ test("a node that only receives arrivals does not let its tables grow", async ()
     const lines = await infoLines(async () => {
       for (let i = 0; i < 5; i++) {
         const name = `p${i}`;
-        const snapshot = { id: String(100 + i), username: name, map: "main", x: 1, y: 0, direction: "down", creatureIds: [], playerIds: [], state: {} };
+        const snapshot = { id: String(100 + i), username: name, characterId: 100 + i, accountId: 1, accountUsername: "acct", map: "main", x: 1, y: 0, direction: "down", creatureIds: [], playerIds: [], state: {} };
         const token = `tok-${i}`;
         const answer = await a.calls.call<{ ok: boolean }>("b", "HANDOFF", { snapshot, token, fullLoad: false });
         expect(answer.ok && answer.answer.ok).toBe(true);

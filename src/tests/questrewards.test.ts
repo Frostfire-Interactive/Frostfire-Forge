@@ -48,6 +48,8 @@ mock.module("../controllers/sqldatabase", () => databaseModule({
 
 mock.module("../services/assetCache", () => ({
   default: {
+    // The quest definitions call onChange as they load: a file loaded later is handed this stand-in (mock.module outlives its file).
+    onChange: () => () => {},
     get: async (key: string) => {
       if (key === "items") return [{ name: "Bread" }, { name: "Sword" }, { name: "Shield" }];
       return null;

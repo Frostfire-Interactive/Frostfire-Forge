@@ -3,7 +3,7 @@ import { Ghosts, type GhostKind, type GhostKindName } from "../cluster/ghosts";
 import { GHOST_MOVES_PER_DATAGRAM, decodeGhostMoves, encodeGhostMoves, fromWire, toWire } from "../cluster/linkproto";
 import type { LinkSender } from "../cluster/linktransport";
 import { MirrorStore, RemoteObjects, mirrorPlayers } from "../cluster/mirrors";
-import { databaseModule } from "./setup";
+import { characterDatabaseModule } from "./setup";
 import { FakeLink, linkPair, settle } from "./cluster-fakelink";
 
 // The ghost publisher and receiver, two Ghosts joined by a fake link pair (no
@@ -11,9 +11,9 @@ import { FakeLink, linkPair, settle } from "./cluster-fakelink";
 // the database module: it is stubbed first, and aoievent is imported after the
 // stub (a static import would be hoisted above it).
 // The ignore list of "ignorer" (they ignore "speaker") is the only row it holds.
-mock.module("../controllers/sqldatabase", () => databaseModule({
+mock.module("../controllers/sqldatabase", () => characterDatabaseModule({
   default: async (sql: string, params?: any[]) =>
-    sql === "SELECT ignored FROM ignores WHERE username = ?" && params?.[0] === "ignorer" ? [{ ignored: "speaker" }] : [],
+    sql === "SELECT ignored FROM ignores WHERE username = ? ORDER BY created_at" && params?.[0] === "ignorer" ? [{ ignored: "speaker" }] : [],
 }));
 const { aoiEvent, attachAoiEvents, detachAoiEvents, forwardAoiEvent, forwardFromPlayer } = await import("../cluster/aoievent");
 const { MIRROR_RADIUS_PX } = await import("../cluster/strip");

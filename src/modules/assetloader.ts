@@ -175,7 +175,7 @@ async function syncMapsBeforeLoading(): Promise<void> {
     fs.mkdirSync(mapDir, { recursive: true });
   }
 
-  const localChecksums = calculateAllMapChecksums();
+  const localChecksums = await calculateAllMapChecksums();
 
   try {
     const response = await serverFetch(`${assetServerUrl}/map-checksums`, {
@@ -241,7 +241,7 @@ export async function syncMapFromAssetServer(mapName: string): Promise<boolean> 
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      checksums: calculateAllMapChecksums(),
+      checksums: await calculateAllMapChecksums(),
       serverId: process.env.SERVER_ID || "game-server",
       authKey: process.env.ASSET_SERVER_AUTH_KEY || process.env.GATEWAY_AUTH_KEY,
     }),
@@ -1263,7 +1263,7 @@ async function takeInMaps(sent: unknown): Promise<MapChange[]> {
     const checksum = String(fresh.checksum ?? "");
     // Taken in already, and still listed: this copy and the asset server's do not hash alike. Read once, not at every check.
     if (checksum && takenInMaps.get(file) === checksum) continue;
-    if (checksum && calculateMapChecksum(file) === checksum) continue;
+    if (checksum && (await calculateMapChecksum(file)) === checksum) continue;
     if (!writeMapContent(file, fresh.data)) {
       log.error(`Map ${file} changed on the asset server but could not be written here`);
       continue;
@@ -1349,7 +1349,7 @@ export async function checkMapChanges(url?: string): Promise<MapChange[]> {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        checksums: calculateAllMapChecksums(),
+        checksums: await calculateAllMapChecksums(),
         serverId: process.env.SERVER_ID || "game-server",
         authKey: process.env.ASSET_SERVER_AUTH_KEY || process.env.GATEWAY_AUTH_KEY,
       }),

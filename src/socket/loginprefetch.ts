@@ -1,7 +1,7 @@
 // The rows of a player arriving by handoff, read while their client is still on its way (cells phase 6). The old node
 // casts HANDOFF_SAVED once its save of the player has landed: from then the rows are the ones the login would read, so
-// the auth pool reads them at once. The client's AUTH then only has the token checked (the worker is told the
-// username it expects); a token of another account, or a read that failed, logs in by reading everything, as any
+// the auth pool reads them at once, by the character's id the handoff carries. The client's AUTH then only has the
+// token checked (the worker is told the character it expects); a token of another account, or a read that failed, logs in by reading everything, as any
 // login does. Kept apart from receiver.ts so a test can run it with a fake pool.
 
 import log from "../modules/logger";
@@ -13,15 +13,24 @@ export const PREFETCH_TTL_MS = 10_000;
 /** The most reads kept at once (handoff.ts parks no more arrivals than this). */
 export const MAX_PREFETCHES = 256;
 
-/** A read for the auth pool: the worker loads `prefetch`'s rows, without claiming a session. */
+/** A read for the auth pool: the worker loads character `prefetch` of account `accountId`, without claiming a session. */
 export interface PrefetchJob {
   token: string;
   id: string;
-  prefetch: string;
+  prefetch: number;
+  accountId: number;
+}
+
+/** Who arrives with a ticket: the character's name and id, and its account's id. */
+export interface Arriving {
+  username: string;
+  characterId: number;
+  accountId: number;
 }
 
 interface Entry {
   username: string;
+  characterId: number;
   data: Promise<PlayerData | null>;
   settle: (data: PlayerData | null) => void;
   at: number;
@@ -40,17 +49,21 @@ export class LoginPrefetch {
     return String(result?.id ?? "").startsWith(PREFETCH_PREFIX);
   }
 
-  /** Reads the rows of `username`, who arrives with this ticket. A second read for the same ticket is not started. */
-  start(ticket: string, username: string): void {
+  /** Reads the rows of the character arriving with this ticket. A second read for the same ticket is not started. */
+  start(ticket: string, who: Arriving): void {
+    const username = String(who?.username ?? "");
+    const characterId = Number(who?.characterId);
+    const accountId = Number(who?.accountId);
     if (!ticket || !username || this.entries.has(ticket)) return;
+    if (!Number.isSafeInteger(characterId) || characterId <= 0 || !Number.isSafeInteger(accountId) || accountId <= 0) return;
     this.sweep();
     while (this.entries.size >= MAX_PREFETCHES) this.drop(this.entries.keys().next().value as string);
     let settle!: (data: PlayerData | null) => void;
     const data = new Promise<PlayerData | null>((resolve) => { settle = resolve; });
-    this.entries.set(ticket, { username, data, settle, at: this.now(), taken: false });
+    this.entries.set(ticket, { username, characterId, data, settle, at: this.now(), taken: false });
     const id = PREFETCH_PREFIX + ticket;
     try {
-      this.post({ token: id, id, prefetch: username });
+      this.post({ token: id, id, prefetch: characterId, accountId });
     } catch (error) {
       log.debug(`The rows of ${username} were not read ahead of their login: ${error}`);
       this.drop(ticket);
@@ -62,7 +75,7 @@ export class LoginPrefetch {
     const ticket = String(result?.id ?? "").slice(PREFETCH_PREFIX.length);
     const entry = this.entries.get(ticket);
     if (!entry) return;
-    const data = result?.prefetch === true && !result.error && result.data?.username === entry.username ? result.data as PlayerData : null;
+    const data = result?.prefetch === true && !result.error && Number(result.data?.characterId) === entry.characterId ? result.data as PlayerData : null;
     if (!data) {
       log.debug(`The rows of ${entry.username} were not read ahead of their login: ${result?.error ?? "no rows"}`);
       this.drop(ticket);
@@ -72,10 +85,10 @@ export class LoginPrefetch {
   }
 
   /**
-   * The read for the connection with this ticket, once: the username it is for and its rows. The rows settle with the
+   * The read for the connection with this ticket, once: the character it is for (name and id) and its rows. The rows settle with the
    * pool's answer, as null when the read failed or ran out (PREFETCH_TTL_MS): the login then reads them itself.
    */
-  take(ticket: string): { username: string; data: Promise<PlayerData | null> } | null {
+  take(ticket: string): { username: string; characterId: number; data: Promise<PlayerData | null> } | null {
     const entry = ticket ? this.entries.get(ticket) : undefined;
     if (!entry || entry.taken) return null;
     if (this.now() - entry.at > PREFETCH_TTL_MS) {
@@ -90,7 +103,7 @@ export class LoginPrefetch {
       clearTimeout(expire);
       if (this.entries.get(ticket) === entry) this.entries.delete(ticket);
     });
-    return { username: entry.username, data: entry.data };
+    return { username: entry.username, characterId: entry.characterId, data: entry.data };
   }
 
   /** Reads kept now. */

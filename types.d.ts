@@ -61,7 +61,13 @@ declare interface ScriptData {
 
 declare interface Player {
   id: Nullable<string>;
+  /** The character's name. */
   username: Nullable<string>;
+  /** characters.id of the character played. */
+  characterId?: number;
+  accountId?: number;
+  /** The account's username. */
+  accountUsername?: string;
   position: PositionData;
   location: Nullable<LocationData>;
   map: Nullable<string>;
@@ -579,11 +585,19 @@ declare interface Authentication {
   data: Nullable<PlayerData>;
   /** The token was checked and the rows were read before it (socket/loginprefetch.ts): `data` is null. */
   prefetched?: boolean;
+  /** The account has no active character to play (none chosen, deleted, or another account's): `data` is null. */
+  characterRequired?: boolean;
 }
 
 declare interface PlayerData {
+  /** The account's id. */
   id: string;
+  /** The character's name. */
   username: string;
+  accountId: number;
+  /** The account's username (permissions, whitelist, subscriptions are the account's). */
+  accountUsername: string;
+  characterId: number;
   /** The character's class id (systems/classes.ts); null while the account has made no character. */
   characterClass?: number | null;
   location: {
@@ -749,8 +763,22 @@ declare interface PlayerEditorItem {
 
 /** One player as the server holds them; the player editor is sent a fresh one after every change. */
 declare interface PlayerEditorSnapshot {
+  /** The character's name. */
   username: string;
+  /** Its account's id. */
   userid: number;
+  /**
+   * The account the character is of: its characters, and what is the account's rather than the character's (the ban,
+   * the mute, the role and the permissions). The top-level isAdmin, banned and permissions are the same values.
+   */
+  account: {
+    id: number;
+    characters: Array<{ name: string; classId: number | null; level: number }>;
+    banned: boolean;
+    mutes: Nullable<{ muted_by: string; reason: Nullable<string>; created_at: number; expires_at: Nullable<number> }>;
+    role: number;
+    permissions: string[];
+  };
   online: boolean;
   /** The connection id while online: what the other admin commands take as an id. */
   sessionId: Nullable<string>;

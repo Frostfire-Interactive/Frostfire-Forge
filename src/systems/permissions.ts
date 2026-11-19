@@ -1,6 +1,7 @@
 import query from "../controllers/sqldatabase";
 import log from "../modules/logger";
 import { rowCache, tableCache, turns } from "../services/datacache";
+import { NoSuchCharacter, accountNameOf, siblingNamesOf } from "./characterids";
 
 /** A row of the permissions table: `permissions` is the comma-separated list. */
 type PermissionsRow = { permissions: string };
@@ -9,11 +10,17 @@ type PermissionsRow = { permissions: string };
 const LIST_LENGTH = 255;
 
 // Each player's rows of the permissions table, as it has them: one, or none
-// for a player who holds no permission. Reads are answered from these, and
-// every change below is written to the database and then to them.
-const rows = rowCache<PermissionsRow[]>("permissions", async (username) =>
-    (await query("SELECT permissions FROM permissions WHERE username = ?", [username])) as PermissionsRow[] || []
-, { perPlayer: true });
+// for a player who holds no permission. Permissions are the account's: the
+// table is kept by the account's username, and a character is answered with
+// its account's row. The rows are held by the character's name; reads are
+// answered from these, and every change below is written to the database and
+// then to them (and the account's other characters' rows are let go).
+// A name that is no character's holds no permission.
+const rows = rowCache<PermissionsRow[]>("permissions", async (username) => {
+    const account = await accountNameOf(username);
+    if (!account) return [];
+    return (await query("SELECT permissions FROM permissions WHERE username = ?", [account])) as PermissionsRow[] || [];
+}, { perPlayer: true });
 
 // The permissions there are to give. Nothing writes this table while the
 // server runs: the database setup fills it.
@@ -32,16 +39,22 @@ const oneAtATime = turns();
  * case it may still have been written (one that timed out, say), the rows are
  * forgotten instead and the next read asks the database.
  */
-function write(username: string, sql: string, values: unknown[], left: PermissionsRow[] | null): Promise<void> {
+function write(username: string, sql: string, values: (account: string) => unknown[], left: PermissionsRow[] | null): Promise<void> {
     return oneAtATime(username, async () => {
         try {
-            await query(sql, values);
+            const account = await accountNameOf(username);
+            if (!account) throw new NoSuchCharacter(username);
+            await query(sql, values(account));
         } catch (error) {
             await rows.drop(username);
             throw error;
         }
         if (left) await rows.set(username, left);
         else await rows.drop(username);
+        // The account's other characters hold the same row.
+        for (const other of await siblingNamesOf(username)) {
+            if (other.toLowerCase() !== String(username).toLowerCase()) await rows.drop(other);
+        }
     });
 }
 
@@ -79,7 +92,7 @@ export function outranks(held: readonly string[], target: readonly string[]): bo
 
 const permissions = {
     clear: async (username: string) => {
-        await write(username, "DELETE FROM permissions WHERE username = ?", [username], []);
+        await write(username, "DELETE FROM permissions WHERE username = ?", (account) => [account], []);
         log.info(`Permissions cleared for ${username}`);
     },
     set: async (username: string, permissions: string | string[]) => {
@@ -91,7 +104,7 @@ const permissions = {
         await write(
             username,
             "INSERT INTO permissions (username, permissions) VALUES (?, ?) ON DUPLICATE KEY UPDATE permissions = ?",
-            [username, list, list],
+            (account) => [account, list, list],
             // A list longer than the column is cut short by some databases: what is stored is then read, not assumed.
             list.length <= LIST_LENGTH ? [{ permissions: list }] : null
         );

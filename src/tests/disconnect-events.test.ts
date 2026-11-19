@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "fs";
 import { join } from "path";
+import { withLeaveSaves } from "./setup";
 import { receiverSource } from "./receiver-source";
 
 // Neither socket/server.ts nor socket/receiver.ts can be imported (the first
@@ -216,7 +217,7 @@ describe("an admin dragging a player", () => {
 const disconnectNames = [
   "playerCache", "packetManager", "effectManager", "dots", "getStunsForPlayer", "getSlowsForPlayer", "saveSicknessOnDisconnect",
   "loot", "cleanupPlayerState", "releaseDraggedBy", "listener", "Events", "removeFromAuthenticationQueues", "worlds", "log", "player", "console",
-  "forgetPlayer", "fencedSaves",
+  "forgetPlayer", "fencedSaves", "saveLeavingEffects", "saveLeavingState",
 ];
 const disconnectHandler = withNames(
   disconnectNames,
@@ -224,7 +225,7 @@ const disconnectHandler = withNames(
 );
 
 function onDisconnect(over: Row = {}): (data: Row) => Promise<void> {
-  return disconnectHandler({
+  return disconnectHandler(withLeaveSaves({
     playerCache,
     packetManager: { notify: () => [{}], updateOnlineStatus: () => [{}] },
     effectManager: { saveDots: () => {}, saveBarriers: () => {}, saveStuns: () => {}, saveSlows: () => {} },
@@ -250,7 +251,7 @@ function onDisconnect(over: Row = {}): (data: Row) => Promise<void> {
     forgetPlayer: async (username: string) => { order.push(`forget ${username}`); },
     fencedSaves: () => false,
     ...over,
-  });
+  }));
 }
 
 describe("a connection that ends", () => {

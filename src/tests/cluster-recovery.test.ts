@@ -183,7 +183,7 @@ test("the receiver recovers before the routing and before the player is cached",
   // Guard: the store check and the deps. The cache names maps with ".json"; a bare name would turn recovery off.
   const block = source.slice(recover - 200, recover + 400);
   expect(block).toMatch(/const store = clusterStore\(\);\s+if \(store\) \{\s+await recoverLogin\(playerData, \{/);
-  expect(block).toContain("stamp: (username) => player.saveStamp(username),");
+  expect(block).toContain("stamp: () => player.saveStamp(playerData.accountId),");
   expect(block).toContain("snapshot: (username) => readSnapshot(store, username),");
   expect(block).toContain("knownMap: (map) => mapPropertiesCache.some((m: any) => m.name === `${map}.json`),");
 });
@@ -214,7 +214,7 @@ function node(name: string, link: any): Node {
     playerByUsername: (username) => [...players.values()].find((p) => p.username === username) ?? null,
     drain: async () => { steps.push("drain"); },
     undrain: () => { steps.push("undrain"); },
-    snapshot: (p): PlayerSnapshot => ({ id: String(p.id), username: p.username, map: "main", x: 1, y: 0, direction: "down", creatureIds: [], playerIds: [], state: {} }),
+    snapshot: (p): PlayerSnapshot => ({ id: String(p.id), username: p.username, characterId: Number(p.characterId ?? p.id), accountId: 1, accountUsername: "acct", map: "main", x: 1, y: 0, direction: "down", creatureIds: [], playerIds: [], state: {} }),
     ghostRecord: (p) => ({ id: String(p.id) }),
     ticket: (_p, target) => { steps.push("ticket"); return ticketFor(target); },
     node: (target) => ({ nodeId: target, publicHost: "h", port: 1, wtPort: 2, useSSL: true }),
@@ -237,21 +237,21 @@ function pair() {
 }
 
 /** A lock that always gives itself, and writes when it is taken and let go. */
-const loggingLock = (n: Node): HandoffLock => async (username) => {
-  n.log.push(`lock ${username}`);
-  return async () => { n.log.push(`unlock ${username}`); };
+const loggingLock = (n: Node): HandoffLock => async (characterId) => {
+  n.log.push(`lock ${characterId}`);
+  return async () => { n.log.push(`unlock ${characterId}`); };
 };
 
 test("the handoff looks at the lock before the drain, takes it after the drain and lets it go after the save, before the SWITCH", async () => {
   const { a, stop } = pair();
   try {
     a.handoff.setLock(loggingLock(a));
-    const player: any = { id: "7", username: "ann" };
+    const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct" };
     a.players.set("7", player);
     expect(await a.handoff.handOff(player, "b")).toBe("switched");
     // Guard: the lock step and the letGo after the save. A write on another node would land between the save and the new node's read.
     // The first lock and unlock are the look (handoff fix 2, N1): a busy lock refuses before the player is stopped.
-    expect(a.log).toEqual(["ticket", "lock ann", "unlock ann", "drain", "lock ann", "handOver player 7 b", "release 7", "adoptMirror player 7 b", "forward 7 ann b", "save 7", "unlock ann", "switch 7"]);
+    expect(a.log).toEqual(["ticket", "lock 7", "unlock 7", "drain", "lock 7", "handOver player 7 b", "release 7", "adoptMirror player 7 b", "forward 7 ann b", "save 7", "unlock 7", "switch 7"]);
   } finally {
     stop();
   }
@@ -263,7 +263,7 @@ test("a held lock refuses the handoff before the drain, keeps the player walking
     a.handoff.setLock(async () => null);
     const aborts = spyOn(a.calls, "cast");
     spies.push(aborts);
-    const player: any = { id: "7", username: "ann" };
+    const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct" };
     a.players.set("7", player);
     // Guard: the null check. Without it the handoff runs while another node writes the player's rows.
     expect(await a.handoff.handOff(player, "b")).toBe("refused");
@@ -282,14 +282,14 @@ test("a handoff refused after the lock was taken lets the lock go", async () => 
   const { a, b, stop } = pair();
   try {
     a.handoff.setLock(loggingLock(a));
-    const player: any = { id: "7", username: "ann" };
+    const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct" };
     a.players.set("7", player);
     // A trade begun while the answer was awaited: refused once the lock is held.
     a.deps.recheck = () => "trading";
     void b;
     expect(await a.handoff.handOff(player, "b")).toBe("refused");
     // Guard: the letGo in finally. A refused handoff would keep the lock for its whole ttl.
-    expect(a.log).toEqual(["ticket", "lock ann", "unlock ann", "drain", "lock ann", "unlock ann", "undrain"]);
+    expect(a.log).toEqual(["ticket", "lock 7", "unlock 7", "drain", "lock 7", "unlock 7", "undrain"]);
   } finally {
     stop();
   }
@@ -298,18 +298,18 @@ test("a handoff refused after the lock was taken lets the lock go", async () => 
 test("a player who left while the lock was taken is gone, and the lock is let go", async () => {
   const { a, stop } = pair();
   try {
-    const player: any = { id: "7", username: "ann" };
+    const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct" };
     let taken = 0;
-    a.handoff.setLock(async (username) => {
+    a.handoff.setLock(async (characterId) => {
       // The look finds the player; the lock taken after the drain finds them gone.
       if (++taken === 2) a.players.delete("7");
-      a.log.push(`lock ${username}`);
-      return async () => { a.log.push(`unlock ${username}`); };
+      a.log.push(`lock ${characterId}`);
+      return async () => { a.log.push(`unlock ${characterId}`); };
     });
     a.players.set("7", player);
     // Guard: the player check after the lock. The handoff would ticket a player who disconnected.
     expect(await a.handoff.handOff(player, "b")).toBe("gone");
-    expect(a.log).toEqual(["ticket", "lock ann", "unlock ann", "drain", "lock ann", "unlock ann"]);
+    expect(a.log).toEqual(["ticket", "lock 7", "unlock 7", "drain", "lock 7", "unlock 7"]);
   } finally {
     stop();
   }
@@ -321,15 +321,15 @@ test("a release that rejects after the save is logged, and the SWITCH is still s
   spies.push(errors);
   const { a, stop } = pair();
   try {
-    a.handoff.setLock(async (username) => {
-      a.log.push(`lock ${username}`);
+    a.handoff.setLock(async (characterId) => {
+      a.log.push(`lock ${characterId}`);
       return async () => { throw new Error("store gone"); };
     });
-    const player: any = { id: "7", username: "ann" };
+    const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct" };
     a.players.set("7", player);
     expect(await a.handoff.handOff(player, "b")).toBe("switched");
     // The look and the lock after the drain each fail to let go: two lines, and the handoff goes on.
-    expect(a.log).toEqual(["ticket", "lock ann", "drain", "lock ann", "handOver player 7 b", "release 7", "adoptMirror player 7 b", "forward 7 ann b", "save 7", "switch 7"]);
+    expect(a.log).toEqual(["ticket", "lock 7", "drain", "lock 7", "handOver player 7 b", "release 7", "adoptMirror player 7 b", "forward 7 ann b", "save 7", "switch 7"]);
     expect(errors).toHaveBeenCalledTimes(2);
   } finally {
     stop();
@@ -340,7 +340,7 @@ test("without a lock set, a handoff runs as before", async () => {
   const { a, stop } = pair();
   try {
     expect(a.handoff.setLock(null)).toBeNull();
-    const player: any = { id: "7", username: "ann" };
+    const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct" };
     a.players.set("7", player);
     expect(await a.handoff.handOff(player, "b")).toBe("switched");
     expect(a.log).toEqual(["ticket", "drain", "handOver player 7 b", "release 7", "adoptMirror player 7 b", "forward 7 ann b", "save 7", "switch 7"]);
@@ -360,17 +360,17 @@ test("holdPlayerLock holds the cluster lock until the release, and a second hold
   const store = new MemoryStore();
   const mine = new PlayerLocks(store, "a");
   const theirs = new PlayerLocks(store, "b");
-  const release = await holdPlayerLock(mine, "Ann");
+  const release = await holdPlayerLock(mine, 7);
   expect(release).not.toBeNull();
-  expect(mine.held("ann")).toBe(true);
+  expect(mine.held("char:7")).toBe(true);
   // Guard: waitMs 0. A busy lock answers null at once instead of holding the handoff for 2 s.
   const started = Date.now();
-  expect(await holdPlayerLock(theirs, "ann")).toBeNull();
+  expect(await holdPlayerLock(theirs, 7)).toBeNull();
   expect(Date.now() - started).toBeLessThan(500);
   await release!();
-  expect(mine.held("ann")).toBe(false);
-  expect(await store.get("cells:plock:ann")).toBeNull();
-  const again = await holdPlayerLock(theirs, "ann");
+  expect(mine.held("char:7")).toBe(false);
+  expect(await store.get("cells:plock:char:7")).toBeNull();
+  const again = await holdPlayerLock(theirs, 7);
   expect(again).not.toBeNull();
   await again!();
 });
@@ -378,8 +378,8 @@ test("holdPlayerLock holds the cluster lock until the release, and a second hold
 test("holdPlayerLock answers null on a store failure and logs it, but not on a busy lock", async () => {
   const errors = spyOn(log, "error").mockImplementation(() => {});
   spies.push(errors);
-  expect(await holdPlayerLock({ withLocks: async () => { throw new PlayerLockBusy("ann"); } }, "ann")).toBeNull();
+  expect(await holdPlayerLock({ withLocks: async () => { throw new PlayerLockBusy("ann"); } }, 7)).toBeNull();
   expect(errors).not.toHaveBeenCalled();
-  expect(await holdPlayerLock({ withLocks: async () => { throw new Error("redis down"); } }, "ann")).toBeNull();
+  expect(await holdPlayerLock({ withLocks: async () => { throw new Error("redis down"); } }, 7)).toBeNull();
   expect(errors).toHaveBeenCalledTimes(1);
 });

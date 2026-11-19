@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
-import { databaseModule } from "./setup";
+import { characterDatabaseModule as databaseModule } from "./setup";
 import { receiverSource } from "./receiver-source";
 
 // Generated at server start (`bun create-config`) and gitignored, so CI has

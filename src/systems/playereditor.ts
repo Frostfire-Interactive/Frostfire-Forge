@@ -14,6 +14,7 @@ import { packetManager } from "../socket/packet_manager";
 import { Events, listener } from "./events";
 import player from "./player";
 import permissions, { canGrant, outranks } from "./permissions";
+import mutes from "./mutes";
 import inventory from "./inventory";
 import equipment, { EQUIPMENT_SLOTS } from "./equipment";
 import currency, { CURRENCY_LIMITS } from "./currency";
@@ -265,9 +266,12 @@ async function questsOf(username: string): Promise<{ active: Array<{ quest_id: n
  */
 export async function buildSnapshot(username: string): Promise<PlayerEditorSnapshot | null> {
   const account = await player.getAccount(username);
-  if (!account) return null;
+  // An account with no character has no one to show: its login username is never shown in the character's place.
+  if (!account?.character_name) return null;
 
-  const [base, balance, friendList, held, quests, rows, worn, bagRow, owned, learned, slots, guild, party, items] = await Promise.all([
+  const [characters, mute, base, balance, friendList, held, quests, rows, worn, bagRow, owned, learned, slots, guild, party, items] = await Promise.all([
+    player.accountCharacters(Number(account.id)),
+    mutes.get(username),
     player.getStats(username),
     currency.get(username),
     friends.list(username),
@@ -291,8 +295,19 @@ export async function buildSnapshot(username: string): Promise<PlayerEditorSnaps
   const [x, y] = String(account.position ?? "").split(",");
 
   return {
-    username: account.username,
+    // The character's name: the account's own username is not shown, even to the staff.
+    username: String(account.character_name),
     userid: Number(account.id),
+    account: {
+      id: Number(account.id),
+      characters,
+      banned: Number(account.banned) === 1,
+      mutes: mute
+        ? { muted_by: mute.muted_by, reason: mute.reason, created_at: mute.created_at, expires_at: mute.expires_at }
+        : null,
+      role: Number(account.role) || 0,
+      permissions: held,
+    },
     online: !!live,
     sessionId: live ? String(live.id) : null,
     isAdmin: account.role === 1,

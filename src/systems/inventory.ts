@@ -4,6 +4,7 @@ import { rowCache, turns } from "../services/datacache";
 import type { Batch } from "../services/batch";
 import log from "../modules/logger";
 import { settledThen } from "../cluster/tradesettle";
+import { characterIdOf, needCharacterId } from "./characterids";
 
 async function getItems(): Promise<Item[]> {
   return await assetCache.get("items") as Item[] || [];
@@ -12,7 +13,7 @@ async function getItems(): Promise<Item[]> {
 /** A row of the inventory table. */
 interface InventoryRow {
   id: number;
-  username: string;
+  character_id: number;
   item: string;
   quantity: number;
   equipped: number;
@@ -20,10 +21,15 @@ interface InventoryRow {
   bag_slot: number | null;
 }
 
-// Each player's rows, as the table has them.
-const rows = rowCache<InventoryRow[]>("inventory", async (username) =>
-  (await query("SELECT * FROM inventory WHERE username = ?", [username])) as InventoryRow[] || []
-, { perPlayer: true });
+// Each player's rows, as the table has them: held under the character's name, kept by its id.
+const rows = rowCache<InventoryRow[]>("inventory", async (username) => {
+  const characterId = await characterIdOf(String(username));
+  if (characterId === null) return [];
+  return (await query(
+    "SELECT id, character_id, item, quantity, equipped, slot, bag_slot FROM inventory WHERE character_id = ?",
+    [characterId]
+  )) as InventoryRow[] || [];
+}, { perPlayer: true });
 
 // One change to a player's rows at a time. Each works from the rows held and puts back what its write left, so two
 // running side by side would each put back rows without the other's change; and statements sent side by side reach
@@ -77,7 +83,7 @@ async function hold(username: string, next: InventoryRow[], written: unknown[] =
 /** An UPDATE of one item's rows, then the same `fields` on the rows held. `values` are what its SET is given, in order. */
 function update(username: string, item: string, sql: string, values: unknown[], fields: Partial<InventoryRow>) {
   return change(username, async () => {
-    const result = await query(sql, [...values, item, username]);
+    const result = await query(sql, [...values, item, await needCharacterId(username)]);
     await hold(username, changed((await rows.get(username)) ?? [], item, fields), values);
     return result;
   });
@@ -148,14 +154,15 @@ const inventory = {
 
     if (batch) {
       const state = await pendingIn(batch, name);
+      const characterId = await needCharacterId(name);
       const stack = state.held.filter((row) => sameName(row.item, resolvedName));
       if (stack.length === 0) {
         const quantity = Number(item.quantity);
-        state.held = [...state.held, { id: 0, username: name, item: resolvedName, quantity, equipped: 0, slot: null, bag_slot: null }];
+        state.held = [...state.held, { id: 0, character_id: characterId, item: resolvedName, quantity, equipped: 0, slot: null, bag_slot: null }];
         state.written.push(quantity);
         batch.add({
-          sql: "INSERT IGNORE INTO inventory (username, item, quantity) VALUES (?, ?, ?)",
-          values: [name, resolvedName, quantity],
+          sql: "INSERT IGNORE INTO inventory (character_id, item, quantity) VALUES (?, ?, ?)",
+          values: [characterId, resolvedName, quantity],
           mustChange: true,
         }, (result) => {
           const id = insertedId(result);
@@ -167,8 +174,8 @@ const inventory = {
         state.held = changed(state.held, resolvedName, { quantity });
         state.written.push(quantity);
         batch.add({
-          sql: "UPDATE inventory SET quantity = ? WHERE item = ? AND username = ?",
-          values: [quantity.toString(), resolvedName, name],
+          sql: "UPDATE inventory SET quantity = ? WHERE item = ? AND character_id = ?",
+          values: [quantity.toString(), resolvedName, characterId],
           mustChange: true,
         });
       }
@@ -179,30 +186,31 @@ const inventory = {
 
     // The count written is worked out from the rows held: read once the player is settled (cluster/tradesettle.ts).
     const result = await change(name, () => settledThen(name, async () => {
+      const characterId = await needCharacterId(name);
       const held = (await rows.get(name)) ?? [];
       const response = held.filter((row) => sameName(row.item, resolvedName));
 
       if (response.length === 0) {
         const quantity = Number(item.quantity);
         const result = await query(
-          "INSERT IGNORE INTO inventory (username, item, quantity) VALUES (?, ?, ?)",
-          [name, resolvedName, quantity]
+          "INSERT IGNORE INTO inventory (character_id, item, quantity) VALUES (?, ?, ?)",
+          [characterId, resolvedName, quantity]
         );
         // The new row is what was written, the table's defaults for the rest, and the id the database answered
         // with. An answer without one leaves the row unknown, so the rows are read again.
         const id = insertedId(result);
         if (id === null) await rows.drop(name);
-        else await hold(name, [...held, { id, username: name, item: resolvedName, quantity, equipped: 0, slot: null, bag_slot: null }], [quantity]);
+        else await hold(name, [...held, { id, character_id: characterId, item: resolvedName, quantity, equipped: 0, slot: null, bag_slot: null }], [quantity]);
         return result;
       }
 
       const quantity = Number(response[0].quantity) + Number(item.quantity);
       const result = await query(
-        "UPDATE inventory SET quantity = ? WHERE item = ? AND username = ?",
+        "UPDATE inventory SET quantity = ? WHERE item = ? AND character_id = ?",
         [
           quantity.toString(),
           resolvedName,
-          name,
+          characterId,
         ]
       );
       await hold(name, changed(held, resolvedName, { quantity }), [quantity]);
@@ -216,12 +224,12 @@ const inventory = {
     if (!name || !item || typeof equipped !== "boolean") return;
     if (equipped) {
       return await update(name, item,
-        "UPDATE inventory SET equipped = 1 WHERE item = ? AND username = ?",
+        "UPDATE inventory SET equipped = 1 WHERE item = ? AND character_id = ?",
         [], { equipped: 1 }
       );
     } else {
       return await update(name, item,
-        "UPDATE inventory SET equipped = 0, slot = ?, bag_slot = ? WHERE item = ? AND username = ?",
+        "UPDATE inventory SET equipped = 0, slot = ?, bag_slot = ? WHERE item = ? AND character_id = ?",
         [targetSlot ?? null, targetBagSlot ?? null], { equipped: 0, slot: targetSlot ?? null, bag_slot: targetBagSlot ?? null }
       );
     }
@@ -229,7 +237,7 @@ const inventory = {
   async setUnequippedSlot(name: string, item: string, slot: number | null, bagSlot: number | null) {
     if (!name || !item) return;
     return await update(name, item,
-      "UPDATE inventory SET equipped = 0, slot = ?, bag_slot = ? WHERE item = ? AND username = ?",
+      "UPDATE inventory SET equipped = 0, slot = ?, bag_slot = ? WHERE item = ? AND character_id = ?",
       [slot, bagSlot ?? null], { equipped: 0, slot: slot ?? null, bag_slot: bagSlot ?? null }
     );
   },
@@ -237,20 +245,21 @@ const inventory = {
   async clearSlot(name: string, item: string) {
     if (!name || !item) return;
     return await update(name, item,
-      "UPDATE inventory SET slot = NULL, bag_slot = NULL WHERE item = ? AND username = ?",
+      "UPDATE inventory SET slot = NULL, bag_slot = NULL WHERE item = ? AND character_id = ?",
       [], { slot: null, bag_slot: null }
     );
   },
   async saveSlots(username: string, slots: Array<{ item: string; slot: number; bag_slot: number }>) {
     if (!username) return;
     await change(username, async () => {
+      const characterId = await needCharacterId(username);
       let held = (await rows.get(username)) ?? [];
       const written: unknown[] = [];
       // Together: a save that stops part way would leave some items moved and the rest where they
       // were, two of them in one slot.
       await transaction(slots.map((s) => ({
-        sql: "UPDATE inventory SET slot = ?, bag_slot = ? WHERE item = ? AND username = ?",
-        values: [s.slot, s.bag_slot ?? null, s.item, username],
+        sql: "UPDATE inventory SET slot = ?, bag_slot = ? WHERE item = ? AND character_id = ?",
+        values: [s.slot, s.bag_slot ?? null, s.item, characterId],
       })));
       for (const s of slots) {
         held = changed(held, s.item, { slot: s.slot ?? null, bag_slot: s.bag_slot ?? null });
@@ -272,16 +281,17 @@ const inventory = {
       const state = await pendingIn(batch, name);
       const stack = state.held.filter((row) => sameName(row.item, resolvedName));
       if (stack.length === 0) return;
+      const characterId = await needCharacterId(name);
       if (Number(item.quantity) >= Number(stack[0].quantity)) {
         state.held = without(state.held, resolvedName);
-        batch.add({ sql: "DELETE FROM inventory WHERE item = ? AND username = ?", values: [resolvedName, name], mustChange: true });
+        batch.add({ sql: "DELETE FROM inventory WHERE item = ? AND character_id = ?", values: [resolvedName, characterId], mustChange: true });
       } else {
         const quantity = Number(stack[0].quantity) - Number(item.quantity);
         state.held = changed(state.held, resolvedName, { quantity });
         state.written.push(quantity);
         batch.add({
-          sql: "UPDATE inventory SET quantity = ? WHERE item = ? AND username = ?",
-          values: [quantity.toString(), resolvedName, name],
+          sql: "UPDATE inventory SET quantity = ? WHERE item = ? AND character_id = ?",
+          values: [quantity.toString(), resolvedName, characterId],
           mustChange: true,
         });
       }
@@ -295,11 +305,12 @@ const inventory = {
       const held = (await rows.get(name)) ?? [];
       const response = held.filter((row) => sameName(row.item, resolvedName));
       if (response.length === 0) return null;
+      const characterId = await needCharacterId(name);
 
       if (Number(item.quantity) >= Number(response[0].quantity)) {
         const result = await query(
-          "DELETE FROM inventory WHERE item = ? AND username = ?",
-          [resolvedName, name]
+          "DELETE FROM inventory WHERE item = ? AND character_id = ?",
+          [resolvedName, characterId]
         );
         await rows.set(name, without(held, resolvedName));
         return { result };
@@ -307,11 +318,11 @@ const inventory = {
 
       const quantity = Number(response[0].quantity) - Number(item.quantity);
       const result = await query(
-        "UPDATE inventory SET quantity = ? WHERE item = ? AND username = ?",
+        "UPDATE inventory SET quantity = ? WHERE item = ? AND character_id = ?",
         [
           quantity.toString(),
           resolvedName,
-          name,
+          characterId,
         ]
       );
       await hold(name, changed(held, resolvedName, { quantity }), [quantity]);
@@ -326,8 +337,8 @@ const inventory = {
     if (!name || !item.name) return;
     return await change(name, () => settledThen(name, async () => {
       const result = await query(
-        "DELETE FROM inventory WHERE item = ? AND username = ?",
-        [item.name, name]
+        "DELETE FROM inventory WHERE item = ? AND character_id = ?",
+        [item.name, await needCharacterId(name)]
       );
       await rows.set(name, without((await rows.get(name)) ?? [], item.name));
       return result;

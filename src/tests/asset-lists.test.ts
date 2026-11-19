@@ -142,6 +142,8 @@ mock.module("../controllers/sqldatabase", () => databaseModule({ default: databa
 const cache = new Map<string, any>();
 mock.module("../services/assetCache", () => ({
   default: {
+    // The quest definitions call onChange as they load: a file loaded later is handed this stand-in (mock.module outlives its file).
+    onChange: () => () => {},
     get: async (key: string) => cache.get(key),
     set: async (key: string, value: any) => { cache.set(key, value); },
     add: async (key: string, value: any) => { cache.set(key, value); },

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
-import { databaseModule } from "./setup";
+import { characterDatabaseModule } from "./setup";
 
 // The achievements wired to the engine (systems/achievements/index.ts): packets, listeners, saving, the list.
 
@@ -28,7 +28,7 @@ function run(sql: string, values: any[] = []): any {
   throw new Error(`The fake database does not understand: ${text}`);
 }
 
-mock.module("../controllers/sqldatabase", () => databaseModule({
+mock.module("../controllers/sqldatabase", () => characterDatabaseModule({
   default: async (sql: string, values: any[] = []) => run(sql, values),
 }));
 

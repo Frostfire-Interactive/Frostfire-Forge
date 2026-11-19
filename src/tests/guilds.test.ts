@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
-import { databaseModule } from "./setup";
+import { characterDatabaseModule as databaseModule, testCharacterId } from "./setup";
 
 // ------------------------------------------------------------ fake database
 // The statements the guild system sends, run against in-memory tables. A
@@ -25,6 +25,8 @@ const LOAD_GUILDS = "SELECT id, name, leader, motd FROM guilds";
 const LOAD_RANKS = "SELECT guild_id, rank_index, name, permissions FROM guild_ranks";
 const LOAD_MEMBERS = "SELECT username, guild_id, rank_index, public_note, officer_note FROM guild_members";
 const LOADS = [LOAD_GUILDS, LOAD_RANKS, LOAD_MEMBERS];
+/** The read of a character by name, made when one joins or founds a guild. */
+const CHARACTER = "SELECT id, username FROM accounts WHERE username = ?";
 
 const lower = (value: any) => String(value ?? "").toLowerCase();
 const accountOf = (username: string) => accountsTable.find((row) => row.username === lower(username));
@@ -44,9 +46,14 @@ function run(sql: string, params: any[]): any {
     case LOAD_GUILDS: return guildsTable.map((row) => ({ ...row }));
     case LOAD_RANKS: return ranksTable.map((row) => ({ ...row }));
     case LOAD_MEMBERS: return membersTable.map((row) => ({ ...row }));
-    case "INSERT INTO guilds (leader, name, motd) VALUES (?, ?, '')": {
+    // A character by name: each account here is a character of that name.
+    case CHARACTER: {
+      const row = accountOf(params[0]);
+      return row ? [{ id: accountsTable.indexOf(row) + 1, username: row.username }] : [];
+    }
+    case "INSERT INTO guilds (leader, leader_id, name, motd) VALUES (?, ?, ?, '')": {
       const id = nextGuildId++;
-      guildsTable.push({ id, name: params[1], leader: params[0], motd: "" });
+      guildsTable.push({ id, name: params[2], leader: params[0], motd: "" });
       return reportsInsertId ? { lastInsertRowid: id, affectedRows: 1 } : { affectedRows: 1 };
     }
     case "INSERT INTO guild_ranks (guild_id, rank_index, name, permissions) SELECT id, ?, ?, ? FROM guilds WHERE name = ?": {
@@ -99,8 +106,8 @@ function run(sql: string, params: any[]): any {
     case "DELETE FROM guilds WHERE id = ?":
       guildsTable = guildsTable.filter((row) => row.id !== params[0]);
       return { affectedRows: 1 };
-    case "UPDATE guilds SET leader = ? WHERE id = ?":
-      for (const row of guildsTable) if (row.id === params[1]) row.leader = params[0];
+    case "UPDATE guilds SET leader = ?, leader_id = ? WHERE id = ?":
+      for (const row of guildsTable) if (row.id === params[2]) row.leader = params[0];
       return { affectedRows: 1 };
     case "UPDATE guilds SET motd = ? WHERE id = ?":
       for (const row of guildsTable) if (row.id === params[1]) row.motd = params[0];
@@ -135,8 +142,9 @@ const reads = () => queries.map(([sql]) => sql).filter((sql) => sql.startsWith("
 const writes = () => queries.filter(([sql]) => !sql.startsWith("SELECT"));
 /** Every read was the load of a whole table, and no table was loaded twice. */
 const eachTableReadOnce = () => {
-  expect(reads().every((sql) => LOADS.includes(sql))).toBe(true);
-  expect(new Set(reads()).size).toBe(reads().length);
+  const loads = reads().filter((sql) => sql !== CHARACTER);
+  expect(loads.every((sql) => LOADS.includes(sql))).toBe(true);
+  expect(new Set(loads).size).toBe(loads.length);
 };
 /** The accounts another system caches, that it was told to read again. */
 const accountsDropped = () => dropRows.mock.calls.filter(([name]: any[]) => name === "accounts").map(([, key]: any[]) => key);
@@ -276,7 +284,7 @@ describe("ranks, members and the message of the day are answered from the tables
 
   test("getMember answers the member row, in any case", async () => {
     membersTable[1].public_note = "healer";
-    expect(await guilds.getMember("USER2")).toEqual({ username: "user2", guild_id: 1, rank_index: 4, public_note: "healer", officer_note: "" });
+    expect(await guilds.getMember("USER2")).toEqual({ username: "user2", character_id: testCharacterId("user2"), guild_id: 1, rank_index: 4, public_note: "healer", officer_note: "" });
     expect(await guilds.getMember("user4")).toBeNull();
     expect(await guilds.getMember("")).toBeNull();
   });
@@ -311,7 +319,7 @@ describe("a guild change is written to the database, then to the table held", ()
   test("setLeader puts the new leader first", async () => {
     expect(await guilds.setLeader(1, "user2")).toEqual(["user2", "user1"]);
     expect(writes()).toEqual([
-      ["UPDATE guilds SET leader = ? WHERE id = ?", ["user2", 1]],
+      ["UPDATE guilds SET leader = ?, leader_id = ? WHERE id = ?", ["user2", testCharacterId("user2"), 1]],
       ["UPDATE guild_members SET rank_index = ? WHERE username = ?", [0, "user2"]],
       ["UPDATE guild_members SET rank_index = ? WHERE username = ?", [1, "user1"]],
     ]);
@@ -443,7 +451,7 @@ describe("a guild change is written to the database, then to the table held", ()
   test("create makes the guild with its founder as leader and only member", async () => {
     expect(await guilds.create("user4", "  New Guild  ")).toEqual(["user4"]);
     expect(writes()).toEqual([
-      ["INSERT INTO guilds (leader, name, motd) VALUES (?, ?, '')", ["user4", "New Guild"]],
+      ["INSERT INTO guilds (leader, leader_id, name, motd) VALUES (?, ?, ?, '')", ["user4", testCharacterId("user4"), "New Guild"]],
       ...DEFAULT_RANKS.map((rank): [string, any[]] => [
         "INSERT INTO guild_ranks (guild_id, rank_index, name, permissions) SELECT id, ?, ?, ? FROM guilds WHERE name = ?",
         [rank.index, rank.name, rank.permissions, "New Guild"],
@@ -553,7 +561,7 @@ test("a write that was made but never answered is what the next read answers", a
 test("when the table cannot be read again either, the write still answers that it failed", async () => {
   await guilds.list();
   await guilds.getRanks(1);
-  failing = /^INSERT INTO guild_members|^SELECT/;
+  failing = /^INSERT INTO guild_members|^SELECT (?!id, username FROM accounts)/;
   expect(await guilds.add("user4", 1)).toEqual([]);
   failing = null;
   expect(writes().map(([sql]) => sql)).toContain("INSERT INTO guild_members (username, guild_id, rank_index, public_note, officer_note) VALUES (?, ?, ?, '', '')");
@@ -659,7 +667,7 @@ test("guilds.disband prevents non-leaders", async () => {
 });
 
 test("guilds.create makes new guild", async () => {
-  const result = await guilds.create("newuser1", "New Guild");
+  const result = await guilds.create("user4", "New Guild");
   expect(Array.isArray(result)).toBe(true);
 });
 
@@ -679,7 +687,7 @@ test("guilds.create validates letters only", async () => {
 });
 
 test("guilds.create allows letters and spaces", async () => {
-  const result = await guilds.create("newuser2", "Valid Guild");
+  const result = await guilds.create("user5", "Valid Guild");
   expect(Array.isArray(result)).toBe(true);
 });
 

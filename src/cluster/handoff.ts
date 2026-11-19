@@ -60,7 +60,13 @@ export class HandoffGiveUp extends Error {
 
 export interface PlayerSnapshot {
   id: string;
+  /** The character's name: what other players see. */
   username: string;
+  /** The character the player plays: node B logs in this one, never the account's active character read again. */
+  characterId: number;
+  accountId: number;
+  /** The account's name: between nodes only, never sent to a client. */
+  accountUsername: string;
   /** Bare, no ".json". */
   map: string;
   x: number;
@@ -82,17 +88,36 @@ export type HandoffResult = "switched" | "refused" | "gone" | "busy";
  * Takes the player's cluster lock (playerlock.ts) for a handoff: answers its release, or null when another writer
  * holds it or the store failed. Never rejects.
  */
-export type HandoffLock = (username: string) => Promise<(() => Promise<void>) | null>;
+export type HandoffLock = (characterId: number) => Promise<(() => Promise<void>) | null>;
+
+/** The cluster lock key of character `characterId` (playerlock.ts): one writer per character, never per account. */
+export function characterLockKey(characterId: number): string {
+  return `char:${characterId}`;
+}
+
+const isId = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+
+/** Who the player is, as a snapshot carries it: the character's name and id, and the account's id and name. */
+export function snapshotIdentity(p: any): Pick<PlayerSnapshot, "id" | "username" | "characterId" | "accountId" | "accountUsername"> {
+  return {
+    id: String(p?.id ?? ""),
+    username: String(p?.username ?? ""),
+    characterId: Number(p?.characterId),
+    accountId: Number(p?.accountId),
+    accountUsername: String(p?.accountUsername ?? ""),
+  };
+}
 
 /**
  * The HandoffLock over a PlayerLocks: withLocks with waitMs 0, held open until the release is called. A busy lock is
  * the normal answer while a trade or a mail on another node writes the player; any other failure is logged.
  */
-export function holdPlayerLock(locks: Pick<PlayerLocks, "withLocks">, username: string): Promise<(() => Promise<void>) | null> {
+export function holdPlayerLock(locks: Pick<PlayerLocks, "withLocks">, characterId: number): Promise<(() => Promise<void>) | null> {
+  const key = characterLockKey(characterId);
   return new Promise((answer) => {
     let letGo!: () => void;
     const released = new Promise<void>((resolve) => { letGo = resolve; });
-    const held: Promise<void> = locks.withLocks([username], async () => {
+    const held: Promise<void> = locks.withLocks([key], async () => {
       answer(async () => {
         letGo();
         await held.catch(() => undefined);
@@ -100,7 +125,7 @@ export function holdPlayerLock(locks: Pick<PlayerLocks, "withLocks">, username: 
       await released;
     }, { waitMs: 0 });
     held.catch((error) => {
-      if (!(error instanceof PlayerLockBusy)) log.error(`The player lock of ${username} could not be taken for a handoff, so it waits: ${error}`);
+      if (!(error instanceof PlayerLockBusy)) log.error(`The player lock of character ${characterId} could not be taken for a handoff, so it waits: ${error}`);
       answer(null);
     });
   });
@@ -162,7 +187,7 @@ export interface HandoffDeps {
    * The old node's save of the player arriving with this ticket has landed (HANDOFF_SAVED): their rows may be read
    * for the login now, before the client gets here (socket/loginprefetch.ts).
    */
-  saved?(token: string, username: string): void;
+  saved?(token: string, who: { username: string; characterId: number; accountId: number }): void;
   /** How long A waits for the HANDOFF answer: HANDOFF_ACK_MS unless a test sets it. */
   ackMs?: number;
 }
@@ -239,6 +264,7 @@ function jsonSize(value: unknown): number {
 function validSnapshot(raw: any): PlayerSnapshot | null {
   if (!raw || typeof raw !== "object") return null;
   if (!isPlayerId(raw.id) || !isText(raw.username, MAX_TEXT)) return null;
+  if (!isId(raw.characterId) || !isId(raw.accountId) || !isText(raw.accountUsername, MAX_TEXT)) return null;
   if (!isText(raw.map, MAX_TEXT) || !Number.isFinite(raw.x) || !Number.isFinite(raw.y)) return null;
   if (raw.direction !== undefined && !isText(raw.direction, MAX_TEXT)) return null;
   for (const list of [raw.creatureIds, raw.playerIds]) {
@@ -249,6 +275,9 @@ function validSnapshot(raw: any): PlayerSnapshot | null {
   return {
     id: raw.id,
     username: raw.username,
+    characterId: raw.characterId,
+    accountId: raw.accountId,
+    accountUsername: raw.accountUsername,
     map: raw.map,
     x: raw.x,
     y: raw.y,
@@ -379,7 +408,10 @@ export class PlayerHandoff {
     const lock = this.lock;
     const username = String(player?.username ?? "");
     const id = String(player?.id ?? "");
+    const characterId = Number(player?.characterId);
     if (!deps || !username || !id || target === deps.self) return "refused";
+    // The lock is the character's: a player with no character id is never handed off while locks are kept.
+    if (lock && !isId(characterId)) return "refused";
     if (session.leaving.has(username)) return "busy";
     this.sweep(deps);
     // The pending flag: the watch starts no second handoff of this player. The player is not frozen by it.
@@ -425,7 +457,7 @@ export class PlayerHandoff {
     // (tried again soon) instead of saving here while it lands. Answers how the handoff ends, or null to go on.
     const takeLock = async (): Promise<HandoffResult | null> => {
       if (lock) {
-        unlock = await lock(username);
+        unlock = await lock(characterId);
         if (!unlock) return this.refused(deps, session, username, target, token, "locked", t0, true);
         if (deps.player(id) !== player) {
           if (token) deps.calls.cast(target, "HANDOFF_ABORT", { username, token });
@@ -439,7 +471,7 @@ export class PlayerHandoff {
     // The lock is taken and let go at once; the real one is taken after the drain.
     const peekLock = async (): Promise<HandoffResult | null> => {
       if (!lock) return null;
-      const free = await lock(username);
+      const free = await lock(characterId);
       if (!free) return this.refused(deps, session, username, target, token, "locked", t0, true);
       try {
         await free();
@@ -612,9 +644,10 @@ export class PlayerHandoff {
   }
 
   /** The arrival a connection with this ticket brings, once. resume: the client keeps its world. */
-  takeArrival(token: string, username: string, id: string): { snapshot: PlayerSnapshot; resume: boolean; committedAt: number } | null {
+  takeArrival(token: string, username: string, id: string, characterId?: number): { snapshot: PlayerSnapshot; resume: boolean; committedAt: number } | null {
     const arrival = this.liveArrival(token);
     if (!arrival || !arrival.committed || arrival.snapshot.username !== username) return null;
+    if (characterId !== undefined && arrival.snapshot.characterId !== characterId) return null;
     this.arrivals.delete(token);
     const now = this.deps!.now();
     this.arrivedAt.set(username, now);
@@ -626,9 +659,18 @@ export class PlayerHandoff {
     arrival.takenAt = now;
     // The caller reads the whole snapshot; what is kept until the first move is the identity and the marks only.
     const snapshot = arrival.snapshot;
-    arrival.snapshot = { id: snapshot.id, username: snapshot.username, map: snapshot.map, x: snapshot.x, y: snapshot.y, direction: snapshot.direction, creatureIds: [], playerIds: [], state: {} };
+    arrival.snapshot = { ...snapshotIdentity(snapshot), map: snapshot.map, x: snapshot.x, y: snapshot.y, direction: snapshot.direction, creatureIds: [], playerIds: [], state: {} };
     this.landing.set(token, arrival);
     return { snapshot, resume: arrival.snapshot.id === id && !arrival.fullLoad, committedAt: arrival.committedAt };
+  }
+
+  /**
+   * The character a connection with this ticket arrives as, committed or not: its AUTH logs in that character, never
+   * the account's active character read again. Null when the ticket brings no live arrival.
+   */
+  arrivingCharacter(token: string): { characterId: number; accountId: number } | null {
+    const arrival = token ? this.liveArrival(token) : null;
+    return arrival ? { characterId: arrival.snapshot.characterId, accountId: arrival.snapshot.accountId } : null;
   }
 
   /**
@@ -787,10 +829,10 @@ export class PlayerHandoff {
     }
     // A second copy of the same call (the link resent it) is a yes again; the token from anyone else is not.
     const same = this.arrivals.get(token);
-    if (same) return same.from === from && same.snapshot.username === snapshot.username ? { ok: true } : { ok: false, reason: "token" };
+    if (same) return same.from === from && same.snapshot.username === snapshot.username && same.snapshot.characterId === snapshot.characterId ? { ok: true } : { ok: false, reason: "token" };
     if (deps.player(snapshot.id) || deps.playerByUsername(snapshot.username)) return { ok: false, reason: "here" };
     for (const arrival of this.arrivals.values()) {
-      if (arrival.snapshot.username === snapshot.username || arrival.snapshot.id === snapshot.id) return { ok: false, reason: "arriving" };
+      if (arrival.snapshot.username === snapshot.username || arrival.snapshot.id === snapshot.id || arrival.snapshot.characterId === snapshot.characterId) return { ok: false, reason: "arriving" };
     }
     if (deps.ownerAt(snapshot.map, snapshot.x, snapshot.y) !== deps.self) return { ok: false, reason: "owner" };
     if (this.arrivals.size >= MAX_ARRIVALS) {
@@ -815,7 +857,8 @@ export class PlayerHandoff {
     const arrival = this.arrivals.get(token);
     if (!deps?.saved || !arrival || arrival.from !== from) return;
     try {
-      deps.saved(token, arrival.snapshot.username);
+      const { username, characterId, accountId } = arrival.snapshot;
+      deps.saved(token, { username, characterId, accountId });
     } catch (error) {
       log.warn(`Handoff of ${arrival.snapshot.username} from ${from}: the rows were not read ahead of the login: ${error}`);
     }
@@ -831,7 +874,8 @@ export class PlayerHandoff {
     // The final snapshot replaces the first only for the same player. Its position is taken only where this node
     // owns the block, as checked for the first; elsewhere the player arrives at the first snapshot's point.
     const snapshot = validSnapshot(body?.snapshot);
-    if (!snapshot || snapshot.id !== arrival.snapshot.id || snapshot.username !== arrival.snapshot.username) return;
+    if (!snapshot || snapshot.id !== arrival.snapshot.id || snapshot.username !== arrival.snapshot.username
+      || snapshot.characterId !== arrival.snapshot.characterId || snapshot.accountId !== arrival.snapshot.accountId) return;
     if (deps.ownerAt(snapshot.map, snapshot.x, snapshot.y) === deps.self) {
       arrival.snapshot = snapshot;
       return;

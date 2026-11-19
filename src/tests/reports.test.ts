@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
-import { databaseModule } from "./setup";
+import { characterDatabaseModule as databaseModule } from "./setup";
 
 // Generated at server start (`bun create-config`) and gitignored, so CI has
 // no copy on disk. Mock the values instead of requiring the file.
@@ -29,7 +29,8 @@ let answersWithId: boolean;
 const COLUMNS = "id, reporter, target, category, details, chat_log, map, x, y, target_map, target_x, target_y, created_at, status, resolved_by, resolved_at, resolution";
 const LOAD_OPEN = `SELECT ${COLUMNS} FROM reports WHERE status = 'open'`;
 const LOAD_RESOLVED = `SELECT ${COLUMNS} FROM reports WHERE status = 'resolved' ORDER BY resolved_at DESC LIMIT ?`;
-const INSERT = "INSERT INTO reports (reporter, target, category, details, chat_log, map, x, y, target_map, target_x, target_y, created_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')";
+// The reporter is the character (character_id, sent here as its name by the shim, and reporter_id); the target is a character and its account.
+const INSERT = "INSERT INTO reports (reporter, target, username, reporter_id, target_id, target_account_id, category, details, chat_log, map, x, y, target_map, target_x, target_y, created_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')";
 const RESOLVE = "UPDATE reports SET status = 'resolved', resolved_by = ?, resolved_at = ?, resolution = ? WHERE id = ? AND status = 'open'";
 const ACCOUNT = /^SELECT .+ FROM accounts WHERE username = \?$/;
 
@@ -41,8 +42,8 @@ function run(sql: string, params: any[]): any {
   if (ACCOUNT.test(sql)) return accounts.filter((name) => name === params[0]).map((username, index) => ({ id: index + 1, username }));
   if (sql.startsWith("SELECT ") && !sql.includes("reports")) return [];
   if (sql === INSERT) {
-    const [reporter, target, category, details, chat_log, map, x, y, target_map, target_x, target_y, created_at] = params;
-    const row = { id: nextId++, reporter, target, category, details, chat_log, map, x, y, target_map, target_x, target_y, created_at, status: "open", resolved_by: null, resolved_at: null, resolution: null };
+    const [reporter, target, , reporter_id, target_id, target_account_id, category, details, chat_log, map, x, y, target_map, target_x, target_y, created_at] = params;
+    const row = { id: nextId++, reporter, target, reporter_id, target_id, target_account_id, category, details, chat_log, map, x, y, target_map, target_x, target_y, created_at, status: "open", resolved_by: null, resolved_at: null, resolution: null };
     table.push(row);
     return answersWithId ? { affectedRows: 1, lastInsertRowid: row.id } : { affectedRows: 1 };
   }

@@ -1,13 +1,13 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { databaseModule, standInFor } from "./setup";
+import { characterDatabaseModule, standInFor } from "./setup";
 
 const queries: Array<{ sql: string; params: any[] }> = [];
 /** What the statement that reads a character's views answers; null makes it fail. */
 let viewRows: any[] | null = [];
 
-mock.module("../controllers/sqldatabase", () => databaseModule({
+mock.module("../controllers/sqldatabase", () => characterDatabaseModule({
   default: async (sql: string, params: any[] = []) => {
     queries.push({ sql, params });
     if (sql.startsWith("SELECT cutscene FROM cutscene_views")) {
@@ -651,6 +651,8 @@ describe("triggers", () => {
     install(makeScene("Greeting", { triggers: [trigger({ on: "npc", npcId: 7, once: true })] }));
     const player = makePlayer();
     expect(await sessions.play(player, "Greeting")).toBe(true);
+    // The write goes once the character's id is found.
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(writes()).toHaveLength(1);
     await sessions.onEnd(player, tokenOf(player), false);
     // The table now holds the row the start wrote.

@@ -22,6 +22,7 @@
     "setup-development": "bun create-config --environment development",
     "setup-production": "bun create-config --environment production && bun setup",
     "setup-localdb": "bun --env-file=.env.development ./src/utility/database_setup_sqlite.ts",
+    "migrate-characters": "bun --env-file=.env.production ./src/utility/migrate_characters.ts",
     "generate-local-cert": "bun ./src/utility/generate_local_cert.ts",
     "renew-lan-cert": "bun ./src/utility/renew_lan_cert.ts",
     "docker:dev": "docker compose -f src/docker/docker-compose.dev.yml up -d",

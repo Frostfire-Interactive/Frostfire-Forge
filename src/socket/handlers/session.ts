@@ -97,7 +97,10 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         const prefetched = loginPrefetch.take(String(wt.data?.ticketToken ?? ""));
         pendingAuthentications.set(wt.data.id, { wt, token, language: parsedMessage?.language || "en", prefetched: prefetched?.data });
 
-        authWorker.postMessage({ token, id: wt.data.id, known: prefetched?.username });
+        // A player arriving by handoff plays the character the snapshot carries, never the account's active one read
+        // again: it may have been changed on the character page while they crossed.
+        const arriving = playerHandoff.arrivingCharacter(String(wt.data?.ticketToken ?? ""));
+        authWorker.postMessage({ token, id: wt.data.id, known: prefetched?.characterId, characterId: arriving?.characterId });
 
         break;
       }
@@ -106,13 +109,14 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
       case "LOGOUT": {
         if (!currentPlayer) return;
         if (fencedSaves(currentPlayer)) {
-          void player.saveFenced(currentPlayer.username, currentPlayer.ownerEpoch, null, currentPlayer.location)
+          void player.saveFenced(currentPlayer, currentPlayer.ownerEpoch, null, currentPlayer.location)
             .catch((error) => log.error(`Fenced save of ${currentPlayer.username} failed: ${error}`));
         } else {
           player.setLocation(
             currentPlayer.id,
             currentPlayer.location.map,
-            currentPlayer.location.position
+            currentPlayer.location.position,
+            currentPlayer
           );
         }
         player.logout(currentPlayer.id);
@@ -128,13 +132,14 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
       case "DISCONNECT": {
         if (!currentPlayer) return;
         if (fencedSaves(currentPlayer)) {
-          void player.saveFenced(currentPlayer.username, currentPlayer.ownerEpoch, null, currentPlayer.location)
+          void player.saveFenced(currentPlayer, currentPlayer.ownerEpoch, null, currentPlayer.location)
             .catch((error) => log.error(`Fenced save of ${currentPlayer.username} failed: ${error}`));
         } else {
           player.setLocation(
             currentPlayer.id,
             currentPlayer.location.map,
-            currentPlayer.location.position
+            currentPlayer.location.position,
+            currentPlayer
           );
         }
         player.clearSessionId(currentPlayer.id);

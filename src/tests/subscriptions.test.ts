@@ -37,6 +37,20 @@ const OLD_ACCOUNTS = `CREATE TABLE accounts (
   party_id INTEGER, guild_id INTEGER, is_dead INTEGER DEFAULT 0, corpse_map TEXT, corpse_x INTEGER, corpse_y INTEGER
 )`;
 
+/** One character per account, named after it, as the character migration makes them. */
+const CHARACTERS = `CREATE TABLE characters (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, account_id INTEGER NOT NULL, name TEXT NOT NULL, name_key TEXT NOT NULL UNIQUE,
+  class_id INTEGER, map TEXT DEFAULT 'overworld', position TEXT DEFAULT '0,0', direction TEXT DEFAULT 'down',
+  is_dead INTEGER DEFAULT 0, corpse_map TEXT, corpse_x INTEGER, corpse_y INTEGER, stealth INTEGER DEFAULT 0,
+  noclip INTEGER DEFAULT 0, party_id INTEGER, guild_id INTEGER, created_at INTEGER NOT NULL DEFAULT 0, deleted_at INTEGER
+)`;
+/** The login read of an account's character. */
+const loginOf = async (username: string) => {
+  const account = db.query("SELECT id FROM accounts WHERE username = ?").get(username) as { id: number };
+  const character = db.query("SELECT id FROM characters WHERE account_id = ?").get(account.id) as { id: number };
+  return player.GetPlayerLoginData(account.id, character.id);
+};
+
 const columns = () => (db.query("PRAGMA table_info(accounts)").all() as Array<{ name: string }>).map((c) => c.name);
 const tick = async (enabled: number) => {
   db.run("UPDATE subscription_status SET enabled = ? WHERE id = 1", [enabled]);
@@ -155,12 +169,14 @@ describe("the lock rule", () => {
 describe("the flag at login", () => {
   test("is read from accounts.subscribed, and a database without it counts everyone as subscribed", async () => {
     db.run("INSERT INTO accounts (username) VALUES ('login_paid'), ('login_free')");
+    db.run(CHARACTERS);
+    db.run("INSERT INTO characters (account_id, name, name_key) SELECT id, username, username FROM accounts");
     // Before the column exists: the login still works, and nobody is locked by it.
-    expect(((await player.GetPlayerLoginData("login_free")) as any).isSubscribed).toBe(true);
+    expect(((await loginOf("login_free")) as any).isSubscribed).toBe(true);
 
     await subs.ensureSubscriptionSchema();
     db.run("UPDATE accounts SET subscribed = 1 WHERE username = 'login_paid'");
-    expect(((await player.GetPlayerLoginData("login_paid")) as any).isSubscribed).toBe(true);
-    expect(((await player.GetPlayerLoginData("login_free")) as any).isSubscribed).toBe(false);
+    expect(((await loginOf("login_paid")) as any).isSubscribed).toBe(true);
+    expect(((await loginOf("login_free")) as any).isSubscribed).toBe(false);
   });
 });

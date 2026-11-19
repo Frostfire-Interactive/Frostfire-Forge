@@ -4,6 +4,7 @@ import log from "../modules/logger";
 import { CLASSES_TABLE } from "../systems/classtable";
 import { DEFAULT_SOUNDS, soundsText } from "../systems/weathersounds";
 import { migrateGuildRanks } from "./guild_ranks_migration";
+import { CHARACTER_TABLES } from "./charactertables";
 
 // Create accounts table if it doesn't exist
 const createAccountsTable = async () => {
@@ -167,7 +168,7 @@ const createInventoryTable = async () => {
   const sql = `
     CREATE TABLE IF NOT EXISTS inventory (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT NOT NULL,
+        username TEXT DEFAULT NULL,
         item TEXT NOT NULL,
         quantity INTEGER NOT NULL,
         equipped INTEGER NOT NULL DEFAULT 0,
@@ -221,7 +222,7 @@ const createStatsTable = async () => {
   const sql = `
     CREATE TABLE IF NOT EXISTS stats (
         id INTEGER PRIMARY KEY AUTOINCREMENT UNIQUE NOT NULL,
-        username TEXT NOT NULL UNIQUE,
+        username TEXT UNIQUE,
         health INTEGER NOT NULL DEFAULT 100,
         max_health INTEGER NOT NULL DEFAULT 100,
         stamina INTEGER NOT NULL DEFAULT 100,
@@ -246,7 +247,7 @@ const createClientConfig = async () => {
   const sql = `
     CREATE TABLE IF NOT EXISTS clientconfig (
         id INTEGER PRIMARY KEY AUTOINCREMENT UNIQUE NOT NULL,
-        username TEXT NOT NULL UNIQUE,
+        username TEXT UNIQUE,
         fps INTEGER NOT NULL DEFAULT 60,
         music_volume INTEGER NOT NULL DEFAULT 50,
         effects_volume INTEGER NOT NULL DEFAULT 30,
@@ -414,10 +415,10 @@ const createModerationTables = async () => {
   `);
   await query(`
     CREATE TABLE IF NOT EXISTS ignores (
-      username TEXT NOT NULL,
+      username TEXT DEFAULT NULL,
       ignored TEXT NOT NULL,
       created_at INTEGER NOT NULL,
-      PRIMARY KEY (username, ignored)
+      UNIQUE (username, ignored)
     );
   `);
   await query(`
@@ -499,7 +500,7 @@ const createPlayerHomeTable = async () => {
   log.info("Creating player_home table...");
   await query(`
     CREATE TABLE IF NOT EXISTS player_home (
-      username TEXT NOT NULL PRIMARY KEY,
+      username TEXT UNIQUE,
       npc_id INTEGER DEFAULT NULL,
       offset_x INTEGER NOT NULL DEFAULT 0,
       offset_y INTEGER NOT NULL DEFAULT 0,
@@ -747,22 +748,22 @@ const createQuestLogTable = async () => {
   log.info("Creating quest log table...");
   await query(`
     CREATE TABLE IF NOT EXISTS quest_log (
-      username TEXT NOT NULL,
+      username TEXT DEFAULT NULL,
       quest_id INTEGER NOT NULL,
       state TEXT NOT NULL DEFAULT 'active',
       accepted_at INTEGER NOT NULL DEFAULT 0,
       completed_at INTEGER NOT NULL DEFAULT 0,
       times_completed INTEGER NOT NULL DEFAULT 0,
-      PRIMARY KEY (username, quest_id)
+      UNIQUE (username, quest_id)
     );
   `);
   await query(`
     CREATE TABLE IF NOT EXISTS quest_objective_progress (
-      username TEXT NOT NULL,
+      username TEXT DEFAULT NULL,
       quest_id INTEGER NOT NULL,
       objective_id INTEGER NOT NULL,
       count INTEGER NOT NULL DEFAULT 0,
-      PRIMARY KEY (username, quest_id, objective_id)
+      UNIQUE (username, quest_id, objective_id)
     );
   `);
 };
@@ -771,7 +772,7 @@ const createFriendsListTable = async () => {
   log.info("Creating friends list table...");
   const sql = `
     CREATE TABLE IF NOT EXISTS friendslist (
-      username TEXT NOT NULL UNIQUE PRIMARY KEY,
+      username TEXT UNIQUE,
       friends TEXT NOT NULL DEFAULT ''
     );
   `;
@@ -794,7 +795,7 @@ const createCurrencyTable = async () => {
   log.info("Creating currency table...");
   const sql = `
     CREATE TABLE IF NOT EXISTS currency (
-      username TEXT NOT NULL UNIQUE PRIMARY KEY,
+      username TEXT UNIQUE,
       copper INTEGER NOT NULL DEFAULT 0,
       silver INTEGER NOT NULL DEFAULT 0,
       gold INTEGER NOT NULL DEFAULT 0
@@ -841,7 +842,7 @@ const createGuildRankTables = async () => {
   `);
   await query(`
     CREATE TABLE IF NOT EXISTS guild_members (
-      username TEXT NOT NULL PRIMARY KEY COLLATE NOCASE,
+      username TEXT UNIQUE COLLATE NOCASE,
       guild_id INTEGER NOT NULL,
       rank_index INTEGER NOT NULL,
       public_note TEXT NOT NULL DEFAULT '',
@@ -886,10 +887,10 @@ const createCutscenesTables = async () => {
   `);
   await query(`
     CREATE TABLE IF NOT EXISTS cutscene_views (
-      username TEXT NOT NULL,
+      username TEXT DEFAULT NULL,
       cutscene TEXT NOT NULL,
       seen_at INTEGER NOT NULL DEFAULT 0,
-      PRIMARY KEY (username, cutscene)
+      UNIQUE (username, cutscene)
     );
   `);
 };
@@ -909,7 +910,7 @@ const createCollectablesTable = async () => {
       id INTEGER PRIMARY KEY AUTOINCREMENT UNIQUE NOT NULL,
       type TEXT NOT NULL,
       item TEXT NOT NULL,
-      username TEXT NOT NULL
+      username TEXT DEFAULT NULL
     );
   `;
   await query(sql);
@@ -921,7 +922,7 @@ const createLearnedSpellsTable = async () => {
     CREATE TABLE IF NOT EXISTS learned_spells (
         id INTEGER PRIMARY KEY AUTOINCREMENT UNIQUE NOT NULL,
         spell TEXT NOT NULL,
-        username TEXT NOT NULL
+        username TEXT DEFAULT NULL
     );
   `;
   await query(sql);
@@ -932,7 +933,7 @@ const createEquipmentTable = async () => {
   const sql = `
     CREATE TABLE IF NOT EXISTS equipment (
         id INTEGER PRIMARY KEY AUTOINCREMENT UNIQUE NOT NULL,
-        username TEXT NOT NULL UNIQUE,
+        username TEXT UNIQUE,
         head TEXT DEFAULT 'player_head_default',
         body TEXT DEFAULT 'player_body_default',
         helmet TEXT DEFAULT NULL,
@@ -1062,7 +1063,7 @@ const createBagsTable = async () => {
   await query(`
     CREATE TABLE IF NOT EXISTS bags (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      username TEXT NOT NULL UNIQUE,
+      username TEXT UNIQUE,
       slot_1 TEXT DEFAULT NULL,
       slot_2 TEXT DEFAULT NULL,
       slot_3 TEXT DEFAULT NULL,
@@ -1243,11 +1244,11 @@ const createCreatureTables = async () => {
     enabled INTEGER NOT NULL DEFAULT 1
   )`);
   await query(`CREATE TABLE IF NOT EXISTS player_achievements (
-    username TEXT NOT NULL,
+    username TEXT DEFAULT NULL,
     achievement_id INTEGER NOT NULL,
     progress INTEGER NOT NULL DEFAULT 0,
     completed_at TEXT NULL,
-    PRIMARY KEY (username, achievement_id)
+    UNIQUE (username, achievement_id)
   )`);
   await query("CREATE INDEX IF NOT EXISTS idx_player_achievements_achievement ON player_achievements (achievement_id)");
   // Gathering areas (/gathering): where resource nodes spawn. Same SQL as GATHERING_AREAS_TABLE.sqlite in
@@ -1381,7 +1382,90 @@ const createIndexes = async () => {
 };
 
 // Run the database setup
-const setupDatabase = async () => {
+/**
+ * What each character table needs besides `character_id`: the columns that, with it, are unique (what the account-name
+ * key was unique together with), and the id twins of its name-pointer columns. The twins hold no foreign key: a log row
+ * outlives the character it names. `guilds` is not a character table but has a leader to point at.
+ */
+const CHARACTER_KEY_SPECS: Record<string, { unique?: string[]; twins?: string[] }> = {
+  inventory: {},
+  stats: { unique: [] },
+  clientconfig: { unique: [] },
+  quest_log: { unique: ["quest_id"] },
+  quest_objective_progress: { unique: ["quest_id", "objective_id"] },
+  friendslist: { unique: [], twins: ["friend_id"] },
+  ignores: { unique: ["ignored_id"], twins: ["ignored_id"] },
+  player_home: { unique: [] },
+  currency: { unique: [] },
+  guild_members: { unique: [] },
+  cutscene_views: { unique: ["cutscene"] },
+  collectables: {},
+  learned_spells: {},
+  equipment: { unique: [] },
+  bags: { unique: [] },
+  player_achievements: { unique: ["achievement_id"] },
+  parties: { twins: ["leader_id"] },
+  mail: { twins: ["sender_id", "recipient_id"] },
+  trade_log: { twins: ["player_a_id", "player_b_id"] },
+  reports: { twins: ["reporter_id", "target_id", "target_account_id"] },
+};
+
+const columnsOf = async (table: string): Promise<string[]> =>
+  ((await query(`PRAGMA table_info(${table})`)) as any[]).map((row) => String(row.name));
+
+const addColumnIfMissing = async (table: string, column: string, definition: string) => {
+  if (!(await columnsOf(table)).includes(column)) await query(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+};
+
+/**
+ * Many characters per account: the `characters` table, accounts.active_character_id, and a `character_id` (foreign key,
+ * cascading) on every character table. Safe to run again. Tables made by this script already have a nullable account
+ * name with unique keys in place of primary keys; one made before is only given the columns and indexes (SQLite cannot
+ * loosen a column in place).
+ */
+const addCharacterKeys = async () => {
+  log.info("Adding characters table and character_id keys...");
+  await query(`
+    CREATE TABLE IF NOT EXISTS characters (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      name_key TEXT NOT NULL UNIQUE COLLATE NOCASE,
+      class_id INTEGER DEFAULT NULL,
+      map TEXT DEFAULT 'overworld' NOT NULL,
+      position TEXT DEFAULT '0,0' NOT NULL,
+      direction TEXT DEFAULT 'down' NOT NULL,
+      is_dead INTEGER DEFAULT 0 NOT NULL,
+      corpse_map TEXT DEFAULT NULL,
+      corpse_x INTEGER DEFAULT NULL,
+      corpse_y INTEGER DEFAULT NULL,
+      stealth INTEGER DEFAULT 0 NOT NULL,
+      noclip INTEGER DEFAULT 0 NOT NULL,
+      party_id INTEGER DEFAULT NULL,
+      guild_id INTEGER DEFAULT NULL,
+      created_at INTEGER NOT NULL,
+      deleted_at INTEGER DEFAULT NULL
+    )
+  `);
+  await query("CREATE INDEX IF NOT EXISTS idx_characters_account ON characters (account_id)");
+  await addColumnIfMissing("accounts", "active_character_id", "INTEGER DEFAULT NULL REFERENCES characters(id) ON DELETE SET NULL");
+
+  for (const table of CHARACTER_TABLES) {
+    const spec = CHARACTER_KEY_SPECS[table] || {};
+    await addColumnIfMissing(table, "character_id", "INTEGER DEFAULT NULL REFERENCES characters(id) ON DELETE CASCADE");
+    for (const twin of spec.twins || []) await addColumnIfMissing(table, twin, "INTEGER DEFAULT NULL");
+    await query(`CREATE INDEX IF NOT EXISTS idx_${table}_character ON ${table} (character_id)`);
+    if (spec.unique) {
+      await query(`CREATE UNIQUE INDEX IF NOT EXISTS uk_${table}_character ON ${table} (${["character_id", ...spec.unique].join(", ")})`);
+    }
+  }
+  await addColumnIfMissing("guilds", "leader_id", "INTEGER DEFAULT NULL");
+  await query("CREATE INDEX IF NOT EXISTS idx_guilds_leader_id ON guilds (leader_id)");
+  await query("CREATE INDEX IF NOT EXISTS idx_mail_recipient_id ON mail (recipient_id)");
+  await query("CREATE INDEX IF NOT EXISTS idx_parties_leader_id ON parties (leader_id)");
+};
+
+export const setupDatabase = async () => {
   // await createDatabase();
   // await useDatabase();
   await createAccountsTable();
@@ -1444,14 +1528,21 @@ const setupDatabase = async () => {
   await insertAreaSpells();
   await insertDemoQuests();
   await createIndexes();
+  await addCharacterKeys();
 };
 
-try {
-  log.info("Setting up database...");
-  await setupDatabase();
-  log.success("Database setup complete!");
-  process.exit(0);
-} catch (error) {
-  log.error(`Error setting up database: ${error}`);
-  process.exit(1);
-}
+/** The command line's part: sets the schema up, then ends the process. */
+export const runSetup = async () => {
+  try {
+    log.info("Setting up database...");
+    await setupDatabase();
+    log.success("Database setup complete!");
+    process.exit(0);
+  } catch (error) {
+    log.error(`Error setting up database: ${error}`);
+    process.exit(1);
+  }
+};
+
+// Run directly (bun setup-localdb); `bun setup` imports this file and calls runSetup (database_setup_dispatch.ts), and a test imports setupDatabase.
+if (import.meta.main) await runSetup();

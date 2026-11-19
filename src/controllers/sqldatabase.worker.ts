@@ -141,7 +141,7 @@ self.onmessage = async (event: MessageEvent) => {
   const { id, sql, values, transaction, openBy } = event.data;
   const maxRetries = 3;
   const retryDelay = 1000;
-  const queryTimeout = 15000;
+  const queryTimeout = typeof event.data.queryTimeout === "number" ? event.data.queryTimeout : 15000;
   let lastError: Error | null = null;
 
   // Wait for initialization to complete before processing queries

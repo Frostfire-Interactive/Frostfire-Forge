@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
-import { databaseModule } from "./setup";
+import { characterDatabaseModule } from "./setup";
 
 // Achievements: counting (systems/achievements/service.ts), earning with its rewards, and the collectables a batch
 // adds. The real store, inventory, collectables and mail systems run against a fake database.
@@ -75,15 +75,18 @@ function run(sql: string, values: any[] = []): any {
     tables.collectables.push({ type, item, username });
     return { affectedRows: 1 };
   }
-  if (text === `SELECT ${MAIL_COLUMNS} FROM mail WHERE recipient = ? ORDER BY id`) return tables.mail.filter((r) => r.recipient === values[0]).map((r) => ({ ...r }));
-  if (text.startsWith("INSERT INTO mail (")) {
-    const [recipient, sender, subject, body, items, copper, silver, gold, sent_at, expires_at] = values;
+  // A mail is its recipient's (character_id, handed here as the name).
+  if (text === `SELECT ${MAIL_COLUMNS} FROM mail WHERE username = ? ORDER BY id`) return tables.mail.filter((r) => r.recipient === values[0]).map((r) => ({ ...r }));
+  // A reward mail: from the game, so it has no sender character (sender_id NULL).
+  if (text === "INSERT INTO mail (recipient, sender, username, recipient_id, sender_id, subject, body, items, copper, silver, gold, sent_at, expires_at, is_read, returned) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1)") {
+    const [recipient, sender, owner, recipient_id, subject, body, items, copper, silver, gold, sent_at, expires_at] = values;
+    if (owner !== recipient || recipient_id !== recipient) throw new Error("A mail is kept by the id of its recipient");
     // the last two values of the statement are is_read and returned, written in it
     const row = { id: nextId++, recipient, sender, subject, body, items, copper, silver, gold, sent_at, expires_at, is_read: 0, returned: text.endsWith(", 0, 1)") ? 1 : 0 };
     tables.mail.push(row);
     return { affectedRows: 1, lastInsertRowid: row.id };
   }
-  if (text === "DELETE FROM mail WHERE id = ? AND recipient = ?") {
+  if (text === "DELETE FROM mail WHERE id = ? AND username = ?") {
     const before = tables.mail.length;
     tables.mail = tables.mail.filter((r) => !(r.id === values[0] && r.recipient === values[1]));
     return { affectedRows: before - tables.mail.length };
@@ -121,7 +124,7 @@ function run(sql: string, values: any[] = []): any {
 /** When set, the next transaction is written and then reported as failed (a timeout after the commit). */
 let lateFailure = false;
 mock.module("../controllers/sqldatabase", () => {
-  const base = databaseModule({ default: async (sql: string, values: any[] = []) => run(sql, values) });
+  const base = characterDatabaseModule({ default: async (sql: string, values: any[] = []) => run(sql, values) });
   return {
     ...base,
     transaction: async (statements: any[]) => {
@@ -138,6 +141,8 @@ mock.module("../controllers/sqldatabase", () => {
 const assets = new Map<string, any>();
 mock.module("../services/assetCache", () => ({
   default: {
+    // The quest definitions call onChange as they load: a file loaded later is handed this stand-in (mock.module outlives its file).
+    onChange: () => () => {},
     get: async (key: string) => assets.get(key),
     set: async (key: string, value: any) => { assets.set(key, value); },
     add: async (key: string, value: any) => { assets.set(key, value); },

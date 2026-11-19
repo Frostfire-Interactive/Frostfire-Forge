@@ -7,12 +7,13 @@ import query, { transaction, type TransactionStatement } from "../../controllers
 import log from "../../modules/logger";
 import { rowCache, tableCache, turns } from "../../services/datacache";
 import playerCache from "../../services/playermanager";
+import { characterIdOf, needCharacterId } from "../characterids";
 import { ID_TARGETS, isCriterion, type AchievementDef, type AchievementInput, type CriterionType, type PlayerAchievement } from "./types";
 
 const sqlite = (): boolean => (process.env.DATABASE_ENGINE || "mysql") === "sqlite";
 const lower = (name: unknown) => String(name ?? "").toLowerCase();
 
-/** The two tables, as the setup scripts make them. */
+/** The two tables, for a database whose setup made neither (the setup scripts make them, and key player_achievements by character there too). */
 export const ACHIEVEMENT_TABLES: Record<"mysql" | "sqlite", string[]> = {
   mysql: [
     `CREATE TABLE IF NOT EXISTS achievements (
@@ -30,12 +31,14 @@ export const ACHIEVEMENT_TABLES: Record<"mysql" | "sqlite", string[]> = {
     UNIQUE KEY uq_achievements_name (name)
   )`,
     `CREATE TABLE IF NOT EXISTS player_achievements (
-    username VARCHAR(191) NOT NULL,
+    character_id BIGINT NOT NULL,
     achievement_id INT NOT NULL,
     progress INT NOT NULL DEFAULT 0,
     completed_at VARCHAR(32) NULL,
-    PRIMARY KEY (username, achievement_id),
-    INDEX idx_player_achievements_achievement (achievement_id)
+    UNIQUE KEY uk_player_achievements_character (character_id, achievement_id),
+    INDEX idx_player_achievements_character (character_id),
+    INDEX idx_player_achievements_achievement (achievement_id),
+    CONSTRAINT fk_player_achievements_character FOREIGN KEY (character_id) REFERENCES characters(id) ON DELETE CASCADE
   )`,
   ],
   sqlite: [
@@ -53,11 +56,11 @@ export const ACHIEVEMENT_TABLES: Record<"mysql" | "sqlite", string[]> = {
     enabled INTEGER NOT NULL DEFAULT 1
   )`,
     `CREATE TABLE IF NOT EXISTS player_achievements (
-    username TEXT NOT NULL,
+    character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
     achievement_id INTEGER NOT NULL,
     progress INTEGER NOT NULL DEFAULT 0,
     completed_at TEXT NULL,
-    PRIMARY KEY (username, achievement_id)
+    UNIQUE (character_id, achievement_id)
   )`,
     "CREATE INDEX IF NOT EXISTS idx_player_achievements_achievement ON player_achievements (achievement_id)",
   ],
@@ -303,7 +306,9 @@ export function whenOf(value: unknown): number | null {
 
 const playerRows = rowCache<PlayerAchievement[]>("player_achievements", async (username) => {
   if (!ready) return [];
-  const read = ((((await query("SELECT achievement_id, progress, completed_at FROM player_achievements WHERE username = ?", [username])) as any[]) || []))
+  const characterId = await characterIdOf(String(username));
+  const stored = characterId === null ? [] : ((await query("SELECT achievement_id, progress, completed_at FROM player_achievements WHERE character_id = ?", [characterId])) as any[]) || [];
+  const read = stored
     .map((row): PlayerAchievement => ({ achievement_id: Number(row.achievement_id), progress: Number(row.progress) || 0, completed_at: whenOf(row.completed_at) }));
   // Counted before the player left and not written yet (they came back before the save tick): newer than the table.
   for (const [id, progress] of changed.get(lower(username)) ?? new Map<number, number>()) {
@@ -362,11 +367,11 @@ export function resetChanges(): void {
 
 // Never lowers progress: a relog during a flush can read the table before the write lands, and a later flush would
 // otherwise write the lower value it counted from.
-const PROGRESS_SQL = "INSERT INTO player_achievements (username, achievement_id, progress) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE progress = CASE WHEN completed_at IS NULL AND ? > progress THEN ? ELSE progress END";
+const PROGRESS_SQL = "INSERT INTO player_achievements (character_id, achievement_id, progress) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE progress = CASE WHEN completed_at IS NULL AND ? > progress THEN ? ELSE progress END";
 // A completion is two statements (see completionStatements): the row made if it is not there, then the update that
 // dates it, which changes nothing, and so refuses the batch, when the row is completed already.
-const ROW_SQL = "INSERT IGNORE INTO player_achievements (username, achievement_id, progress, completed_at) VALUES (?, ?, 0, NULL)";
-const COMPLETED_SQL = "UPDATE player_achievements SET progress = ?, completed_at = ? WHERE username = ? AND achievement_id = ? AND completed_at IS NULL";
+const ROW_SQL = "INSERT IGNORE INTO player_achievements (character_id, achievement_id, progress, completed_at) VALUES (?, ?, 0, NULL)";
+const COMPLETED_SQL = "UPDATE player_achievements SET progress = ?, completed_at = ? WHERE character_id = ? AND achievement_id = ? AND completed_at IS NULL";
 
 /**
  * Writes the player's changed progress, in their turn, as one transaction. One that fails is kept for the next save
@@ -382,7 +387,8 @@ export async function flush(username: string): Promise<void> {
       const writes = [...waiting.entries()];
       changed.delete(name);
       try {
-        await transaction(writes.map(([id, progress]) => ({ sql: PROGRESS_SQL, values: [name, id, progress, progress, progress] })));
+        const characterId = await needCharacterId(name);
+        await transaction(writes.map(([id, progress]) => ({ sql: PROGRESS_SQL, values: [characterId, id, progress, progress, progress] })));
       } catch (error) {
         const back = changed.get(name) ?? new Map<number, number>();
         for (const [id, progress] of writes) if (!back.has(id)) back.set(id, progress);
@@ -405,11 +411,11 @@ export async function flushAll(): Promise<void> {
  * The second must change a row: one already completed makes the whole batch refuse, so a completion that was
  * written but reported as failed (a timeout after the commit) is never given a second time.
  */
-export function completionStatements(username: string, id: number, progress: number, at: number): TransactionStatement[] {
-  const name = lower(username);
+export async function completionStatements(username: string, id: number, progress: number, at: number): Promise<TransactionStatement[]> {
+  const characterId = await needCharacterId(lower(username));
   return [
-    { sql: ROW_SQL, values: [name, id] },
-    { sql: COMPLETED_SQL, values: [progress, new Date(at).toISOString(), name, id], mustChange: true },
+    { sql: ROW_SQL, values: [characterId, id] },
+    { sql: COMPLETED_SQL, values: [progress, new Date(at).toISOString(), characterId, id], mustChange: true },
   ];
 }
 

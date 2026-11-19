@@ -27,10 +27,14 @@ export interface PoolWorker {
 export interface AuthJob {
   token: string;
   id: string;
-  /** The account whose rows were read already: its token reads nothing more (socket/loginprefetch.ts). */
-  known?: string;
-  /** Not a login: read this player's rows ahead of it, with a `prefetch:` id (socket/loginprefetch.ts). */
-  prefetch?: string;
+  /** The character whose rows were read already: a token of its account reads nothing more (socket/loginprefetch.ts). */
+  known?: number;
+  /** The character a handoff brings: played in place of the account's active character (cluster/handoff.ts). */
+  characterId?: number;
+  /** Not a login: read this character's rows ahead of it, with a `prefetch:` id (socket/loginprefetch.ts). */
+  prefetch?: number;
+  /** The account of the `prefetch` character: a character of another account is not read. */
+  accountId?: number;
 }
 
 /** The lists a worker takes at its start, serialized (null: none). */

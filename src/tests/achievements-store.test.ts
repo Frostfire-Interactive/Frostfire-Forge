@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { sqlWrapper } from "../controllers/sqlescape";
-import { databaseModule } from "./setup";
+import { characterDatabaseModule } from "./setup";
 import type { AchievementInput } from "../systems/achievements/types";
 
 // The achievements and player_achievements tables, held here.
@@ -20,6 +20,8 @@ let gate: Promise<void> | null = null;
 const DEF_SELECT = "SELECT id, name, description, icon, type, target, count, reward_item, reward_quantity, reward_mount, enabled FROM achievements";
 const ROWS_SELECT = "SELECT achievement_id, progress, completed_at FROM player_achievements WHERE username = ?";
 const PROGRESS = "INSERT INTO player_achievements (username, achievement_id, progress) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE progress = CASE WHEN completed_at IS NULL AND ? > progress THEN ? ELSE progress END";
+/** The progress write as the store sends it, by character id (the stand-in above is asked it by name). */
+const PROGRESS_BY_ID = PROGRESS.replace("(username,", "(character_id,");
 const ROW = "INSERT IGNORE INTO player_achievements (username, achievement_id, progress, completed_at) VALUES (?, ?, 0, NULL)";
 const COMPLETED = "UPDATE player_achievements SET progress = ?, completed_at = ? WHERE username = ? AND achievement_id = ? AND completed_at IS NULL";
 
@@ -89,7 +91,7 @@ function run(sql: string, values: any[] = []): any {
   throw new Error(`The fake database does not understand: ${text}`);
 }
 
-mock.module("../controllers/sqldatabase", () => databaseModule({
+mock.module("../controllers/sqldatabase", () => characterDatabaseModule({
   default: async (sql: string, values: any[] = []) => {
     if (gate && sql.startsWith("INSERT INTO player_achievements (username, achievement_id, progress) ")) await gate;
     return run(sql, values);
@@ -261,7 +263,7 @@ describe("saving", () => {
   });
 
   test("a completion makes the row if needed and dates it", async () => {
-    await transaction(store.completionStatements("Alice", 4, 10, Date.UTC(2026, 9, 17, 12)));
+    await transaction(await store.completionStatements("Alice", 4, 10, Date.UTC(2026, 9, 17, 12)));
     expect(progress).toEqual([{ username: "alice", achievement_id: 4, progress: 10, completed_at: "2026-10-17T12:00:00.000Z" }]);
   });
 });
@@ -292,15 +294,15 @@ describe("completed rows", () => {
     const db = new Database(":memory:");
     try {
       for (const sql of store.ACHIEVEMENT_TABLES.sqlite) db.run(sql);
-      const write = (username: string, id: number, value: number) => db.run(sqlWrapper(PROGRESS, [username, id, value, value, value], "sqlite"));
-      expect(sqlWrapper(PROGRESS, ["alice", 1, 4, 4, 4], "sqlite")).toBe(
-        "INSERT INTO player_achievements (username, achievement_id, progress) VALUES ('alice', 1, 4) ON CONFLICT DO UPDATE SET progress = CASE WHEN completed_at IS NULL AND 4 > progress THEN 4 ELSE progress END",
+      const write = (characterId: number, id: number, value: number) => db.run(sqlWrapper(PROGRESS_BY_ID, [characterId, id, value, value, value], "sqlite"));
+      expect(sqlWrapper(PROGRESS_BY_ID, [7, 1, 4, 4, 4], "sqlite")).toBe(
+        "INSERT INTO player_achievements (character_id, achievement_id, progress) VALUES (7, 1, 4) ON CONFLICT DO UPDATE SET progress = CASE WHEN completed_at IS NULL AND 4 > progress THEN 4 ELSE progress END",
       );
-      write("alice", 1, 4);
-      write("alice", 1, 2);
-      write("alice", 1, 6);
-      db.run("INSERT INTO player_achievements (username, achievement_id, progress, completed_at) VALUES ('alice', 2, 10, '2026-10-17T12:00:00.000Z')");
-      write("alice", 2, 12);
+      write(7, 1, 4);
+      write(7, 1, 2);
+      write(7, 1, 6);
+      db.run("INSERT INTO player_achievements (character_id, achievement_id, progress, completed_at) VALUES (7, 2, 10, '2026-10-17T12:00:00.000Z')");
+      write(7, 2, 12);
       expect(db.query("SELECT achievement_id, progress, completed_at FROM player_achievements ORDER BY achievement_id").all()).toEqual([
         { achievement_id: 1, progress: 6, completed_at: null },
         { achievement_id: 2, progress: 10, completed_at: "2026-10-17T12:00:00.000Z" },
@@ -311,8 +313,8 @@ describe("completed rows", () => {
   });
 
   test("completing twice is refused and keeps the first date", async () => {
-    await transaction(store.completionStatements("alice", 4, 10, Date.UTC(2026, 9, 17, 12)));
-    await expect(transaction(store.completionStatements("alice", 4, 10, Date.UTC(2026, 9, 18, 8)))).rejects.toThrow();
+    await transaction(await store.completionStatements("alice", 4, 10, Date.UTC(2026, 9, 17, 12)));
+    await expect(transaction(await store.completionStatements("alice", 4, 10, Date.UTC(2026, 9, 18, 8)))).rejects.toThrow();
     expect(progress).toEqual([{ username: "alice", achievement_id: 4, progress: 10, completed_at: done }]);
   });
 });

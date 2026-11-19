@@ -3,6 +3,8 @@
 // back: nothing here touches a connection.
 
 import playerCache from "../services/playermanager";
+import { accountNameOf } from "./characterids";
+import { characterByName } from "./characterstore";
 import { linesSeenBy } from "./chatgate";
 import friends from "./friends";
 import ignores, { IGNORE_LIMIT } from "./ignores";
@@ -24,10 +26,11 @@ const shown = (username: string) => username.charAt(0).toUpperCase() + username.
 export const can = (actor: any, permission: string): boolean =>
   !!actor?.permissions?.some((held: string) => held === permission || held === "admin.*");
 
-/** The name an account has, for a name typed in any case. Null when there is no such account. */
-async function accountName(username: unknown): Promise<string | null> {
-  const account = (await player.findByUsername(lower(username))) as { username: string }[] | undefined;
-  return account?.[0]?.username ? lower(account[0].username) : null;
+/** The name a character has (lower case), for a name typed in any case. Null when there is no such character. */
+async function characterName(username: unknown): Promise<string | null> {
+  const name = String(username ?? "").trim();
+  const found = name ? await characterByName(name) : null;
+  return found ? lower(found.name) : null;
 }
 
 /** Where an online player is. */
@@ -52,9 +55,11 @@ export function ago(then: number, now = Date.now()): string {
 export async function muteCommand(actor: any, args: string[], now = Date.now()): Promise<string> {
   if (!can(actor, "admin.mute")) return NO_PERMISSION;
   if (!args[0]) return "Usage: /mute <username> [duration] [reason]";
-  const target = await accountName(args[0]);
+  const target = await characterName(args[0]);
   if (!target) return NOT_FOUND;
-  if (target === lower(actor.username)) return "You cannot mute yourself";
+  // A mute is the account's, so another character of one's own account is oneself.
+  const targetAccount = await accountNameOf(target);
+  if (targetAccount !== null && targetAccount === (await accountNameOf(lower(actor.username)))) return "You cannot mute yourself";
   if (await player.isAdmin(target)) return "You cannot mute other admins";
 
   // A second word that is not a duration is the start of the reason, unless it is the word that
@@ -69,7 +74,7 @@ export async function muteCommand(actor: any, args: string[], now = Date.now()):
 export async function unmuteCommand(actor: any, args: string[], now = Date.now()): Promise<string> {
   if (!can(actor, "admin.unmute")) return NO_PERMISSION;
   if (!args[0]) return "Usage: /unmute <username>";
-  const target = await accountName(args[0]);
+  const target = await characterName(args[0]);
   if (!target) return NOT_FOUND;
   return (await mutes.unmute(target, now)) ? `Unmuted ${shown(target)}` : `${shown(target)} is not muted`;
 }
@@ -99,7 +104,7 @@ export async function ignore(actor: any, name: unknown): Promise<IgnoreAnswer> {
   if (result === "admin") return { message: "You cannot ignore an admin" };
   if (result === "full") return { message: `Your ignore list is full (${IGNORE_LIMIT} players)` };
 
-  const target = (await accountName(name)) as string;
+  const target = (await characterName(name)) as string;
   if (result === "already") return { message: `You are already ignoring ${shown(target)}` };
 
   const answer: IgnoreAnswer = { message: `You are now ignoring ${shown(target)}`, ignored: await ignores.list(me) };
@@ -150,7 +155,7 @@ export const CATEGORY_LABELS: Record<ReportCategory, string> = {
  */
 export async function report(actor: any, name: unknown, category: unknown, details: unknown, now = Date.now()): Promise<{ message: string; report?: Report }> {
   if (!lower(name).trim()) return { message: "Usage: /report <username> <reason>" };
-  const target = await accountName(name);
+  const target = await characterName(name);
   if (!target) return { message: NOT_FOUND };
   const filed = await reports.file({
     reporter: actor.username,
@@ -227,7 +232,7 @@ export function tradeSides(record: TradeRecord, username: string): { partner: st
 export async function tradesCommand(actor: any, args: string[], now = Date.now()): Promise<string> {
   if (!can(actor, "admin.trades")) return NO_PERMISSION;
   if (!args[0]) return "Usage: /trades <username>";
-  const target = await accountName(args[0]);
+  const target = await characterName(args[0]);
   if (!target) return NOT_FOUND;
 
   const latest = await tradeLog.of(target, LISTED);

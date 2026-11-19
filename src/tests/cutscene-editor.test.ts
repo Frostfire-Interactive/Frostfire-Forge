@@ -626,7 +626,8 @@ describe("the tables", () => {
     for (const engine of ["mysql", "sqlite"] as const) {
       expect(editor.CUTSCENES_TABLE[engine]).toMatch(/name .*UNIQUE/);
       expect(editor.CUTSCENES_TABLE[engine]).toContain("updated_by");
-      expect(editor.CUTSCENE_VIEWS_TABLE[engine]).toContain("PRIMARY KEY (username, cutscene)");
+      // A character's views are kept by its id, one row a scene.
+      expect(editor.CUTSCENE_VIEWS_TABLE[engine]).toMatch(/UNIQUE (KEY uk_cutscene_views_character )?\(character_id, cutscene\)/);
     }
     expect(editor.CUTSCENES_TABLE.mysql).toContain("MEDIUMTEXT");
     expect(editor.CUTSCENES_TABLE.sqlite).toContain("data TEXT");

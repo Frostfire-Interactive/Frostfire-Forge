@@ -23,6 +23,8 @@ export interface TradeRecord {
 }
 
 const COLUMNS = "id, player_a, player_b, a_gave, b_gave, created_at";
+/** The id of the character (not deleted) whose name is the value given, inside a statement. */
+const CHARACTER_ID = "(SELECT id FROM characters WHERE name_key = ? AND deleted_at IS NULL LIMIT 1)";
 const NOTHING: TradeGave = { items: [], coins: { copper: 0, silver: 0, gold: 0 } };
 
 const lower = (username: string) => String(username ?? "").toLowerCase();
@@ -76,9 +78,12 @@ const tradeLog = {
    */
   write(batch: Batch, trade: Omit<TradeRecord, "id">): TradeRecord {
     const record: TradeRecord = { ...trade, id: 0, player_a: lower(trade.player_a), player_b: lower(trade.player_b) };
+    // The row is player A's character's, and names both characters by id as well as by the names they traded under.
+    // The ids are the database's to look up, in the statement itself, so the trade is added to the batch as it stands.
     batch.add({
-      sql: "INSERT INTO trade_log (player_a, player_b, a_gave, b_gave, created_at) VALUES (?, ?, ?, ?, ?)",
-      values: [record.player_a, record.player_b, JSON.stringify(record.a_gave), JSON.stringify(record.b_gave), record.created_at],
+      sql: "INSERT INTO trade_log (player_a, player_b, character_id, player_a_id, player_b_id, a_gave, b_gave, created_at) VALUES (?, ?, "
+        + `${CHARACTER_ID}, ${CHARACTER_ID}, ${CHARACTER_ID}, ?, ?, ?)`,
+      values: [record.player_a, record.player_b, record.player_a, record.player_a, record.player_b, JSON.stringify(record.a_gave), JSON.stringify(record.b_gave), record.created_at],
     }, (result) => { record.id = insertedId(result) ?? 0; });
     // The trade stands whatever becomes of the copy held here: a failure is not the batch's.
     batch.after(async () => {

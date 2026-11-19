@@ -278,8 +278,10 @@ serveItems("CHEST_TAKE", async (actor, body) => {
   return { ok: true, items: taken.taken, remaining: "remaining" in taken ? taken.remaining : [], allTaken: taken.allTaken };
 });
 /** The player logged in on another node: this old session is told and closed, and the disconnect path cleans up and saves it. */
-registerPlayerAction("displaced-login", (p) => {
+registerPlayerAction("displaced-login", (p, args) => {
   if (p.wt?.readyState !== 1) return;
+  // A login of this account elsewhere: the account is checked first, as the id may be another player's by now.
+  if (args?.accountId !== undefined && Number(p.accountId) !== Number(args.accountId)) return;
   sendPacket(p.wt, packetManager.notify({ message: "You have been logged in from another location." }));
   // drain: the notice may sit in the outbox behind a write in flight; a plain close would drop it (the close is still bounded).
   p.wt.close(1000, "Logged in from another location", { drain: true });
@@ -1912,7 +1914,7 @@ import { equipmentSheetsToken, getPlayerSpriteSheetData, isSpriteSheetSystemAvai
 import { notePoseCall, notePoseSelf } from "./posestats";
 import { setLayerChangeHandler, initializePlayerAOI, updatePlayerAOI, shouldUpdateAOI, broadcastToAOI, broadcastPoseToAOI, broadcastToAOIBestEffort, broadcastStatsUpdateToAOI, broadcastToAOIBestEffortAtPosition, broadcastCastToAOI, clearGroundPreviewForAOI, getPlayersNearPoint, handleMapChangeAOI, syncPartyLayers, queueSpawnPlayerPacket, broadcastPlayerUpdate, sendLoadPlayersChunked, cleanupKickedSession, findPlayersWithTargetInAOI, aoiProf, updateMirrorViewers, relayToMirrorViewers, canSee } from "./aoi";
 // Keeps the startup load order: the handler modules, which import these, load at the first packet.
-import "./server.ts";
+import { leaveKickedPlayer, saveKickedPlayer } from "./server.ts";
 import { realmWhitelist, isWhitelistEnabled } from "../services/whitelist";
 import { restartState } from "./serverorders";
 import { refusal as subscriptionRefusal } from "../systems/subscriptions";
@@ -1922,6 +1924,7 @@ import { clusterEnabled, nodeId } from "../cluster/config";
 import { applyPartyMembers, cacheIfHeld, clearParty } from "./partystate";
 import { clusterBlocks, clusterMapAdded, clusterNodes, clusterStore, useEngineHooks } from "../cluster/index";
 import { adoptOwnerEpoch } from "../cluster/ownerepoch";
+import { kickDuplicateSessions, sessionsOfAccount } from "../systems/logincharacter";
 import { MAX_GRANT_ITEMS, grants } from "../cluster/grants";
 import { playerHandoff } from "../cluster/handoff";
 import { recoverLogin } from "../cluster/recovery";
@@ -3753,7 +3756,9 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
     const data = await pending.prefetched;
     if (pendingAuthentications.get(sessionId) !== pending) return;
     if (!data) {
-      authWorker.postMessage({ token, id: sessionId });
+      // Still the character the handoff brings, never the account's active one read again.
+      const arriving = playerHandoff.arrivingCharacter(String(wt.data?.ticketToken ?? ""));
+      authWorker.postMessage({ token, id: sessionId, characterId: arriving?.characterId });
       return;
     }
     log.debug(`Login of ${data.username} by handoff: the rows read ahead of the AUTH were used`);
@@ -3763,6 +3768,14 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
   pendingAuthentications.delete(sessionId);
   authentication_queue.delete(token);
   authentication_session_queue.delete(sessionId);
+
+  // The account has no active character to play (none chosen, deleted, or another account's): the client goes to the
+  // Gateway's character page. The worker has let the session go already.
+  if (status.characterRequired) {
+    sendPacket(wt, packetManager.characterRequired());
+    wt.close(1008, "Choose a character first");
+    return;
+  }
 
   if (status.error && !status.authenticated) {
     sendPacket(wt, packetManager.loginFailed());
@@ -3779,7 +3792,8 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
   const playerData = status.data as PlayerData;
   if (status.authenticated && status.completed && playerData) {
     // Check realm whitelist
-    if (isWhitelistEnabled() && !realmWhitelist.has(playerData.username.toLowerCase())) {
+    // The whitelist names accounts.
+    if (isWhitelistEnabled() && !realmWhitelist.has(playerData.accountUsername.toLowerCase())) {
       log.warn(`[Whitelist] Access denied for ${playerData.username} - not in whitelist`);
       sendPacket(wt, packetManager.loginFailed());
       wt.close(1008, "Username not whitelisted on this realm");
@@ -3812,7 +3826,7 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
     // ticket's account), never a name the client sent. A session of this account still here is kicked just below,
     // as for any second login.
     const arrival = clusterEnabled()
-      ? playerHandoff.takeArrival(String(wt.data?.ticketToken ?? ""), playerData.username, String(wt.data.id))
+      ? playerHandoff.takeArrival(String(wt.data?.ticketToken ?? ""), playerData.username, String(wt.data.id), playerData.characterId)
       : null;
     if (arrival) Object.assign(arriving, { wt, username: playerData.username, sessionId });
     // The first MOVEXY of this connection says the new node's line of marks (handlers/movement.ts).
@@ -3826,54 +3840,61 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
 
     const assetServerUrl = process.env.ASSET_SERVER_URL || "http://localhost:8081";
 
-    // Kick any existing session for this username (duplicate login prevention)
-    const newUsername = playerData.username.toLowerCase();
-    for (const [_id, p] of Object.entries(playerCache.list()) as [string, any][]) {
-      if (p.username?.toLowerCase() === newUsername) {
-        log.info(`Kicking existing session for ${playerData.username} (duplicate login)`);
-
+    // Kick any existing session of this account, whichever character it plays (duplicate login prevention). Each is
+    // saved first, then left as a disconnect leaves (its PLAYER_DISCONNECT listeners, before this login's player is
+    // added), then told, then taken out of the world.
+    await kickDuplicateSessions(sessionsOfAccount(Object.values(playerCache.list()), playerData.accountId), {
+      save: saveKickedPlayer,
+      leave: leaveKickedPlayer,
+      notify: (p: any, message: string) => {
+        log.info(`Kicking existing session for ${p.username} of account ${playerData.accountUsername} (duplicate login)`);
         if (p.wt && p.wt.readyState === 1) {
           sendPacket(p.wt, packetManager.notify({
-            message: "You have been logged in from another location."
+            message
           }));
         }
-
+      },
+      drop: async (p: any) => {
         // World-index hygiene for the kicked session. The later onDisconnect
         // for the closing socket early-returns on the cache miss below, so
         // nothing else removes the stale id from viewers' AOI sets, the
         // reverse index, its layer, the map index or the spatial grid.
-        cleanupKickedSession(p, despawnBatchQueue);
-        gameLoop.unregisterMovingPlayer(p.id);
-        clearBatchQueuesForPlayer(p.id);
+        // The session leaves the cache whatever throws below: marked leftByKick, its close would skip it, and it
+        // would stay in the cache.
         try {
-          await worlds.adjustPlayerCount(p.location?.map || "", -1);
-        } catch (err) {
-          log.error(`[WorldsFetchError] Failed to update world player count: ${err}`);
-        }
+          cleanupKickedSession(p, despawnBatchQueue);
+          gameLoop.unregisterMovingPlayer(p.id);
+          clearBatchQueuesForPlayer(p.id);
+          try {
+            await worlds.adjustPlayerCount(p.location?.map || "", -1);
+          } catch (err) {
+            log.error(`[WorldsFetchError] Failed to update world player count: ${err}`);
+          }
 
-        const map = p.location?.map;
-        if (map) {
-          for (const [, other] of Object.entries(playerCache.list()) as [string, any][]) {
-            // Map-wide notify so bystanders whose AOI missed the old session
-            // still drop it. This MUST be a DESPAWN_PLAYER: the previous
-            // packetManager.disconnect (DISCONNECT_MALIFORMED) reads as "you
-            // are disconnected" client-side and blanks the bystander's screen,
-            // swallowing the replacement session's spawn that follows.
-            if (other.location?.map === map && other.id !== p.id && other.wt?.readyState === 1) {
-              forgetLook(other.wt, p.id);
-              sendPacket(other.wt, packetManager.despawnPlayer(p.id, "disconnect"));
+          const map = p.location?.map;
+          if (map) {
+            for (const [, other] of Object.entries(playerCache.list()) as [string, any][]) {
+              // Map-wide notify so bystanders whose AOI missed the old session
+              // still drop it. This MUST be a DESPAWN_PLAYER: the previous
+              // packetManager.disconnect (DISCONNECT_MALIFORMED) reads as "you
+              // are disconnected" client-side and blanks the bystander's screen,
+              // swallowing the replacement session's spawn that follows.
+              if (other.location?.map === map && other.id !== p.id && other.wt?.readyState === 1) {
+                forgetLook(other.wt, p.id);
+                sendPacket(other.wt, packetManager.despawnPlayer(p.id, "disconnect"));
+              }
             }
           }
-        }
 
-        if (p.wt && p.wt.readyState === 1) {
-          p.wt.close(1000, "Logged in from another location", { drain: true });
+          if (p.wt && p.wt.readyState === 1) {
+            p.wt.close(1000, "Logged in from another location", { drain: true });
+          }
+        } finally {
+          playerCache.remove(p.id);
+          forgetNpcStream(p.id);
         }
-        playerCache.remove(p.id);
-        forgetNpcStream(p.id);
-        break;
-      }
-    }
+      },
+    });
 
     // Cells phase 7: a login from the database after a crash plays from the last snapshot when it is newer than the
     // last save (cluster/recovery.ts). It runs before the player is cached, because the cache's add claims the owner
@@ -3883,7 +3904,7 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
       const store = clusterStore();
       if (store) {
         await recoverLogin(playerData, {
-          stamp: (username) => player.saveStamp(username),
+          stamp: () => player.saveStamp(playerData.accountId),
           snapshot: (username) => readSnapshot(store, username),
           knownMap: (map) => mapPropertiesCache.some((m: any) => m.name === `${map}.json`),
         });
@@ -4067,6 +4088,9 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
 
     playerCache.add(wt.data.id, {
       username: playerData.username,
+      characterId: playerData.characterId,
+      accountId: playerData.accountId,
+      accountUsername: playerData.accountUsername,
       animation: null,
       isAdmin: playerData.isAdmin,
       isStealth: playerData.isStealth,

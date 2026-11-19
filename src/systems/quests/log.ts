@@ -7,6 +7,7 @@ import { listener } from "../../modules/event_bus";
 import { Events } from "../events";
 import { onPeerNews, tellPeers } from "../../cluster/peernews";
 import { find, questsGivenBy, questsEndedBy, isGiver, isEnder } from "./definitions";
+import { characterIdOf, needCharacterId } from "../characterids";
 
 export const MAX_ACTIVE_QUESTS = 25;
 export const DAILY_RESET_UTC_HOUR = 3;
@@ -49,7 +50,7 @@ export function lastResetBoundary(nowMs: number = Date.now()): number {
 
 const lower = (s: unknown): string => String(s ?? "").toLowerCase();
 
-/** A row of quest_log, without the username. */
+/** A row of quest_log, without the character. */
 export interface QuestLogRow {
   quest_id: number;
   state: string;
@@ -58,7 +59,7 @@ export interface QuestLogRow {
   times_completed: number;
 }
 
-/** A row of quest_objective_progress, without the username. */
+/** A row of quest_objective_progress, without the character. */
 export interface QuestProgressRow {
   quest_id: number;
   objective_id: number;
@@ -75,19 +76,23 @@ export interface QuestRows {
 // what is asked instead of the database; every write below and in the
 // objectives goes to the database and then to them. The log an online player
 // carries (getCachedLog) is the working copy the same functions keep.
-const logRows = rowCache<QuestLogRow[]>("quest_log", async (username) =>
-  ((await query(
-    "SELECT quest_id, state, accepted_at, completed_at, times_completed FROM quest_log WHERE username = ?",
-    [username]
-  )) as QuestLogRow[]) || []
-, { perPlayer: true });
+const logRows = rowCache<QuestLogRow[]>("quest_log", async (username) => {
+  const characterId = await characterIdOf(String(username));
+  if (characterId === null) return [];
+  return ((await query(
+    "SELECT quest_id, state, accepted_at, completed_at, times_completed FROM quest_log WHERE character_id = ?",
+    [characterId]
+  )) as QuestLogRow[]) || [];
+}, { perPlayer: true });
 
-const progressRows = rowCache<QuestProgressRow[]>("quest_progress", async (username) =>
-  ((await query(
-    "SELECT quest_id, objective_id, count FROM quest_objective_progress WHERE username = ?",
-    [username]
-  )) as QuestProgressRow[]) || []
-, { perPlayer: true });
+const progressRows = rowCache<QuestProgressRow[]>("quest_progress", async (username) => {
+  const characterId = await characterIdOf(String(username));
+  if (characterId === null) return [];
+  return ((await query(
+    "SELECT quest_id, objective_id, count FROM quest_objective_progress WHERE character_id = ?",
+    [characterId]
+  )) as QuestProgressRow[]) || [];
+}, { perPlayer: true });
 
 /** Picks the rows of one quest. */
 export const ofQuest = (questId: number) => (row: { quest_id: number }): boolean => Number(row.quest_id) === Number(questId);
@@ -132,13 +137,13 @@ function forEveryone<T>(write: () => Promise<T>): Promise<T> {
  * what it answers (resyncLog), and the failure is the caller's to handle. A
  * caller changes the log the player carries only once this has resolved.
  */
-export function writeQuestRows<T>(username: string, write: (rows: QuestRows) => Promise<T>): Promise<T> {
+export function writeQuestRows<T>(username: string, write: (rows: QuestRows, characterId: number) => Promise<T>): Promise<T> {
   const uname = lower(username);
   return oneAtATime(uname, async () => {
     const held = await rowsOf(uname);
     const rows = { ...held };
     try {
-      const result = await write(rows);
+      const result = await write(rows, await needCharacterId(uname));
       if (rows.log !== held.log) await logRows.set(uname, rows.log);
       if (rows.progress !== held.progress) await progressRows.set(uname, rows.progress);
       return result;
@@ -158,9 +163,10 @@ export function writeQuestRows<T>(username: string, write: (rows: QuestRows) => 
  * put back in step, as there. A caller changes the log the player carries in
  * a step of its own, for once the batch is kept.
  */
-export async function writeQuestRowsIn(batch: Batch, username: string, write: (rows: QuestRows) => void): Promise<void> {
+export async function writeQuestRowsIn(batch: Batch, username: string, write: (rows: QuestRows, characterId: number) => void): Promise<void> {
   const uname = lower(username);
   await batch.hold(oneAtATime, uname);
+  const characterId = await needCharacterId(uname);
   const rows = await batch.pending(logRows, uname, async () => {
     const held = await rowsOf(uname);
     const pending = { ...held };
@@ -174,7 +180,7 @@ export async function writeQuestRowsIn(batch: Batch, username: string, write: (r
     });
     return pending;
   });
-  write(rows);
+  write(rows, characterId);
 }
 
 function findCachedPlayer(username: string): any | null {
@@ -396,25 +402,25 @@ async function begin(username: string, quest: Quest): Promise<AcceptResult> {
     progress: {},
   };
   try {
-    await writeQuestRows(username, async (rows) => {
+    await writeQuestRows(username, async (rows, characterId) => {
       // The counts of an earlier run go first: if the rest fails, the quest
       // is not left active with them still in place.
-      await query("DELETE FROM quest_objective_progress WHERE username = ? AND quest_id = ?", [uname, quest.id]);
+      await query("DELETE FROM quest_objective_progress WHERE character_id = ? AND quest_id = ?", [characterId, quest.id]);
       rows.progress = rows.progress.filter((row) => !ofQuest(quest.id)(row));
       const prior = rows.log.find(ofQuest(quest.id));
       const timesCompleted = Number(prior?.times_completed) || 0;
       entry.times_completed = timesCompleted;
       if (prior) {
-        await query("UPDATE quest_log SET state = ?, accepted_at = ?, completed_at = 0 WHERE username = ? AND quest_id = ?", [
+        await query("UPDATE quest_log SET state = ?, accepted_at = ?, completed_at = 0 WHERE character_id = ? AND quest_id = ?", [
           entry.state,
           now,
-          uname,
+          characterId,
           quest.id,
         ]);
         rows.log = rows.log.map((row) => (ofQuest(quest.id)(row) ? { ...row, state: entry.state, accepted_at: now, completed_at: 0 } : row));
       } else {
-        await query("INSERT INTO quest_log (username, quest_id, state, accepted_at, completed_at, times_completed) VALUES (?, ?, ?, ?, 0, ?)", [
-          uname,
+        await query("INSERT INTO quest_log (character_id, quest_id, state, accepted_at, completed_at, times_completed) VALUES (?, ?, ?, ?, 0, ?)", [
+          characterId,
           quest.id,
           entry.state,
           now,
@@ -458,11 +464,11 @@ export async function abandon(username: string, questId: number): Promise<void> 
   const uname = lower(username);
   const qid = Number(questId);
   try {
-    await writeQuestRows(username, async (rows) => {
-      await query("DELETE FROM quest_objective_progress WHERE username = ? AND quest_id = ?", [uname, qid]);
+    await writeQuestRows(username, async (rows, characterId) => {
+      await query("DELETE FROM quest_objective_progress WHERE character_id = ? AND quest_id = ?", [characterId, qid]);
       rows.progress = rows.progress.filter((row) => !ofQuest(qid)(row));
       // Only delete non-completed rows: abandoning must not erase history.
-      await query("DELETE FROM quest_log WHERE username = ? AND quest_id = ? AND state != 'completed'", [uname, qid]);
+      await query("DELETE FROM quest_log WHERE character_id = ? AND quest_id = ? AND state != 'completed'", [characterId, qid]);
       rows.log = rows.log.filter((row) => !ofQuest(qid)(row) || row.state === "completed");
     });
   } catch (error) {
@@ -511,23 +517,23 @@ export async function forceComplete(username: string, questId: number): Promise<
 
   const now = Date.now();
   try {
-    await writeQuestRows(username, async (rows) => {
+    await writeQuestRows(username, async (rows, characterId) => {
       const prior = rows.log.find(ofQuest(quest.id));
       const timesCompleted = (Number(prior?.times_completed) || 0) + 1;
       if (prior) {
         await query(
-          "UPDATE quest_log SET state = 'completed', completed_at = ?, times_completed = ? WHERE username = ? AND quest_id = ?",
-          [now, timesCompleted, uname, quest.id]
+          "UPDATE quest_log SET state = 'completed', completed_at = ?, times_completed = ? WHERE character_id = ? AND quest_id = ?",
+          [now, timesCompleted, characterId, quest.id]
         );
         rows.log = rows.log.map((row) => (ofQuest(quest.id)(row) ? { ...row, state: "completed", completed_at: now, times_completed: timesCompleted } : row));
       } else {
         await query(
-          "INSERT INTO quest_log (username, quest_id, state, accepted_at, completed_at, times_completed) VALUES (?, ?, 'completed', ?, ?, ?)",
-          [uname, quest.id, now, now, timesCompleted]
+          "INSERT INTO quest_log (character_id, quest_id, state, accepted_at, completed_at, times_completed) VALUES (?, ?, 'completed', ?, ?, ?)",
+          [characterId, quest.id, now, now, timesCompleted]
         );
         rows.log = [...rows.log, { quest_id: quest.id, state: "completed", accepted_at: now, completed_at: now, times_completed: timesCompleted }];
       }
-      await query("DELETE FROM quest_objective_progress WHERE username = ? AND quest_id = ?", [uname, quest.id]);
+      await query("DELETE FROM quest_objective_progress WHERE character_id = ? AND quest_id = ?", [characterId, quest.id]);
       rows.progress = rows.progress.filter((row) => !ofQuest(quest.id)(row));
     });
   } catch (error) {
@@ -547,10 +553,10 @@ export async function forget(username: string, questId: number): Promise<void> {
   const uname = lower(username);
   const qid = Number(questId);
   try {
-    await writeQuestRows(username, async (rows) => {
-      await query("DELETE FROM quest_objective_progress WHERE username = ? AND quest_id = ?", [uname, qid]);
+    await writeQuestRows(username, async (rows, characterId) => {
+      await query("DELETE FROM quest_objective_progress WHERE character_id = ? AND quest_id = ?", [characterId, qid]);
       rows.progress = rows.progress.filter((row) => !ofQuest(qid)(row));
-      await query("DELETE FROM quest_log WHERE username = ? AND quest_id = ?", [uname, qid]);
+      await query("DELETE FROM quest_log WHERE character_id = ? AND quest_id = ?", [characterId, qid]);
       rows.log = rows.log.filter((row) => !ofQuest(qid)(row));
     });
   } catch (error) {
@@ -707,11 +713,11 @@ export async function turnIn(
 
       const now = Date.now();
       const timesCompleted = (entry.times_completed || 0) + 1;
-      await writeQuestRowsIn(batch, username, (rows) => {
+      await writeQuestRowsIn(batch, username, (rows, characterId) => {
         // It must change the row: a quest that is no longer in the log pays nothing.
         batch.add({
-          sql: "UPDATE quest_log SET state = 'completed', completed_at = ?, times_completed = ? WHERE username = ? AND quest_id = ?",
-          values: [now, timesCompleted, uname, quest.id],
+          sql: "UPDATE quest_log SET state = 'completed', completed_at = ?, times_completed = ? WHERE character_id = ? AND quest_id = ?",
+          values: [now, timesCompleted, characterId, quest.id],
           mustChange: true,
         });
         rows.log = rows.log.map((row) => (ofQuest(quest.id)(row) ? { ...row, state: "completed", completed_at: now, times_completed: timesCompleted } : row));

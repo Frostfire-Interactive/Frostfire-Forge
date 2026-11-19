@@ -24,6 +24,11 @@ export interface PresenceOptions {
    * the epoch the directory entry holds now, which a lift raises; null keeps the claimed one.
    */
   onClaimed?(player: any, entry: DirectoryEntry): Promise<number | null>;
+  /**
+   * The names of the other characters of the player's account (its own name may be among them): a login displaces
+   * a session of any of them on another node, as one account plays one character at a time. None when not given.
+   */
+  siblings?(player: any): Promise<string[]>;
   /** The store's health. The node's (health.ts) unless a test gives another. */
   health?: StoreGate;
   /** How long a claim or a release waits for the store (ms). PRESENCE_HOLD_MS unless given. */
@@ -32,7 +37,7 @@ export interface PresenceOptions {
 
 export function trackPresence(
   directory: PlayerDirectory,
-  onDisplaced: (previous: DirectoryEntry, username: string) => void,
+  onDisplaced: (previous: DirectoryEntry, username: string, player?: any) => void,
   options: PresenceOptions = {},
 ): () => void {
   const claims = new Map<string, Promise<number | null>>();
@@ -44,6 +49,22 @@ export function trackPresence(
   let stopped = false;
   const whenUp = <T>(what: string, work: () => Promise<T>): Promise<T> =>
     runWhenUp(gate, what, work, { holdMs: options.storeHoldMs ?? PRESENCE_HOLD_MS, attempts: PRESENCE_ATTEMPTS, alive: () => !stopped });
+
+  // Another character of the account, live on another node: that node closes it. The directory is only read for
+  // it: the entry is that character's and goes when its node lets it go.
+  const displaceSiblings = async (username: string, value: any) => {
+    if (!options.siblings) return;
+    try {
+      const own = username.toLowerCase();
+      for (const name of await options.siblings(value)) {
+        if (!name || name.toLowerCase() === own) continue;
+        const entry = await directory.get(name);
+        if (entry && entry.nodeId !== directory.nodeId) onDisplaced(entry, name, value);
+      }
+    } catch (error) {
+      log.error(`The other characters of ${username}'s account were not checked for a session elsewhere: ${error}`);
+    }
+  };
 
   const stopAdd = playerCache.onAdd((key, value) => {
     const username = value?.username;
@@ -63,7 +84,10 @@ export function trackPresence(
         // Taken out first: a throw below reaches the catch, which must not name them a second time.
         const told = [...replaced.values()];
         replaced.clear();
-        if (!options.quiet?.(username)) for (const previous of told) onDisplaced(previous, username);
+        if (!options.quiet?.(username)) {
+          for (const previous of told) onDisplaced(previous, username, value);
+          await displaceSiblings(username, value);
+        }
         if (!options.onClaimed) return entry.epoch;
         // The release below must name the entry as it is now: a lifted entry holds a higher epoch than the claim.
         try {
@@ -78,7 +102,7 @@ export function trackPresence(
         else log.error(`Directory claim for ${username} failed: ${error}`);
         // A swap that happened before the failure still took those logins' entries: they are told, so the player is
         // not live there and here.
-        if (!options.quiet?.(username)) for (const previous of replaced.values()) onDisplaced(previous, username);
+        if (!options.quiet?.(username)) for (const previous of replaced.values()) onDisplaced(previous, username, value);
         return null;
       }));
   });

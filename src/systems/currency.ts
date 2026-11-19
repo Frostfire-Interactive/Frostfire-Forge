@@ -2,6 +2,7 @@ import query, { type TransactionStatement } from "../controllers/sqldatabase";
 import { rowCache, turns } from "../services/datacache";
 import type { Batch } from "../services/batch";
 import { settledThen } from "../cluster/tradesettle";
+import { characterIdOf, needCharacterId } from "./characterids";
 
 const max_copper = 99;
 const max_silver = 99;
@@ -20,9 +21,11 @@ export const coinsOf = (worth: number): Currency => ({
 /** What coins come to, counted in copper. */
 export const coinsWorth = ({ copper, silver, gold }: Currency) => (gold * (max_silver + 1) + silver) * (max_copper + 1) + copper;
 
-// Each player's balance (null: they have no row).
+// Each player's balance (null: they have no row). Held under the character's name, kept by its id.
 const rows = rowCache<Currency>("currency", async (username) => {
-    const response = await query("SELECT copper, silver, gold FROM currency WHERE username = ?", [username]) as Currency[];
+    const characterId = await characterIdOf(String(username));
+    if (characterId === null) return null;
+    const response = await query("SELECT copper, silver, gold FROM currency WHERE character_id = ?", [characterId]) as Currency[];
     return response[0] ?? null;
 }, { perPlayer: true });
 
@@ -34,10 +37,10 @@ const oneAtATime = turns();
 /** Whether an INT column holds `value` as it was given. Any other number the database rounds or clips its own way. */
 const storedAsGiven = (value: unknown) => Number.isInteger(value) && Math.abs(value as number) <= 2147483647;
 
-/** The statement that makes a player's balance `currencyData`. */
-const saving = (username: string, { copper, silver, gold }: Currency): TransactionStatement => ({
-    sql: "INSERT INTO currency (username, copper, silver, gold) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE copper = ?, silver = ?, gold = ?",
-    values: [username, copper, silver, gold, copper, silver, gold],
+/** The statement that makes the balance of character `characterId` `currencyData`. */
+const saving = (characterId: number, { copper, silver, gold }: Currency): TransactionStatement => ({
+    sql: "INSERT INTO currency (character_id, copper, silver, gold) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE copper = ?, silver = ?, gold = ?",
+    values: [characterId, copper, silver, gold, copper, silver, gold],
 });
 
 /** After a write: the row is now what was written, unless the database does not store that as given: then it is read again. */
@@ -49,7 +52,7 @@ async function hold(username: string, { copper, silver, gold }: Currency) {
 /** set, for a change already taking its turn. */
 async function write(username: string, currencyData: Currency) {
     if (!username || !currencyData) return;
-    const statement = saving(username, currencyData);
+    const statement = saving(await needCharacterId(username), currencyData);
     try {
         await query(statement.sql, statement.values);
     } catch (error) {
@@ -120,9 +123,10 @@ async function pendingIn(batch: Batch, username: string): Promise<{ balance: Cur
  */
 async function changeIn(batch: Batch, username: string, next: (balance: Currency) => Currency): Promise<Currency> {
     const state = await pendingIn(batch, username);
+    const characterId = await needCharacterId(username);
     state.balance = next(state.balance);
     state.written = true;
-    batch.add(saving(username, state.balance));
+    batch.add(saving(characterId, state.balance));
     return { ...state.balance };
 }
 

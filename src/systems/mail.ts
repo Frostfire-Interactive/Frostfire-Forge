@@ -19,6 +19,8 @@ import assetCache from "../services/assetCache";
 import { atomically, type Batch } from "../services/batch";
 import { rowCache, turns } from "../services/datacache";
 import bags from "./bags";
+import { characterIdOf, currentNames, needCharacterId } from "./characterids";
+import { characterByName } from "./characterstore";
 import currency, { CURRENCY_LIMITS, coinsOf, coinsWorth } from "./currency";
 import ignores from "./ignores";
 import inventory from "./inventory";
@@ -151,7 +153,10 @@ export function atMailbox(boxes: Mailbox[], x: number, y: number): boolean {
 
 const sqlite = (): boolean => (process.env.DATABASE_ENGINE || "mysql") === "sqlite";
 
-/** The mail table, as the setup scripts make it. */
+/**
+ * The mail table as it is once the setup scripts have run: theirs, then the character keys they add (the
+ * character's own mailbox, character_id, and the id twins of sender and recipient). The names are kept beside the ids.
+ */
 export const MAIL_TABLE: Record<"mysql" | "sqlite", string> = {
   mysql: `
     CREATE TABLE IF NOT EXISTS mail (
@@ -168,7 +173,13 @@ export const MAIL_TABLE: Record<"mysql" | "sqlite", string> = {
       expires_at BIGINT NOT NULL,
       is_read INT NOT NULL DEFAULT 0,
       returned INT NOT NULL DEFAULT 0,
-      INDEX idx_mail_recipient (recipient)
+      character_id BIGINT NULL DEFAULT NULL,
+      sender_id BIGINT NULL DEFAULT NULL,
+      recipient_id BIGINT NULL DEFAULT NULL,
+      INDEX idx_mail_recipient (recipient),
+      INDEX idx_mail_character (character_id),
+      INDEX idx_mail_recipient_id (recipient_id),
+      CONSTRAINT fk_mail_character FOREIGN KEY (character_id) REFERENCES characters(id) ON DELETE CASCADE
     )
   `,
   sqlite: `
@@ -185,20 +196,28 @@ export const MAIL_TABLE: Record<"mysql" | "sqlite", string> = {
       sent_at INTEGER NOT NULL,
       expires_at INTEGER NOT NULL,
       is_read INTEGER NOT NULL DEFAULT 0,
-      returned INTEGER NOT NULL DEFAULT 0
+      returned INTEGER NOT NULL DEFAULT 0,
+      character_id INTEGER DEFAULT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      sender_id INTEGER DEFAULT NULL,
+      recipient_id INTEGER DEFAULT NULL
     )
   `,
 };
 
 /**
  * Start-time safety step: the setup scripts make the mail table, but a database that is already
- * live may not have had its setup run before this version starts. Safe on every start. It never
+ * live may not have had its setup run before this version starts. The table it makes is the one the
+ * setup leaves, character keys included (MAIL_TABLE), so mail by character works on it. Safe on every start. It never
  * throws: when the table cannot be made, one warning is logged and mail fails when it is used.
  */
 export async function ensureMailSchema(): Promise<boolean> {
   try {
     await query(MAIL_TABLE[sqlite() ? "sqlite" : "mysql"]);
-    if (sqlite()) await query("CREATE INDEX IF NOT EXISTS idx_mail_recipient ON mail (recipient)");
+    if (sqlite()) {
+      await query("CREATE INDEX IF NOT EXISTS idx_mail_recipient ON mail (recipient)");
+      await query("CREATE INDEX IF NOT EXISTS idx_mail_character ON mail (character_id)");
+      await query("CREATE INDEX IF NOT EXISTS idx_mail_recipient_id ON mail (recipient_id)");
+    }
     return true;
   } catch (error) {
     log.warn(`[Mail] The mail table could not be made: ${error}`);
@@ -239,10 +258,13 @@ const fromRow = (row: any): Mail => ({
   returned: Number(row.returned) === 1,
 });
 
-// Each player's mail, oldest first.
-const rows = rowCache<Mail[]>("mail", async (username) =>
-  (((await query(`SELECT ${COLUMNS} FROM mail WHERE recipient = ? ORDER BY id`, [username])) as any[]) || []).map(fromRow)
-, { perPlayer: true });
+// Each character's mail, oldest first: the rows whose character_id is the character's. A mail is to a character, not
+// to its account, so another character of the same account does not see it.
+const rows = rowCache<Mail[]>("mail", async (username) => {
+  const id = await characterIdOf(username);
+  if (id === null) return [];
+  return (((await query(`SELECT ${COLUMNS} FROM mail WHERE character_id = ? ORDER BY id`, [id])) as any[]) || []).map(fromRow);
+}, { perPlayer: true });
 
 // One change to a player's mail at a time: each works from the mail held and puts back the result.
 const oneAtATime = turns();
@@ -296,6 +318,12 @@ async function settle(what: string, work: () => Promise<string>): Promise<MailAn
   }
 }
 
+/**
+ * Whether a mail's sender is a character still (not deleted): only then can a mail go back to them. An account's
+ * username is not enough: the mail would have no character to be kept by.
+ */
+const isCharacter = async (name: string): Promise<boolean> => (await characterIdOf(lower(name))) !== null;
+
 /** Text a player wrote, without control characters (a body keeps its line breaks). */
 const cleaned = (text: unknown, lines: boolean) =>
   String(text ?? "").replace(lines ? /[\u0000-\u0009\u000B-\u001F\u007F]/g : /[\u0000-\u001F\u007F]/g, "");
@@ -305,9 +333,11 @@ async function sendBack(batch: Batch, owner: string, mail: Mail, now: number): P
   const from = await pendingIn(batch, owner);
   const to = await pendingIn(batch, lower(mail.sender));
   const back: Mail = { ...mail, recipient: lower(mail.sender), sender: owner, sent_at: now, expires_at: now + MAIL_DAYS * DAY_MS, read: false, returned: true };
+  const ownerId = await needCharacterId(owner);
+  const senderId = await needCharacterId(back.recipient);
   batch.add({
-    sql: "UPDATE mail SET recipient = ?, sender = ?, sent_at = ?, expires_at = ?, is_read = 0, returned = 1 WHERE id = ? AND recipient = ?",
-    values: [back.recipient, back.sender, back.sent_at, back.expires_at, mail.id, owner],
+    sql: "UPDATE mail SET recipient = ?, sender = ?, character_id = ?, recipient_id = ?, sender_id = ?, sent_at = ?, expires_at = ?, is_read = 0, returned = 1 WHERE id = ? AND character_id = ?",
+    values: [back.recipient, back.sender, senderId, senderId, ownerId, back.sent_at, back.expires_at, mail.id, ownerId],
     mustChange: true,
   });
   from.held = from.held.filter((held) => held.id !== mail.id);
@@ -326,13 +356,17 @@ const mail = {
     if (from.isGuest) return { ok: false, message: "Please create an account to use that feature." };
     const to = cleaned(raw?.to, false).trim().slice(0, 64);
     if (!to) return { ok: false, message: "Enter a recipient." };
-    const account = await player.getAccount(to);
-    if (!account) return { ok: false, message: `There is no character named ${to}.` };
-    const recipient = lower(account.username);
+    // The character named, never another of its account: the mail is kept by the character's id.
+    const target = await characterByName(to);
+    if (!target) return { ok: false, message: `There is no character named ${to}.` };
+    const recipient = lower(target.name);
     const sender = lower(from.username);
-    const their = named(String(account.username));
+    const their = named(target.name);
     if (recipient === sender) return { ok: false, message: "You cannot send mail to yourself." };
-    if (Number(account.guest_mode) === 1) return { ok: false, message: `${their} is a guest and cannot receive mail.` };
+    const senderId = await characterIdOf(sender);
+    if (senderId === null) return { ok: false, message: "The mail could not be sent." };
+    const account = await player.getAccount(target.name);
+    if (Number(account?.guest_mode) === 1) return { ok: false, message: `${their} is a guest and cannot receive mail.` };
 
     const subject = cleaned(raw?.subject, false).trim();
     if (!subject) return { ok: false, message: "Enter a subject." };
@@ -368,8 +402,8 @@ const mail = {
         sent_at: now, expires_at: now + MAIL_DAYS * DAY_MS, read: false, returned: false,
       };
       batch.add({
-        sql: "INSERT INTO mail (recipient, sender, subject, body, items, copper, silver, gold, sent_at, expires_at, is_read, returned) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)",
-        values: [recipient, sent.sender, subject, body, JSON.stringify(sent.items), sent.coins.copper, sent.coins.silver, sent.coins.gold, sent.sent_at, sent.expires_at],
+        sql: "INSERT INTO mail (recipient, sender, character_id, recipient_id, sender_id, subject, body, items, copper, silver, gold, sent_at, expires_at, is_read, returned) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)",
+        values: [recipient, sent.sender, target.id, target.id, senderId, subject, body, JSON.stringify(sent.items), sent.coins.copper, sent.coins.silver, sent.coins.gold, sent.sent_at, sent.expires_at],
         mustChange: true,
       }, (result) => {
         const id = insertedId(result);
@@ -391,6 +425,7 @@ const mail = {
    */
   async deliverIn(batch: Batch, recipient: string, letter: { sender: string; subject: string; body: string; items: MailItem[] }, now = Date.now()): Promise<void> {
     const to = lower(recipient);
+    const toId = await needCharacterId(to);
     const box = await pendingIn(batch, to);
     const sent: Mail = {
       id: 0, recipient: to, sender: letter.sender, subject: cleaned(letter.subject, false).slice(0, SUBJECT_MAX),
@@ -398,8 +433,8 @@ const mail = {
       coins: noCoins(), sent_at: now, expires_at: now + MAIL_DAYS * DAY_MS, read: false, returned: true,
     };
     batch.add({
-      sql: "INSERT INTO mail (recipient, sender, subject, body, items, copper, silver, gold, sent_at, expires_at, is_read, returned) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1)",
-      values: [to, sent.sender, sent.subject, sent.body, JSON.stringify(sent.items), 0, 0, 0, sent.sent_at, sent.expires_at],
+      sql: "INSERT INTO mail (recipient, sender, character_id, recipient_id, sender_id, subject, body, items, copper, silver, gold, sent_at, expires_at, is_read, returned) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1)",
+      values: [to, sent.sender, toId, toId, sent.subject, sent.body, JSON.stringify(sent.items), 0, 0, 0, sent.sent_at, sent.expires_at],
       mustChange: true,
     }, (result) => {
       const id = insertedId(result);
@@ -425,6 +460,7 @@ const mail = {
     if (newStacks > 0 && carried.length + newStacks > (await bags.capacity(name))) return { ok: false, message: "Your bags are full." };
 
     return settle("taken", () => atomically([name], async (batch) => {
+      const ownerId = await needCharacterId(name);
       const box = await pendingIn(batch, name);
       const held = box.held.find((other) => other.id === Number(mailId));
       if (!held) throw new Refused("That mail is gone.");
@@ -447,12 +483,12 @@ const mail = {
         read: true,
       };
       if (!hasAttachments(left) && !left.body.trim()) {
-        batch.add({ sql: "DELETE FROM mail WHERE id = ? AND recipient = ?", values: [held.id, name], mustChange: true });
+        batch.add({ sql: "DELETE FROM mail WHERE id = ? AND character_id = ?", values: [held.id, ownerId], mustChange: true });
         box.held = box.held.filter((other) => other.id !== held.id);
       } else {
         batch.add({
-          sql: "UPDATE mail SET items = ?, copper = ?, silver = ?, gold = ?, is_read = 1 WHERE id = ? AND recipient = ?",
-          values: [JSON.stringify(left.items), left.coins.copper, left.coins.silver, left.coins.gold, held.id, name],
+          sql: "UPDATE mail SET items = ?, copper = ?, silver = ?, gold = ?, is_read = 1 WHERE id = ? AND character_id = ?",
+          values: [JSON.stringify(left.items), left.coins.copper, left.coins.silver, left.coins.gold, held.id, ownerId],
           mustChange: true,
         });
         box.held = box.held.map((other) => (other.id === held.id ? left : other));
@@ -468,7 +504,7 @@ const mail = {
     const name = lower(owner);
     const held = ((await rows.get(name)) ?? []).find((other) => other.id === Number(mailId));
     if (!held || held.read) return;
-    await write(name, "UPDATE mail SET is_read = 1 WHERE id = ? AND recipient = ?", [held.id, name], (all) =>
+    await write(name, "UPDATE mail SET is_read = 1 WHERE id = ? AND character_id = ?", [held.id, await needCharacterId(name)], (all) =>
       all.map((other) => (other.id === held.id ? { ...other, read: true } : other)));
   },
 
@@ -479,7 +515,7 @@ const mail = {
     if (!held) return { ok: false, message: "That mail is gone." };
     if (hasAttachments(held)) return { ok: false, message: "Take what is attached first." };
     return settle("deleted", async () => {
-      await write(name, "DELETE FROM mail WHERE id = ? AND recipient = ?", [held.id, name], (all) => all.filter((other) => other.id !== held.id));
+      await write(name, "DELETE FROM mail WHERE id = ? AND character_id = ?", [held.id, await needCharacterId(name)], (all) => all.filter((other) => other.id !== held.id));
       return "Mail deleted.";
     });
   },
@@ -490,7 +526,7 @@ const mail = {
     const held = ((await rows.get(name)) ?? []).find((other) => other.id === Number(mailId));
     if (!held) return { ok: false, message: "That mail is gone." };
     if (held.returned) return { ok: false, message: "Mail that was sent back cannot be sent back again." };
-    if (!(await player.getAccount(held.sender))) return { ok: false, message: `${named(held.sender)} no longer exists.` };
+    if (!(await isCharacter(held.sender))) return { ok: false, message: `${named(held.sender)} no longer exists.` };
     const sender = lower(held.sender);
     return settle("sent back", () => atomically([name, sender], async (batch) => {
       const box = await pendingIn(batch, name);
@@ -510,17 +546,18 @@ const mail = {
     const due = ((await rows.get(name)) ?? []).filter((held) => held.expires_at <= now);
     if (due.length === 0) return;
     const goesBack = async (held: Mail) =>
-      hasAttachments(held) && !held.returned && lower(held.sender) !== name && !!(await player.getAccount(held.sender));
+      hasAttachments(held) && !held.returned && lower(held.sender) !== name && (await isCharacter(held.sender));
     const senders: string[] = [];
     for (const held of due) if (await goesBack(held)) senders.push(lower(held.sender));
     try {
       await atomically([name, ...senders], async (batch) => {
+        const ownerId = await needCharacterId(name);
         const box = await pendingIn(batch, name);
         for (const held of box.held.filter((other) => other.expires_at <= now)) {
           if (senders.includes(lower(held.sender)) && (await goesBack(held))) {
             await sendBack(batch, name, held, now);
           } else {
-            batch.add({ sql: "DELETE FROM mail WHERE id = ? AND recipient = ?", values: [held.id, name] });
+            batch.add({ sql: "DELETE FROM mail WHERE id = ? AND character_id = ?", values: [held.id, ownerId] });
             box.held = box.held.filter((other) => other.id !== held.id);
             box.written = true;
           }
@@ -536,12 +573,15 @@ const mail = {
     const name = lower(owner);
     await mail.expire(name, now);
     const definitions = new Map((((await assetCache.get("items")) as Item[]) || []).map((item) => [lower(item.name), item]));
-    return ((await rows.get(name)) ?? [])
+    const kept = (await rows.get(name)) ?? [];
+    // A sender is shown by the name its character goes by; the game's own senders are no character's.
+    const senders = await currentNames(kept.map((one) => one.sender));
+    return kept
       .slice()
       .sort((a, b) => b.sent_at - a.sent_at || b.id - a.id)
       .map((held) => ({
         id: held.id,
-        sender: named(held.sender),
+        sender: named(senders.get(lower(held.sender)) ?? held.sender),
         subject: held.subject,
         body: held.body,
         items: held.items.map(({ name: item, quantity }) => ({ ...(definitions.get(lower(item)) ?? { name: item }), quantity })),

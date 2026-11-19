@@ -38,7 +38,8 @@ export function calculateFileChecksum(filePath: string): string {
   }
 }
 
-export function calculateAllMapChecksums(): Record<string, string> {
+/** Every map file's checksum, worked out on the calling thread (checksums.worker.ts; calculateAllMapChecksums off it). */
+export function allMapChecksumsNow(): Record<string, string> {
   const checksums: Record<string, string> = {};
 
   if (!fs.existsSync(mapDir)) {
@@ -56,13 +57,82 @@ export function calculateAllMapChecksums(): Record<string, string> {
   return checksums;
 }
 
-/** The checksum of one map's file here, or "" when there is none. */
-export function calculateMapChecksum(mapName: string): string {
+/** The checksum of one map's file here, or "" when there is none, worked out on the calling thread. */
+export function mapChecksumNow(mapName: string): string {
   try {
     const filePath = getValidMapPath(mapName);
     return fs.existsSync(filePath) ? calculateFileChecksum(filePath) : "";
   } catch {
     return "";
+  }
+}
+
+// The worker that works the checksums out (checksums.worker.ts), started on first use. It keeps the checksums it has
+// worked out, so a file not written since is not read again. It does not keep the process alive.
+let worker: Worker | null = null;
+let nextId = 0;
+const waiting = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>();
+
+function checksumWorker(): Worker {
+  if (worker) return worker;
+  const w = new Worker(new URL("./checksums.worker.ts", import.meta.url));
+  (w as Worker & { unref?: () => void }).unref?.();
+  w.onmessage = (event: MessageEvent) => {
+    const { id, result, error } = event.data as { id: number; result?: unknown; error?: string };
+    const call = waiting.get(id);
+    if (!call) return;
+    waiting.delete(id);
+    if (error !== undefined) call.reject(new Error(error));
+    else call.resolve(result);
+  };
+  const fail = (event: any) => {
+    if (worker === w) worker = null;
+    const error = new Error(`the checksum worker failed: ${event?.message ?? event}`);
+    for (const call of waiting.values()) call.reject(error);
+    waiting.clear();
+    w.terminate();
+  };
+  w.onerror = fail;
+  w.addEventListener("close", () => {
+    if (worker === w) worker = null;
+    if (waiting.size) fail("it stopped");
+  });
+  worker = w;
+  return w;
+}
+
+function inWorker<T>(message: { map?: string }): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const id = ++nextId;
+    waiting.set(id, { resolve, reject });
+    try {
+      checksumWorker().postMessage({ id, ...message });
+    } catch (error: any) {
+      waiting.delete(id);
+      reject(error);
+    }
+  });
+}
+
+/**
+ * Every map file's checksum, by file name, worked out in a worker: a first pass reads, parses and hashes every map
+ * (some 1,800 files), which held the event loop for over a second. Should the worker fail, it is done here instead.
+ */
+export async function calculateAllMapChecksums(): Promise<Record<string, string>> {
+  try {
+    return await inWorker<Record<string, string>>({});
+  } catch (error) {
+    console.error("Map checksums could not be worked out in the worker, so they are here:", error);
+    return allMapChecksumsNow();
+  }
+}
+
+/** The checksum of one map's file here, or "" when there is none (worked out in the worker, as calculateAllMapChecksums). */
+export async function calculateMapChecksum(mapName: string): Promise<string> {
+  try {
+    return await inWorker<string>({ map: mapName });
+  } catch {
+    return mapChecksumNow(mapName);
   }
 }
 

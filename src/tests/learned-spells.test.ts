@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
-import { databaseModule } from "./setup";
+import { characterDatabaseModule } from "./setup";
 
 // ------------------------------------------------------------ fake database
 // The statements the spell system sends about what players have learned, run
@@ -44,7 +44,7 @@ function run(sql: string, params: any[]): any {
   throw new Error(`The fake database does not understand: ${sql}`);
 }
 
-mock.module("../controllers/sqldatabase", () => databaseModule({
+mock.module("../controllers/sqldatabase", () => characterDatabaseModule({
   default: async (sql: string, params: any[] = []) => {
     queries.push([sql, params]);
     if (failing?.test(sql)) {
@@ -64,6 +64,8 @@ const assets = new Map<string, any>([
 ]);
 mock.module("../services/assetCache", () => ({
   default: {
+    // The quest definitions call onChange as they load: a file loaded later is handed this stand-in (mock.module outlives its file).
+    onChange: () => () => {},
     get: async (key: string) => assets.get(key),
     set: async (key: string, value: any) => assets.set(key, value),
     add: async (key: string, value: any) => assets.set(key, value),

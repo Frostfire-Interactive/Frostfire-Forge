@@ -78,16 +78,30 @@ function getNextWorker(): Worker {
   return worker;
 }
 
+/** How long a query is waited for here, unless setQueryTimeout says otherwise (cluster/tradesettle.ts counts on it). */
+const CLIENT_QUERY_TIMEOUT_MS = 30000;
+let queryTimeoutMs: number | undefined;
+
+/**
+ * How long one query may run, for this process, in place of the usual limits (15s in the worker, 30s here). For long
+ * work such as schema changes (database_setup.ts): an ALTER TABLE on a large table rebuilds it and can take minutes,
+ * and a query that times out in the worker is sent again while the first one still runs.
+ */
+export function setQueryTimeout(ms: number): void {
+  queryTimeoutMs = ms;
+}
+
 /** Hands `work` to the next worker and waits for its answer. */
 function ask<T>(work: { sql: string; values: any[] } | { transaction: TransactionStatement[]; openBy?: number }): Promise<T> {
   return new Promise((resolve, reject) => {
     const queryId = `query_${++queryIdCounter}_${Date.now()}`;
     const worker = getNextWorker();
 
+    const waitMs = queryTimeoutMs === undefined ? CLIENT_QUERY_TIMEOUT_MS : queryTimeoutMs + 5000;
     const timeout = setTimeout(() => {
       pendingQueries.delete(queryId);
-      reject(new Error('Query timeout after 30 seconds'));
-    }, 30000);
+      reject(new Error(`Query timeout after ${Math.round(waitMs / 1000)} seconds`));
+    }, waitMs);
 
     pendingQueries.set(queryId, {
       resolve: (value: any) => {
@@ -100,7 +114,7 @@ function ask<T>(work: { sql: string; values: any[] } | { transaction: Transactio
       }
     });
 
-    worker.postMessage({ id: queryId, ...work });
+    worker.postMessage(queryTimeoutMs === undefined ? { id: queryId, ...work } : { id: queryId, ...work, queryTimeout: queryTimeoutMs });
   });
 }
 

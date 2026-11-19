@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, mock, setSystemTime, spyOn, test } from "bun:test";
-import { databaseModule } from "./setup";
+import { characterDatabaseModule, testCharacterId } from "./setup";
 import log from "../modules/logger";
 
 // Generated at server start (`bun create-config`) and gitignored, so CI has
@@ -79,6 +79,8 @@ function run(sql: string, params: any[] = []): any {
 }
 
 function write(text: string, args: any[]): any {
+  // The character rows' party and guild references (clear): this fake keeps no characters table.
+  if (/^UPDATE characters SET (party_id|guild_id) = NULL(?: WHERE guild_id IN \(SELECT id FROM guilds WHERE leader IN \(SELECT username FROM accounts WHERE guest_mode = 1\)\))?$/.test(text)) return { affectedRows: 0 };
   const update = text.match(/^UPDATE (\w+) SET (.+?)(?: WHERE (\w+) = \?)?$/);
   if (update) {
     const [, table, sets, column] = update;
@@ -135,6 +137,15 @@ function write(text: string, args: any[]): any {
     tables[table] = (tables[table] || []).filter((row) => !ids.includes(row.guild_id));
     return { affectedRows: before - tables[table].length };
   }
+  // The rows from before character_id keyed by a guest's name (clear), in batches.
+  const guestNamed = text.match(/^DELETE FROM (\w+) WHERE (\w+) LIKE 'guest!_%' ESCAPE '!'(?: LIMIT (\d+))?$/);
+  if (guestNamed) {
+    const [, table, column] = guestNamed;
+    const limit = guestNamed[3] ? Number(guestNamed[3]) : Infinity;
+    let removed = 0;
+    tables[table] = (tables[table] || []).filter((row) => !(String(row[column] ?? "").startsWith("guest_") && removed++ < limit));
+    return { affectedRows: removed };
+  }
   // `= ?` is one player's rows: a demoted admin's permissions (toggleAdmin).
   const remove =text.match(/^DELETE FROM (\w+)(?: WHERE (\w+) (IN \(SELECT username FROM accounts WHERE guest_mode = 1\)|= 1|= \?))?$/);
   if (remove) {
@@ -149,7 +160,7 @@ function write(text: string, args: any[]): any {
   throw new Error(`The fake database does not understand: ${text}`);
 }
 
-mock.module("../controllers/sqldatabase", () => databaseModule({
+mock.module("../controllers/sqldatabase", () => characterDatabaseModule({
   default: async (sql: string, params: any[] = []) => run(sql, params),
 }));
 
@@ -198,6 +209,11 @@ const stats = (username: string, over: Row = {}): Row => ({
 const config = (username: string, over: Row = {}): Row => ({
   id: 1, username, fps: 60, music_volume: 50, effects_volume: 50, muted: 0, hotbar_config: null, inventory_config: null, ...over,
 });
+/** A config row as the player system holds it: by the character's id (the stand-in keeps it by name). */
+const heldConfig = (username: string, over: Row = {}): Row => {
+  const { username: _name, ...rest } = config(username, over);
+  return { ...rest, character_id: testCharacterId(username) };
+};
 
 const row = (username: string, table = "accounts") => tables[table].find((r) => r.username === username)!;
 
@@ -485,7 +501,7 @@ describe("a search of the accounts", () => {
 describe("a write to an account", () => {
   test("toggleAdmin writes the role, and the next check has it without asking", async () => {
     expect(await player.isAdmin("pc_hero")).toBe(false);
-    expect(await sentBy(async () => { expect(await player.toggleAdmin("PC_Hero")).toBe(true); })).toEqual(["UPDATE accounts SET role = ? WHERE username = ?"]);
+    expect(await sentBy(async () => { expect(await player.toggleAdmin("PC_Hero")).toBe(true); })).toEqual(["UPDATE accounts SET role = ? WHERE id = ?"]);
     expect(row("pc_hero").role).toBe(1);
     expect(await fromCache(() => player.isAdmin("pc_hero"))).toBe(true);
   });
@@ -564,14 +580,27 @@ describe("a write to an account", () => {
   });
 
   test("a save made for a session that has already left the players held is read once the player is let go", async () => {
-    // A disconnect: the player leaves the players held, is saved by session id, and is then forgotten.
+    // A disconnect: the player leaves the players held, is saved by session id (the player handed in), and is then forgotten.
     online("6101", "pc_hero");
     await location("pc_hero");
+    const leaving = playerCache.get("6101");
     playerCache.remove("6101");
-    await player.setLocation("6101", "cave", { x: 7, y: 8, direction: "up" });
+    await player.setLocation("6101", "cave", { x: 7, y: 8, direction: "up" }, leaving);
     expect(row("pc_hero")).toMatchObject({ map: "cave", position: "7,8" });
     await forgetPlayer("pc_hero");
     expect(await location("pc_hero")).toEqual({ map: "cave", position: { x: 7, y: 8, direction: "up" } });
+  });
+
+  test("a save for a session nobody holds, with no player handed in, is not sent: it has no character to write", async () => {
+    online("6101", "pc_hero");
+    await location("pc_hero");
+    playerCache.remove("6101");
+    expect(await sentBy(async () => {
+      expect(await player.setLocation("6101", "cave", { x: 7, y: 8, direction: "up" })).toEqual({ affectedRows: 0 });
+      expect(await player.arriveAt("6101", "cave", { x: 7, y: 8, direction: "up" })).toBe(false);
+      expect(await player.returnHome("6101")).toEqual({ affectedRows: 0 });
+    })).toEqual([]);
+    expect(row("pc_hero")).toMatchObject({ map: "overworld", position: "320,480" });
   });
 
   test("a write the database stores differently from what it was given has the row read again", async () => {
@@ -727,9 +756,9 @@ describe("a player's stats", () => {
 
 describe("a player's client config", () => {
   test("is read once, as the rows it always was", async () => {
-    expect(await player.getConfig("PC_Hero")).toEqual([config("pc_hero")]);
+    expect(await player.getConfig("PC_Hero")).toEqual([heldConfig("pc_hero")]);
     expect(queries).toEqual(["SELECT * FROM clientconfig WHERE username = ?"]);
-    expect(await fromCache(() => player.getConfig("pc_hero"))).toEqual([config("pc_hero")]);
+    expect(await fromCache(() => player.getConfig("pc_hero"))).toEqual([heldConfig("pc_hero")]);
     expect(await player.getConfig("pc_nobody")).toEqual([]);
     expect(await player.getConfig("")).toBeUndefined();
   });
@@ -741,7 +770,7 @@ describe("a player's client config", () => {
       "UPDATE clientconfig SET fps = ?, music_volume = ?, effects_volume = ?, muted = ? WHERE username = ?",
     ]);
     expect(row("pc_hero", "clientconfig")).toMatchObject({ fps: 144, music_volume: 0, effects_volume: 35, muted: 1 });
-    expect(await fromCache(() => player.getConfig("pc_hero"))).toEqual([config("pc_hero", { fps: 144, music_volume: 0, effects_volume: 35, muted: 1 })]);
+    expect(await fromCache(() => player.getConfig("pc_hero"))).toEqual([heldConfig("pc_hero", { fps: 144, music_volume: 0, effects_volume: 35, muted: 1 })]);
   });
 
   test("setConfig refuses what is not a config, and a session nobody is online under", async () => {
@@ -768,7 +797,7 @@ describe("a player's client config", () => {
     await player.saveHotBarConfig("PC_Hero", { 1: "frost_bolt" });
     await player.saveInventoryConfig("pc_hero", { 0: "shield", 3: "potion" });
     expect(row("pc_hero", "clientconfig")).toMatchObject({ hotbar_config: '{"1":"frost_bolt"}', inventory_config: '{"0":"shield","3":"potion"}' });
-    expect(await fromCache(() => player.getConfig("pc_hero"))).toEqual([config("pc_hero", { hotbar_config: { 1: "frost_bolt" }, inventory_config: { 0: "shield", 3: "potion" } })]);
+    expect(await fromCache(() => player.getConfig("pc_hero"))).toEqual([heldConfig("pc_hero", { hotbar_config: { 1: "frost_bolt" }, inventory_config: { 0: "shield", 3: "potion" } })]);
   });
 
   test("a layout text that does not parse is held as null, with one warning", async () => {
@@ -793,7 +822,7 @@ describe("a player's client config", () => {
     await player.saveHotBarConfig("pc_hero", { 1: "frost_bolt" });
 
     const held = await fromCache(() => player.getConfig("pc_hero"));
-    expect(held).toEqual([config("pc_hero", { hotbar_config: { 1: "frost_bolt" }, inventory_config: { 0: "shield" } })]);
+    expect(held).toEqual([heldConfig("pc_hero", { hotbar_config: { 1: "frost_bolt" }, inventory_config: { 0: "shield" } })]);
     // As the database would say it.
     await clearCaches();
     expect(await player.getConfig("pc_hero")).toEqual(held);
@@ -820,7 +849,7 @@ describe("a player's client config", () => {
       "UPDATE clientconfig SET fps = ?, music_volume = ?, effects_volume = ?, ambience_volume = ?, muted = ? WHERE username = ?",
     ]);
     expect(row("pc_hero", "clientconfig")).toMatchObject({ fps: 60, music_volume: 10, effects_volume: 20, ambience_volume: 30, muted: 0 });
-    expect(await fromCache(() => player.getConfig("pc_hero"))).toEqual([config("pc_hero", { fps: 60, music_volume: 10, effects_volume: 20, ambience_volume: 30, weather_volume: 60, auto_loot: 0, muted: 0 })]);
+    expect(await fromCache(() => player.getConfig("pc_hero"))).toEqual([heldConfig("pc_hero", { fps: 60, music_volume: 10, effects_volume: 20, ambience_volume: 30, weather_volume: 60, auto_loot: 0, muted: 0 })]);
     // a client from before the slider
     expect(await sentBy(() => player.setConfig("6101", { fps: 60, music_volume: 11, effects_volume: 20, muted: false }))).toEqual([
       "UPDATE clientconfig SET fps = ?, music_volume = ?, effects_volume = ?, muted = ? WHERE username = ?",
@@ -893,14 +922,16 @@ describe("the guest clean-up", () => {
   test("that the database stops half way still has them read again", async () => {
     await player.getPartyIdByUsername("pc_ally");
     await player.getStats("guest_pc");
-    // The parties are taken off every account and the guest's first rows deleted, then the connection is lost.
+    // The parties are taken off every account and the guest's permissions deleted, then the connection is lost.
     writesLeft = 3;
     await expect(player.clear()).rejects.toThrow("database gone");
     writesLeft = Infinity;
     expect(tables.accounts.some((r) => r.username === "guest_pc")).toBe(true);
 
     expect(await player.getPartyIdByUsername("pc_ally")).toBeNull();
-    expect(await player.getStats("guest_pc")).toEqual([]);
+    // The guest's own rows go with its account (the foreign keys), which was not reached: they are read again as they are.
+    expect(await player.getStats("guest_pc")).not.toEqual([]);
+    expect(told).toContain("stats *");
     expect(told).toContain("accounts *");
     expect(told).toContain("parties reload");
   });

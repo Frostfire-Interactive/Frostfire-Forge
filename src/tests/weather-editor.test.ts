@@ -17,6 +17,8 @@ let appliedAnyway: boolean;
 const queries: Array<{ sql: string; params: any[] }> = [];
 
 const PERMISSIONS = "SELECT permissions FROM permissions WHERE username = ?";
+/** The read of whose account a character is, made with the permissions: they are kept by the account. */
+const ACCOUNT_OF = "SELECT a.username FROM characters c JOIN accounts a ON a.id = c.account_id WHERE c.name_key = ? AND c.deleted_at IS NULL LIMIT 1";
 const REREAD = "SELECT * FROM weather";
 const INSERT = "INSERT INTO weather (name, temperature, humidity, wind_speed, wind_direction, precipitation, ambience, sounds) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
 const UPDATE = "UPDATE weather SET temperature = ?, humidity = ?, wind_speed = ?, wind_direction = ?, precipitation = ?, ambience = ?, sounds = ? WHERE name = ?";
@@ -37,6 +39,8 @@ async function run(sql: string, params: any[] = []): Promise<any> {
 }
 
 function apply(text: string, params: any[]): any {
+  // The account of a character (permissions are the account's): here each character is an account of its own name.
+  if (text === ACCOUNT_OF) return [{ username: params[0] }];
   if (text === PERMISSIONS) return tables.permissions.filter((r) => r.username === params[0]);
   if (text === REREAD) return tables.weather.map((r) => ({ ...r }));
   if (text === INSERT) {
@@ -67,6 +71,8 @@ mock.module("../controllers/sqldatabase", () => databaseModule({
 const cache = new Map<string, any>();
 mock.module("../services/assetCache", () => ({
   default: {
+    // The quest definitions call onChange as they load: a file loaded later is handed this stand-in (mock.module outlives its file).
+    onChange: () => () => {},
     get: async (key: string) => cache.get(key),
     set: async (key: string, value: any) => cache.set(key, value),
     add: async (key: string, value: any) => cache.set(key, value),
@@ -154,7 +160,7 @@ const heldOf = (name: string) => held().find((w) => w.name === name);
 const stored = (name: string) => tables.weather.find((w) => w.name === name);
 const writes = () => queries.filter((q) => /^(INSERT|UPDATE|DELETE)/.test(q.sql));
 /** The reads of the database that are not of the sender's permissions. */
-const reads = () => queries.filter((q) => q.sql.startsWith("SELECT") && q.sql !== PERMISSIONS);
+const reads = () => queries.filter((q) => q.sql.startsWith("SELECT") && q.sql !== PERMISSIONS && q.sql !== ACCOUNT_OF);
 
 const act = async (admin: any, type: string, data: any) => {
   const result = await editor.handleEditorPacket(admin, type, data);
@@ -219,7 +225,7 @@ describe("weather editor permissions", () => {
       expect(result.data).toBeNull();
     }
     // The sender's permissions were read once, for the first of them, and are held since.
-    expect(queries.map((q) => q.sql)).toEqual([PERMISSIONS]);
+    expect(queries.map((q) => q.sql)).toEqual([ACCOUNT_OF, PERMISSIONS]);
     expect(tables.weather).toHaveLength(4);
     expect(held()).toHaveLength(4);
     expect(shown).toEqual([]);

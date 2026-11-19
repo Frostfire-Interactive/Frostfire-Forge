@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
-import { databaseModule } from "./setup";
+import { characterDatabaseModule as databaseModule } from "./setup";
 
 // Generated at server start (`bun create-config`) and gitignored, so CI has
 // no copy on disk. Mock the values instead of requiring the file.
@@ -26,8 +26,8 @@ let failing: RegExp | null;
 /** The refused statement was written all the same: its answer is what was lost. */
 let lostAfterWriting: boolean;
 
-const LOAD = "SELECT ignored FROM ignores WHERE username = ?";
-const INSERT = "INSERT INTO ignores (username, ignored, created_at) VALUES (?, ?, ?)";
+const LOAD = "SELECT ignored FROM ignores WHERE username = ? ORDER BY created_at";
+const INSERT = "INSERT INTO ignores (username, ignored, ignored_id, created_at) VALUES (?, ?, ?, ?)";
 const DELETE = "DELETE FROM ignores WHERE username = ? AND ignored = ?";
 const ACCOUNT = /^SELECT .+ FROM accounts WHERE username = \?$/;
 
@@ -37,9 +37,9 @@ function run(sql: string, params: any[]): any {
   // A login has every system's player cache fill itself: the others' tables are not this file's, and hold nothing.
   if (sql.startsWith("SELECT ") && !sql.includes("ignores")) return [];
   if (sql === INSERT) {
-    const [username, ignored, created_at] = params;
+    const [username, ignored, ignored_id, created_at] = params;
     if (table.some((row) => row.username === username && row.ignored === ignored)) throw new Error("Duplicate entry");
-    table.push({ username, ignored, created_at });
+    table.push({ username, ignored, ignored_id, created_at });
     return { affectedRows: 1 };
   }
   if (sql === DELETE) {
@@ -110,7 +110,7 @@ describe("ignores", () => {
   test("a player ignored is on the list and in the table, by the name the account has", async () => {
     expect(await ignores.add("Hero", "TROLL", 5000)).toBe("added");
 
-    expect(table).toEqual([{ username: "hero", ignored: "troll", created_at: 5000 }]);
+    expect(table).toEqual([{ username: "hero", ignored: "troll", ignored_id: "troll", created_at: 5000 }]);
     expect(await ignores.list("hero")).toEqual(["troll"]);
     expect(await ignores.isIgnoring("hero", "Troll")).toBe(true);
     expect(await ignores.isIgnoring("troll", "hero")).toBe(false);

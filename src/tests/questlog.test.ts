@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
-import { databaseModule, standInFor } from "./setup";
+import { characterDatabaseModule, standInFor } from "./setup";
 
 const makeQuest = (over: Partial<Quest> = {}): Quest => ({
   id: 1,
@@ -64,7 +64,7 @@ function resetDb() {
 }
 resetDb();
 
-mock.module("../controllers/sqldatabase", () => databaseModule({
+mock.module("../controllers/sqldatabase", () => characterDatabaseModule({
   default: async (sql: string, params: any[] = []) => {
     queries.push(sql);
     if (sql.startsWith("SELECT") && sql.includes("FROM quest_log WHERE username = ? AND quest_id = ?")) {

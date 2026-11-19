@@ -408,7 +408,7 @@ test("the login takes the arrival before the login switch, seeds it before the c
   expect(take).toBeGreaterThan(0);
   // The name given is the one the database gave for the ticket's account.
   // Guard (review M4.2): taken only with the cluster on; a single node never takes one.
-  expect(login).toContain('const arrival = clusterEnabled()\n      ? playerHandoff.takeArrival(String(wt.data?.ticketToken ?? ""), playerData.username, String(wt.data.id))\n      : null;');
+  expect(login).toContain('const arrival = clusterEnabled()\n      ? playerHandoff.takeArrival(String(wt.data?.ticketToken ?? ""), playerData.username, String(wt.data.id), playerData.characterId)\n      : null;');
   // Guard (review M4.3, M4.4): an arrival's death and corpse are the ones it brought, never the rows'.
   expect(login).toContain("const loginDeadState = arrivalState ? arrivalState.deadState : Number(playerData.isDead) || 0;");
   expect(login).toContain("corpse: loginDeadState === 0 ? null : arrivalState ? arrivalState.corpse : playerData.corpse || null,");

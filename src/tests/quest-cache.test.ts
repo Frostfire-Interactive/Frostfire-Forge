@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
-import { databaseModule } from "./setup";
+import { characterDatabaseModule } from "./setup";
 import { GuardError } from "../controllers/sqltransaction";
 
 // Generated at server start (`bun create-config`) and gitignored, so CI has
@@ -143,7 +143,7 @@ async function ask(sql: string, params: any[] = []) {
   return run(text, params);
 }
 
-mock.module("../controllers/sqldatabase", () => databaseModule({
+mock.module("../controllers/sqldatabase", () => characterDatabaseModule({
   default: ask,
   // All of its statements or none: one that is refused, or that had to change a row and did not, puts the
   // tables back as they were. One written with its answer lost stands for a transaction kept whole and never answered.

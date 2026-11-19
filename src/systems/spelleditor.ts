@@ -481,8 +481,11 @@ async function persistedNames(): Promise<Set<string>> {
 const knownBy = rowCache<string[]>("spell_usage", async (key) => {
   // The table is asked by the name as the spell has it: not every engine finds it in another case.
   const spell = (await cachedSpells()).find((s) => lower(s.name) === key);
-  const rows = ((await query("SELECT username FROM learned_spells WHERE spell = ?", [spell?.name ?? key])) || []) as any[];
-  return rows.map((row) => String(row.username));
+  const rows = ((await query(
+    "SELECT c.name FROM learned_spells l JOIN characters c ON c.id = l.character_id WHERE l.spell = ? AND c.deleted_at IS NULL",
+    [spell?.name ?? key]
+  )) || []) as any[];
+  return rows.map((row) => String(row.name));
 });
 
 /** A spells row as the server keeps it in memory, as the asset loader builds it at startup. */

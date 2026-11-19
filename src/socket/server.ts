@@ -64,7 +64,7 @@ import { forwardTable } from "../cluster/forwarding.ts";
 import { ghosts } from "../cluster/ghosts.ts";
 import { walkIdleMsOf, walkOf } from "./arrival.ts";
 import { sendHandoffBegin, sendHandoffPrepare, sendHandoffStay } from "./handoffprepare.ts";
-import { HandoffGiveUp, playerHandoff, type NodeAddress as HandoffNode } from "../cluster/handoff.ts";
+import { HandoffGiveUp, playerHandoff, snapshotIdentity, type NodeAddress as HandoffNode } from "../cluster/handoff.ts";
 import { SHUTDOWN_DEADLINE_MS, arrivalId, boundedStep, guardedTeleport, spendsTicket } from "../cluster/handoffguards.ts";
 import { readyIn as consumableReadyIn, setReadyIn as setConsumableReadyIn } from "../systems/consumables.ts";
 import { packetsInFlight, waitIdle } from "../cluster/inflight.ts";
@@ -86,7 +86,8 @@ import * as settings from "../config/settings.json";
 import assetCache from "../services/assetCache.ts";
 import dots, { setRemoteDotCaster } from "../systems/dots.ts";
 import spellEffects, { getStunsForPlayer, getSlowsForPlayer } from "../systems/spelleffects.ts";
-import { forgetSickness, saveOnDisconnect as saveSicknessOnDisconnect } from "../systems/resurrection.ts";
+import { forgetSickness } from "../systems/resurrection.ts";
+import { saveLeavingEffects, saveLeavingState } from "./leavesave.ts";
 import effectManager from "../services/effectmanager";
 import { GatewayClient, resolveUseSSL } from "../modules/gateway-client.ts";
 import { isWhitelistEnabled, loadRealmWhitelist, onWhitelistSwitch, whitelistRealm } from "../services/whitelist.ts";
@@ -910,7 +911,7 @@ async function saveHandedOff(p: any): Promise<void> {
     let owned: boolean | null = null;
     try {
       if (p.location) {
-        const saved = await player.saveFenced(p.username, p.ownerEpoch, p.stats ?? null, p.location);
+        const saved = await player.saveFenced(p, p.ownerEpoch, p.stats ?? null, p.location);
         if (saved === "fenced") log.info(`[Save] ${p.username} was not saved at handoff: another node owns the player now`);
         owned = saved === "saved";
       }
@@ -926,9 +927,59 @@ async function saveHandedOff(p: any): Promise<void> {
     log.error(`Handoff of ${p?.username}: achievement progress not flushed: ${error}`);
   }
   if (!p.isGuest) {
-    if (p.stats) await player.setStats(p.username, p.stats);
-    if (p.id && p.location) await player.setLocation(p.id, p.location.map, p.location.position);
+    if (p.stats) await player.setStats(p, p.stats);
+    if (p.id && p.location) await player.setLocation(p.id, p.location.map, p.location.position, p);
   }
+}
+
+/**
+ * Saves a session that a newer login of its account is about to kick (receiver.ts kickDuplicateSessions), as its
+ * disconnect would (the onDisconnect listener below): the effects and sickness, the loot cleanup, the achievement
+ * progress, then the stats and location, fenced in cluster mode as there. The kick then takes the player out of the
+ * cache, so the onDisconnect of the closing socket finds nothing and saves nothing again; a close while this save
+ * runs finds the player marked (leftByKick) and leaves it to the kick. The new login has claimed the account's
+ * session already, so an unfenced location goes by the character, not the old session id. Guests are not saved.
+ */
+export async function saveKickedPlayer(p: any): Promise<void> {
+  if (!p || p.isGuest) return;
+  p.leftByKick = true;
+  saveLeavingEffects(p);
+  loot.scheduleCleanup(p.username);
+  if (fencedSaves(p)) {
+    const taken = takeAchievementProgress(p.username);
+    let owned: boolean | null = null;
+    try {
+      if (p.location) {
+        const saved = await player.saveFenced(p, p.ownerEpoch, p.stats ?? null, p.location);
+        if (saved === "fenced") log.info(`[Save] ${p.username} was not saved at kick: another node owns the player now`);
+        owned = saved === "saved";
+      }
+    } finally {
+      await settleFencedLeave(p, owned, taken);
+    }
+    return;
+  }
+  try {
+    // Achievement progress since the last save tick, as a disconnect's PLAYER_DISCONNECT flushes it.
+    await achievements.onLeave({ player: p });
+  } catch (error) {
+    log.error(`Kick of ${p?.username}: achievement progress not flushed: ${error}`);
+  }
+  await saveLeavingState(p, false);
+}
+
+/**
+ * Runs for a kicked session (receiver.ts kickDuplicateSessions) what a disconnect runs for a leaving player: the
+ * PLAYER_DISCONNECT listeners (trade end and vendor buyback, creatures, fishing, gathering, the cutscene, the
+ * achievement flush), once, with the old session's player. The kick calls it after the save and before the new
+ * login's player is added, so a listener that looks up by name finds no one but the old session. Its own close later
+ * runs none of them (onDisconnect skips a player marked leftByKick, and the drop has taken it from the cache).
+ */
+export function leaveKickedPlayer(p: any): void {
+  if (!p || p.kickLeft) return;
+  p.kickLeft = true;
+  p.leftByKick = true;
+  listener.emit(Events.PLAYER_DISCONNECT, { player: p });
 }
 
 /**
@@ -1036,8 +1087,8 @@ onLinksAttached((ctx) => {
     // during the drain were dropped.
     undrain: (p) => forceStopPlayerMovement(p),
     snapshot: (p) => ({
-      id: String(p.id),
-      username: p.username,
+      // The character's name and id and its account's: node B logs in this character (never the active one again).
+      ...snapshotIdentity(p),
       map: String(p.location?.map ?? "").replace(/\.json$/, ""),
       x: Number(p.location?.position?.x) || 0,
       y: Number(p.location?.position?.y) || 0,
@@ -1073,7 +1124,7 @@ onLinksAttached((ctx) => {
       }
     },
     forward: (playerId, username, to) => forwardTable.addPlayer(playerId, username, to),
-    saved: (token, username) => loginPrefetch.start(token, username),
+    saved: (token, who) => loginPrefetch.start(token, who),
   });
   const previousCaster = setRemoteDotCaster(dotCredit);
   nodeAddressesLive = true;
@@ -1206,12 +1257,7 @@ try {
   throw error;
 }
 
-// In a cluster only the first node of the region clears the shared guests and parties (cluster/startclear.ts, clearguard.ts).
 listener.on(Events.AWAKE, async () => {
-  await clearShared(async () => {
-    await player.clear();
-    await forgetServerOrders();
-  });
   // The handler modules import the receiver, so they load after it. Loading this one also starts following server orders.
   const { catchUpServerOrders } = await import("./handlers/commands.ts");
   await catchUpServerOrders();
@@ -1246,6 +1292,14 @@ if (blockTable) gatewayClient.reportBlocksFrom(blockTable);
 
 // A stealthed player is offline to players, so the realm list's count leaves them out (stealthoffline.ts).
 gatewayClient.setHiddenCounter(() => hiddenCount(Object.values(playerCache.list() as Record<string, any>)));
+
+// Every guest and its data, and every party, go before the realm registers: nobody can be in it yet, and a Gateway
+// that is down (registerWithRetry waits for it) does not hold the clean-up back. In a cluster only the first node of
+// the region clears the shared guests and parties (cluster/startclear.ts, clearguard.ts).
+await clearShared(async () => {
+  await player.clear();
+  await forgetServerOrders();
+});
 
 await gatewayClient.registerWithRetry();
 
@@ -1604,6 +1658,8 @@ listener.on("onDisconnect", async (data) => {
   try {
     const playerData = playerCache.get(data.id);
     if (!playerData) return;
+    // A newer login is kicking this session (saveKickedPlayer): the kick saves it and takes it out of the world.
+    if (playerData.leftByKick) return;
     left = playerData.username || null;
 
     if (data.reason === "session_stolen" && playerData.wt?.readyState === 1) {
@@ -1626,15 +1682,7 @@ listener.on("onDisconnect", async (data) => {
     }
 
     if (!playerData.isGuest) {
-      const username = playerData.username?.toLowerCase();
-      if (username) {
-        effectManager.saveDots(username, dots.getPlayerDots(String(playerData.id)) || []);
-        effectManager.saveBarriers(username, playerData.barriers || []);
-        effectManager.saveStuns(username, getStunsForPlayer(String(playerData.id)) || []);
-        effectManager.saveSlows(username, getSlowsForPlayer(String(playerData.id)) || []);
-        saveSicknessOnDisconnect(playerData);
-      }
-
+      saveLeavingEffects(playerData);
       loot.scheduleCleanup(playerData.username);
     }
 
@@ -1679,7 +1727,7 @@ listener.on("onDisconnect", async (data) => {
         let owned: boolean | null = null;
         try {
           if (playerData.location) {
-            const saved = await player.saveFenced(playerData.username, playerData.ownerEpoch, playerData.stats ?? null, playerData.location);
+            const saved = await player.saveFenced(playerData, playerData.ownerEpoch, playerData.stats ?? null, playerData.location);
             if (saved === "fenced") log.info(`[Save] ${playerData.username} was not saved at disconnect: another node owns the player now`);
             owned = saved === "saved";
           }
@@ -1689,17 +1737,7 @@ listener.on("onDisconnect", async (data) => {
           if (settling) await settleFencedLeave(settling.p, owned, settling.taken);
         }
       } else {
-        if (playerData?.stats) {
-          await player.setStats(playerData.username, playerData.stats);
-        }
-
-        if (playerData?.id && playerData?.location) {
-          await player.setLocation(
-            playerData.id,
-            playerData.location.map,
-            playerData.location.position
-          );
-        }
+        await saveLeavingState(playerData, true);
       }
     }
 
@@ -1801,7 +1839,7 @@ listener.on(Events.SAVE, async () => {
 
     try {
       if (fencedSaves(row)) {
-        const saved = await player.saveFenced(row.username, row.ownerEpoch, row.stats, row.location);
+        const saved = await player.saveFenced(row, row.ownerEpoch, row.stats, row.location);
         if (saved === "fenced") {
           // Another node owns the player now: this session is the stale one.
           log.info(`[Save] Skipping save for ${row.username} - another node owns the player (epoch ${row.ownerEpoch})`);
@@ -1818,8 +1856,8 @@ listener.on(Events.SAVE, async () => {
         return { success: true, playerId };
       }
       await Promise.all([
-        player.setStats(row.username, row.stats),
-        player.setLocation(playerId, row.location.map, row.location.position)
+        player.setStats(row, row.stats),
+        player.setLocation(playerId, row.location.map, row.location.position, row)
       ]);
       return { success: true, playerId };
     } catch (e) {

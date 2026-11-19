@@ -2,6 +2,7 @@ import query from "../controllers/sqldatabase";
 import assetCache from "../services/assetCache";
 import { rowCache, dropRows, turns } from "../services/datacache";
 import log from "../modules/logger";
+import { characterIdOf, needCharacterId } from "./characterids";
 
 /** A row of the learned_spells table. */
 type LearnedRow = { spell: string };
@@ -9,9 +10,11 @@ type LearnedRow = { spell: string };
 // Each player's rows of learned_spells, as the table has them. What a player
 // knows is answered from these, and learning and unlearning are written to
 // the database and then to them.
-const learnedRows = rowCache<LearnedRow[]>("learned_spells", async (username) =>
-  (await query("SELECT spell FROM learned_spells WHERE username = ?", [username])) as LearnedRow[] || []
-, { perPlayer: true });
+const learnedRows = rowCache<LearnedRow[]>("learned_spells", async (username) => {
+  const characterId = await characterIdOf(String(username));
+  if (characterId === null) return [];
+  return (await query("SELECT spell FROM learned_spells WHERE character_id = ?", [characterId])) as LearnedRow[] || [];
+}, { perPlayer: true });
 
 // One write to a player's rows at a time. Each works from the rows held and
 // puts back what its statement left, so two side by side would each put back
@@ -83,8 +86,8 @@ const spells = {
     try {
       return await writeLearned(
         username,
-        "INSERT IGNORE INTO learned_spells (username, spell) VALUES (?, ?)",
-        [username, spellName],
+        "INSERT IGNORE INTO learned_spells (character_id, spell) VALUES (?, ?)",
+        [await needCharacterId(username), spellName],
         // The table has no key a second row of the same spell would break: a row is added unless the database says none was.
         (held, result) => (Number(result?.affectedRows ?? result?.count) === 0 ? held : [...held, { spell: spellName }])
       );
@@ -97,8 +100,8 @@ const spells = {
     try {
       return await writeLearned(
         username,
-        "DELETE FROM learned_spells WHERE username = ? AND spell = ?",
-        [username, spellName],
+        "DELETE FROM learned_spells WHERE character_id = ? AND spell = ?",
+        [await needCharacterId(username), spellName],
         (held) => held.filter((row) => !sameName(row.spell, spellName))
       );
     } finally {
