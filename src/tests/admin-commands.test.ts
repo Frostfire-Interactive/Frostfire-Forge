@@ -50,6 +50,7 @@ const NAMES = [
   "runOnPlayer", "tryOnPlayer", "isOnline", "whetherOnline", "broadcastWorld", "panelHears", "clearShared", "heldInScene",
   "restartState", "toggleRestart", "shutdownEverywhere", "sendServerOrder",
   "resetCooldowns", "assetCache", "inventory", "getIconUrl", "settleStoreAttached", "settleForAdmin", "settlingNotice", "noticeRegion",
+  "MAX_SPEED_OVERRIDE", "MIN_SPEED_OVERRIDE",
 ];
 /** Functions beside the commands that they call, which use the same names. */
 const HELPERS = ["serverOrderDeps", "respawnPlayer", "endCooldowns", "killRefusal", "giveItem", "notSent"];
@@ -146,6 +147,8 @@ async function tryOnPlayer(username: string, action: string, args?: unknown): Pr
 function names(name: string, args: string[], over: Row = {}): Row {
   return {
     commandName: name,
+    MAX_SPEED_OVERRIDE: 5,
+    MIN_SPEED_OVERRIDE: 0.1,
     currentPlayer: boss,
     wt: boss.wt,
     args,
@@ -628,6 +631,39 @@ describe("/warp", () => {
     expect(moved).toEqual([]);
     expect(transitions).toEqual([]);
     expect(emitted).toEqual([]);
+  });
+});
+
+describe("/speed", () => {
+  test("sets the admin's own speed, and reset takes it away", async () => {
+    await run("SPEED", ["3"]);
+    expect(boss.speedOverride).toBe(3);
+    expect(told(boss)).toEqual(["Your speed is set to 3x"]);
+    await run("SPEED", ["reset"]);
+    expect(boss.speedOverride).toBeUndefined();
+    expect(told(boss)).toEqual(["Your speed is set to 3x", "Your speed is back to normal"]);
+  });
+
+  test("no number is a reset too", async () => {
+    boss.speedOverride = 2;
+    await run("SPEED", []);
+    expect(boss.speedOverride).toBeUndefined();
+  });
+
+  test("a value that is not a number from 0.1 to 5 is refused and changes nothing", async () => {
+    for (const bad of ["fast", "0", "-1", "6", "Infinity"]) await run("SPEED", [bad]);
+    expect(boss.speedOverride).toBeUndefined();
+    expect(told(boss).every((message: string) => message === "Usage: /speed <0.1 to 5 | reset>")).toBe(true);
+  });
+
+  test("needs admin.speed or admin.*", async () => {
+    boss.permissions = ["admin.kick"];
+    await run("SPEED", ["3"]);
+    expect(boss.speedOverride).toBeUndefined();
+    expect(told(boss)).toEqual(["You don't have permission to use this command"]);
+    boss.permissions = ["admin.speed"];
+    await run("SPEED", ["3"]);
+    expect(boss.speedOverride).toBe(3);
   });
 });
 

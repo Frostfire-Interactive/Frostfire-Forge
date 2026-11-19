@@ -396,7 +396,8 @@ const createPermissionTypesTable = async () => {
       ('admin.reports'),
       ('admin.trades'),
       ('admin.cooldowns'),
-      ('admin.subscription');
+      ('admin.subscription'),
+      ('admin.speed');
   `;
   await query(sql);
 };

@@ -472,6 +472,8 @@ const createPermissionTypesTable = async () => {
   await query(`INSERT IGNORE INTO permission_types (name) VALUES ('tools.class_editor')`);
   // Choosing what a player who has not subscribed may not do.
   await query(`INSERT IGNORE INTO permission_types (name) VALUES ('admin.subscription')`);
+  // /speed
+  await query(`INSERT IGNORE INTO permission_types (name) VALUES ('admin.speed')`);
   // The mailbox editor (/mailbox).
   await query(`INSERT IGNORE INTO permission_types (name) VALUES ('tools.mailbox_editor')`);
 };

@@ -1,4 +1,5 @@
 import AOI_CONFIG from "../../config/aoi.json";
+import { overriddenSpeed } from "../../systems/speedoverride";
 import gameLoop from "../../services/gameloop";
 import layerManager from "../../services/layermanager";
 import log from "../../modules/logger";
@@ -30,6 +31,9 @@ const PLAYER_HEIGHT = 40;
 
 /** The px a 30 Hz tick of walking takes the player: more mounted or as a ghost, less when slowed. */
 function walkSpeedOf(currentPlayer: any): number {
+  // An admin's /speed: their whole speed, in place of mount, ghost and slows
+  const override = overriddenSpeed(currentPlayer, BASE_SPEED);
+  if (override !== null) return override;
   return (currentPlayer.mounted || currentPlayer.isGhost ? BASE_SPEED * MOUNT_SPEED_MULTIPLIER : BASE_SPEED) * (currentPlayer.slowMultiplier || 1);
 }
 

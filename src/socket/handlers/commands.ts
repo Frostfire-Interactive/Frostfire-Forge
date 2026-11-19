@@ -38,6 +38,7 @@ import { clearShared } from "../../cluster/clearguard";
 import { followServerOrders, sendServerOrder, serverOrdersKept } from "../../cluster/index";
 import { onPeerNews, tellPeers } from "../../cluster/peernews";
 import { settledPick } from "../../systems/weathercycle";
+import { MAX_SPEED_OVERRIDE, MIN_SPEED_OVERRIDE } from "../../systems/speedoverride";
 import { greetContacts, tellContactsOffline } from "../contacts";
 import { registerWhisperReach, whisperReach } from "../stealthoffline";
 import { decryptPrivateKey, decryptRsa, _privateKey } from "../../modules/cipher";
@@ -2652,6 +2653,35 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
               currentPlayer.spellCooldowns = waiting.spellCooldowns;
               currentPlayer.spellLockoutUntil = 0;
             }
+            break;
+          }
+
+          // Sets the admin's own total walk speed, as a multiple of the base walk speed, in place of what a mount,
+          // ghost form or a slow makes it. "/speed reset" (or no number) gives back the normal speed. Kept until the
+          // admin logs out.
+          case "SPEED": {
+            if (
+              !currentPlayer.permissions.some(
+                (p: string) => p === "admin.speed" || p === "admin.*"
+              )
+            ) {
+              sendPacket(wt, packetManager.notify({ message: "You don't have permission to use this command" }));
+              break;
+            }
+            const word = String(args[0] ?? "").toLowerCase();
+            if (!word || word === "reset" || word === "off" || word === "normal") {
+              currentPlayer.speedOverride = undefined;
+              sendPacket(wt, packetManager.notify({ message: "Your speed is back to normal" }));
+              break;
+            }
+            const multiplier = Number(word);
+            if (!Number.isFinite(multiplier) || multiplier <= 0 || multiplier > MAX_SPEED_OVERRIDE) {
+              sendPacket(wt, packetManager.notify({ message: `Usage: /speed <${MIN_SPEED_OVERRIDE} to ${MAX_SPEED_OVERRIDE} | reset>` }));
+              break;
+            }
+            currentPlayer.speedOverride = Math.max(MIN_SPEED_OVERRIDE, multiplier);
+            currentPlayer._stepCarry = undefined;
+            sendPacket(wt, packetManager.notify({ message: `Your speed is set to ${currentPlayer.speedOverride}x` }));
             break;
           }
 
