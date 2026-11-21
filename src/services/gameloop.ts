@@ -27,12 +27,6 @@ export interface LoopClock {
   index: number;
 }
 
-/**
- * The delay to the loop's next tick, at `now`. Each tick is due at an absolute time, so a timer that fires a ms late
- * (Bun's does, every period) does not push the ticks after it back: the loop averages its rate. Behind by up to
- * MAX_CATCH_UP_TICKS ticks, the next fires at once; further, the schedule starts again a tick from now, so a stall
- * is not followed by a burst.
- */
 export function nextTickDelay(clock: LoopClock, now: number, frameMs: number): number {
   clock.index++;
   let target = clock.start + clock.index * frameMs;
@@ -64,8 +58,6 @@ export class GameLoop {
   private readonly now: () => number;
   private readonly random: () => number;
 
-  // Profiling: ticks that overlapped (fired while the previous one was still
-  // awaiting), total wall time spent inside tick(), and the max single tick.
   private prof = { ticks: 0, overlaps: 0, tickMs: 0, maxTickMs: 0, running: false };
 
   constructor(options: GameLoopOptions = {}) {
@@ -91,9 +83,6 @@ export class GameLoop {
   start(): void {
     if (this.loopTimer) return;
 
-    // A setTimeout chain against absolute tick times (nextTickDelay), not setInterval, which runs about a ms long
-    // every period: 2% slow at 60 Hz, 7% at 120. Ticks are not awaited, as with setInterval: a mover whose step is
-    // still running sits the next tick out.
     const clock: LoopClock = { start: performance.now(), index: 0 };
     const schedule = () => {
       this.loopTimer = setTimeout(() => {
@@ -174,8 +163,6 @@ export class GameLoop {
 
       const currentTime = this.now();
 
-      // The loop keeps time, so a mover steps on every tick. Only its first step waits: a mover registered just
-      // before a tick (less than half a tick) starts on the next one, as a tick that fires a little early still steps.
       if (currentTime - playerState.registeredAt < this.FRAME_TIME / 2) {
         playerState.running = false;
         return;

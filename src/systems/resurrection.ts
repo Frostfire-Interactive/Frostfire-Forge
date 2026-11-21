@@ -3,9 +3,6 @@ import log from "../modules/logger";
 import { registerEffectsPayloadProvider } from "./spelleffects";
 import { getIconUrl } from "../modules/spriteSheetManager";
 
-// Resurrection Sickness: the price of resurrecting at the graveyard instead
-// of walking back to the corpse. In-memory only (timers like loot/skeleton
-// expiry) — it does not need to survive server restarts.
 export const SICKNESS_DURATION_MS = 15 * 60 * 1000;
 export const SICKNESS_DURATION_SEC = 15 * 60;
 // 20% health reduction, 10% reduction on everything else.
@@ -15,8 +12,6 @@ export const SICKNESS_STAT_MULT = 0.9;
 const SICK_EFFECT_ID = "resurrection-sickness";
 
 const expiryTimers = new Map<string, NodeJS.Timeout>();
-// Username-keyed handoff so sickness survives relog (player ids are
-// per-session). In-memory like effectManager: gone on server restart.
 const sickByUsername = new Map<string, number>();
 let onExpiry: ((player: any) => void) | null = null;
 
@@ -34,8 +29,6 @@ export function sicknessRemainingSec(player: any): number {
   return Math.max(0, Math.ceil((until - Date.now()) / 1000));
 }
 
-// Scales rolled-up totals (never base components, so repeated recomputes
-// can't double-dip) and clamps current values into the reduced maximums.
 export function applySicknessToStats(stats: any): any {
   if (!stats) return stats;
   stats.total_max_health = Math.max(
@@ -76,8 +69,6 @@ function scheduleExpiry(player: any): void {
   if (remaining <= 0) return;
   const timer = setTimeout(() => {
     expiryTimers.delete(key);
-    // Drop the relog handoff only once it is actually spent, so a stale
-    // timer from a previous session can't strand a live one.
     const mapped = sickByUsername.get(usernameKey(player));
     if (mapped && mapped <= Date.now()) {
       sickByUsername.delete(usernameKey(player));
@@ -118,9 +109,6 @@ export function clearSickness(player: any): void {
   playerCache.set(player.id, player);
 }
 
-// Disconnect handoff (mirrors effectManager.saveSlows): the live flag moves
-// to the username map so a relog restores it. Called with the disconnecting
-// player object.
 export function saveOnDisconnect(player: any): void {
   const key = usernameKey(player);
   if (!key) return;
@@ -131,8 +119,6 @@ export function saveOnDisconnect(player: any): void {
   }
 }
 
-// Handoff release (cells phase 6): the sickness went with the player. Its timer and relog entry are dropped here;
-// the player object is not written back (it is no longer in playerCache).
 export function forgetSickness(player: any): void {
   const key = String(player?.id);
   const timer = expiryTimers.get(key);
@@ -143,9 +129,6 @@ export function forgetSickness(player: any): void {
   sickByUsername.delete(usernameKey(player));
 }
 
-// Login restore (mirrors the effectManager.load* block): re-arms the flag,
-// timer, and scaled totals on the fresh session object. Returns true when
-// sickness was restored.
 export function restoreOnLogin(cachedPlayer: any): boolean {
   const key = usernameKey(cachedPlayer);
   if (!key) return false;

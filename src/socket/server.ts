@@ -1,16 +1,5 @@
 const PROCESS_STARTED_AT = Date.now() - performance.now();
 let lastSessionValidationTime = 0;
-// Backpressure gate for deferred packet handling.
-//
-// NOTE: this is deliberately set above the transport's own drop threshold so
-// the gate never trips. Lowering it (tried: 16MB) makes handleBackpressure's
-// retry path reachable, and that path is buggy - it BOTH queues the action and
-// schedules a retry of the same action, so a packet can be handled twice. For
-// AUTH that means a duplicate login, which the server rejects with
-// "Authentication already in progress" and closes the connection. At 2000
-// clients this broke logins outright.
-//
-// Fix the double-dispatch in handleBackpressure before lowering this.
 const MAX_BUFFER_SIZE = 1024 * 1024 * 1024;
 const packetQueue = new Map<string, (() => void)[]>();
 import { forgetNpcStream, warmStreamDataWithin } from "../systems/npcStreaming";
@@ -107,11 +96,6 @@ const _cert = process.env.TLS_CERT_PATH;
 const _key = process.env.TLS_KEY_PATH;
 const _ca = process.env.TLS_CA_PATH;
 
-// Chrome will not accept a system or locally installed root CA for
-// WebTransport, only a publicly trusted one or a certificate pinned by
-// hash, so this certificate has to stay self-signed and short lived. It
-// must therefore carry every address a browser might dial, including the
-// LAN one: a name missing from the SAN fails validation even when pinned.
 const certHostnames = ["localhost", "127.0.0.1", "::1"];
 for (const host of [process.env.PUBLIC_HOST, process.env.SERVER_HOST]) {
   const trimmed = host?.trim();
@@ -156,10 +140,6 @@ if (!webTransportTls) {
 
 const localCertHash = computeCertificateHash(webTransportTls.certPem);
 
-// Fail fast on an expired certificate instead of serving cryptic QUIC
-// handshake failures (error 46 / CERTIFICATE_VERIFY_FAILED). CA-signed
-// certificates are never auto-regenerated, so expiry needs operator action:
-// reissue via your CA, or `bun renew-lan-cert` for local mkcert setups.
 const certStatus = getCertificateStatus(webTransportTls.certPem);
 if (!certStatus.parseable || certStatus.expired) {
   log.error(`WebTransport TLS certificate is expired or unreadable (valid: ${certStatus.validFrom} -> ${certStatus.validTo}).`);
@@ -171,9 +151,6 @@ if ((certStatus.daysRemaining ?? 0) < 3) {
   log.warn(`WebTransport TLS certificate expires in ${certStatus.daysRemaining} days (${certStatus.validTo}). Renew it soon to avoid client handshake failures.`);
 }
 
-// A self-signed certificate missing a name was regenerated above; a CA-signed
-// one is the operator's to reissue, and until then browsers dialing that name
-// fail both /wt-cert-hash ("Failed to fetch") and the WebTransport handshake.
 const certSanHostnames = certificateSanHostnames(webTransportTls.certPem);
 const uncoveredHostnames = certHostnames.filter((host) => !certSanHostnames.includes(host));
 if (uncoveredHostnames.length > 0) {
@@ -200,14 +177,7 @@ const ClientRateLimit = new Map<string, ClientRateLimit>();
 
 const keyPair = generateKeyPair(process.env.RSA_PASSPHRASE);
 
-// Load realm whitelist from database if WHITELIST=true
-// Every system is imported by now, so each cached table is known: read them
-// before a connection can ask for one.
-// The subscription columns and tables first, before the first login and before the table caches
-// read them. A failure is said once and leaves subscriptions off: it never stops the start.
 await ensureSubscriptionSchema();
-// The Ambience and Weather sliders' columns (clientconfig.ambience_volume, weather_volume), the same way: added if
-// missing, never stops the start.
 await ensureAmbienceColumn();
 // The accounts columns every login reads (token_expires, twofa_pending, email_verified), the same way.
 await ensureLoginColumns();
@@ -237,8 +207,6 @@ await ensureBuyPriceColumn();
 await ensureSpriteSheetColumn();
 // The mount editor's permission, so it can be granted from the list of permissions.
 await ensureMountEditorPermission();
-// The cutscenes and who has seen them (the cutscene editor, /cse), the same way, and the editor's permission: before the
-// table caches are read, so a running server does not depend on someone running the setup again.
 await ensureCutsceneSchema();
 await ensureCutsceneEditorPermission();
 // The home item's icon, when it has none: before the items are read.
@@ -320,9 +288,6 @@ Bun.serve({
       return new Response(JSON.stringify({ status: "ok" }));
     }
 
-    // Creature system health, for the creature load test. Read-only counters and
-    // tick timings; no player or account data. ?reset=1 starts a fresh window.
-    // Only for a caller with the server's GATEWAY_AUTH_KEY (Authorization: Bearer).
     if (url.pathname === "/creature-stats" && req.method === "GET") {
       if (!holdsServerKey(req)) return new Response("Unauthorized", { status: 401 });
       const snapshot = creatures.stats();
@@ -401,8 +366,6 @@ Bun.serve({
   },
 });
 
-// settings.json webserverRatelimit and src/config/security.cfg, applied at the
-// edge before a request reaches the API.
 const securityCfgPath = new URL("../config/security.cfg", import.meta.url);
 let blockedSegments: string[] = [];
 try {
@@ -436,20 +399,11 @@ const httpServers = startHttpsServers({
   certPath: _cert,
   keyPath: _key,
   caPath: _ca,
-  // The WebTransport listener owns UDP on the public port (QUIC shares the
-  // port number with the HTTP API), so the edge proxy must not enable
-  // HTTP/3 - Bun.serve would try to bind the same UDP port.
   http3: false,
   log,
   filterRequest: (req, ip) => httpFilter(req, ip),
 });
 
-/**
- * A connection ticket from the Gateway, or from another node (a SWITCH; see
- * ticket.ts): signed, unexpired, from an allowed origin, and not used before;
- * in cluster mode, for this node. What comes back is the account it is for,
- * which the login must match, and the origin it was signed for.
- */
 function validateConnectionToken(fields: TicketFields): { account: string; origin: string } | null {
   const sharedSecret = process.env.GATEWAY_GAME_SERVER_SECRET;
   if (!sharedSecret) {
@@ -467,8 +421,6 @@ function validateConnectionToken(fields: TicketFields): { account: string; origi
 
 function onTransportOpen(connection: TransportConnection) {
   const id = connection.data.id;
-  // A node ticket opens one connection in the whole cluster (cells phase 6): spent now, checked by AUTH. Only a
-  // SWITCH ticket: the Gateway's own tickets are not spent. Outside cluster mode there is no store, so none is.
   const store = clusterStore();
   const token = String(connection.data.ticketToken ?? "");
   connection.data.ticketSpent = spendsTicket(store, token)
@@ -497,8 +449,6 @@ function onTransportOpen(connection: TransportConnection) {
 
   setTimeout(() => {
     broadcastConnectionCount();
-    // Joining a cluster: told at once, as the others hear only when the count settles. One arriving from another node
-    // already has it.
     if (clusterEnabled() && !connection.data.ticketSpent) sendPacket(connection, [connectionCountPacket(onlineCount())]);
   }, timeout);
 }
@@ -520,9 +470,6 @@ function connectionCountPacket(count: number) {
 }
 
 function publishConnectionCount(count: number) {
-  // Loss-tolerant status fan-out: a datagram, not a reliable frame - at 1000+
-  // connections the per-second broadcast to every player would otherwise
-  // contend for each connection's ordered stream queue.
   topicBus.publishBestEffort("CONNECTION_COUNT", connectionCountPacket(count));
 }
 
@@ -550,9 +497,6 @@ setInterval(() => {
   if (connectionCountDirty) broadcastConnectionCount();
 }, 1000);
 
-// Low-cost reliable-stream queue health sampling: surfaces connections whose
-// stream queue is backing up. bufferedAmount caches its native metrics
-// snapshot per connection for 250ms, so this stays cheap at 1000+ players.
 let lastStreamQueueLogAt = 0;
 setInterval(() => {
   const backedUp: Array<{ id: string; kb: number }> = [];
@@ -608,10 +552,6 @@ function onTransportClose(connection: TransportConnection) {
   }
 }
 
-// Latency-sensitive packets that bypass the backpressure queue. Hoisted to a
-// module-level Set: this was an array literal rebuilt and linearly scanned on
-// every single inbound packet.
-// HANDOFF_GAP with them: a change of key in a handoff's gap is taken in the order of the moves around it.
 const PROCESS_IMMEDIATELY = new Set(["MOVEXY", "STATS", "SERVER_TIME", "ANIMATION", "HANDOFF_GAP"]);
 
 const MSG_PROFILE = process.env.BENCHMARK_PROFILE === "1" || process.env.BENCHMARK_PROFILE === "true";
@@ -663,18 +603,11 @@ function onTransportMessage(connection: TransportConnection, message: string) {
       }
     }
 
-    // Liveness: any inbound packet proves the client is alive, so refresh the
-    // idle timestamp here rather than relying on a dedicated TIME_SYNC.
-    // Movement alone is not enough - a player can legitimately stand still
-    // while chatting, casting, trading or managing inventory - so every packet
-    // type counts. This is the single funnel all inbound packets pass through.
     const activePlayer = playerCache.get(connection.data.id);
     if (activePlayer) {
       activePlayer.lastUpdated = performance.now();
     }
 
-    // Hand the already-parsed object down so packetReceiver doesn't parse the
-    // same JSON a second time.
     if (PROCESS_IMMEDIATELY.has(packetType)) {
       packetReceiver(null, connection, message, parsedMessage);
       return;
@@ -697,15 +630,9 @@ const MAX_FRAME_BYTES = 1024 * 1024 * (((settings as any)?.webtransport?.maxPayl
 
 const NO_RATE_LIMIT = Number.MAX_SAFE_INTEGER;
 
-// Handshake rate limits default to safe production values, but benchmarking
-// needs them disabled. Set WT_HANDSHAKE_RATE_LIMIT_DISABLED=true to remove
-// the handshake caps.
 const handshakeLimitsDisabled = process.env.WT_HANDSHAKE_RATE_LIMIT_DISABLED === "true";
 
 const webTransportRateLimits = {
-  // Handshake caps are DoS guards, but the old defaults (100/s, 200 burst)
-  // throttled legitimate 1000+ player login waves to ~10s of handshake time.
-  // Raised defaults keep bursts cheap while still bounding per-prefix abuse.
   handshakesPerSec: handshakeLimitsDisabled
     ? NO_RATE_LIMIT
     : (settings as any)?.webtransport?.rateLimits?.handshakesPerSec ?? 1000,
@@ -726,11 +653,6 @@ const webTransportRateLimits = {
 
 const serverHost = process.env.SERVER_HOST || "localhost";
 const publicHost = process.env.PUBLIC_HOST || serverHost;
-
-// Cells phase 6: a player handed to the node that owns the block they walked into. The handoff itself is
-// cluster/handoff.ts; these are its engine side. Nothing here runs outside cluster mode. It sits above
-// startCluster: the link hook below is registered before startCluster runs the hooks, and what the hook
-// reads (the constants here) is set by then.
 
 /** The live nodes' addresses, read every 2 s while the links are up: a handoff finds its target without a store read. */
 const nodeAddresses = new Map<string, HandoffNode>();
@@ -764,11 +686,6 @@ function connectionOpen(id: string): boolean {
   return false;
 }
 
-/**
- * What travels with a handed-off player beside the rows saved to the database (Deviation 18: Task 14's seedArrival
- * reads exactly these fields). Cooldowns and the last attack are performance.now() values here, so they travel as
- * remaining or elapsed milliseconds; the effects already hold Date.now() deadlines.
- */
 function handoffState(p: any): {
   dots: any[]; barriers: any[]; stuns: any[]; slows: any[];
   cooldowns: Record<string, number>;
@@ -824,11 +741,6 @@ function handoffState(p: any): {
   };
 }
 
-/**
- * Takes a handed-off player off this node in the handoff's synchronous step. Not a disconnect: the session, the
- * row cache, the creature threat and the friends' view of them stay; what travelled in the snapshot is dropped here.
- * It never throws (handoff.ts): each step is tried on its own, so one that fails cannot stop the ones after it.
- */
 function releaseHandedOff(p: any): void {
   const id = String(p.id);
   const lower = String(p.username || "").toLowerCase();
@@ -840,9 +752,6 @@ function releaseHandedOff(p: any): void {
       try {
         cleanupPlayerState(p, { despawn: false });
       } finally {
-        // Whatever failed in there, the player does not stay live here: the handoff goes on and the client is
-        // sent on, so a player still in the cache would be on two nodes.
-        // Nor does it stay in the spatial indexes, if the cleanup threw before it reached them (each removal is idempotent).
         const removals: Array<[string, () => void]> = [
           ["player cache", () => { if (playerCache.get(id) === p) playerCache.remove(id); }],
           ["map index", () => mapIndex.removePlayer(id)],
@@ -890,11 +799,6 @@ function releaseHandedOff(p: any): void {
   }
 }
 
-/**
- * A handed-off player's stats and place, saved before the SWITCH sends them on. The twin of the saves in the
- * onDisconnect listener below (the world count, setStats, setLocation); kept apart because that listener is run
- * by tests with its own names. A failure throws: the handoff logs it (the new node may load older stats).
- */
 async function saveHandedOff(p: any): Promise<void> {
   try {
     // A warp hands off with the location already set to the destination (Task 14): the count it leaves is the old map's.
@@ -903,10 +807,6 @@ async function saveHandedOff(p: any): Promise<void> {
     log.error(`[WorldsFetchError] Failed to update world player count: ${error}`);
   }
   if (!p.isGuest && fencedSaves(p)) {
-    // Cluster mode: only while this node still owns the player (cells phase 7). A fenced player with no location
-    // is not saved at all: an unfenced stats write could land after the new owner's. The achievement progress is
-    // dropped only once the save has said another node owns the player (settleFencedLeave); with no save, whether
-    // this node owns the player is not known, and the progress is flushed (max-only, it rolls nothing back).
     const taken = takeAchievementProgress(p.username);
     let owned: boolean | null = null;
     try {
@@ -932,14 +832,6 @@ async function saveHandedOff(p: any): Promise<void> {
   }
 }
 
-/**
- * Saves a session that a newer login of its account is about to kick (receiver.ts kickDuplicateSessions), as its
- * disconnect would (the onDisconnect listener below): the effects and sickness, the loot cleanup, the achievement
- * progress, then the stats and location, fenced in cluster mode as there. The kick then takes the player out of the
- * cache, so the onDisconnect of the closing socket finds nothing and saves nothing again; a close while this save
- * runs finds the player marked (leftByKick) and leaves it to the kick. The new login has claimed the account's
- * session already, so an unfenced location goes by the character, not the old session id. Guests are not saved.
- */
 export async function saveKickedPlayer(p: any): Promise<void> {
   if (!p || p.isGuest) return;
   p.leftByKick = true;
@@ -968,13 +860,6 @@ export async function saveKickedPlayer(p: any): Promise<void> {
   await saveLeavingState(p, false);
 }
 
-/**
- * Runs for a kicked session (receiver.ts kickDuplicateSessions) what a disconnect runs for a leaving player: the
- * PLAYER_DISCONNECT listeners (trade end and vendor buyback, creatures, fishing, gathering, the cutscene, the
- * achievement flush), once, with the old session's player. The kick calls it after the save and before the new
- * login's player is added, so a listener that looks up by name finds no one but the old session. Its own close later
- * runs none of them (onDisconnect skips a player marked leftByKick, and the drop has taken it from the cache).
- */
 export function leaveKickedPlayer(p: any): void {
   if (!p || p.kickLeft) return;
   p.kickLeft = true;
@@ -982,25 +867,12 @@ export function leaveKickedPlayer(p: any): void {
   listener.emit(Events.PLAYER_DISCONNECT, { player: p });
 }
 
-/**
- * Cluster mode (cells phase 7): a leaving player's achievement progress is written only while this node owns the
- * player. It is taken from the store before the leave can flush it (a disconnect's PLAYER_DISCONNECT flushes it at
- * once), and settled by settleFencedLeave once the fenced save has answered. Answers what was taken.
- */
 function takeAchievementProgress(username: string): Map<number, number> {
   const taken = changedOf(username);
   for (const id of taken.keys()) clearChanged(username, id);
   return taken;
 }
 
-/**
- * Settles a fenced leave (a disconnect or a handoff) once its save has answered: `owned` is true when the save was
- * made, false when it was refused, and null when the save threw or there was nothing to save (no location).
- * Owned, or not known: the taken progress goes back, under anything counted since, and is flushed, as an unfenced
- * leave does. A refused save means another node owns the player: the progress is dropped, and so are the effects and
- * sickness kept here for a later login, which are stale now. A newer session of the player live here took the owner
- * epoch from this one, so this node still owns the player: then nothing is dropped.
- */
 async function settleFencedLeave(p: any, owned: boolean | null, taken: Map<number, number>): Promise<void> {
   const username = String(p?.username ?? "");
   if (!username) return;
@@ -1039,23 +911,10 @@ async function settleFencedLeave(p: any, owned: boolean | null, taken: Map<numbe
   log.info(`[Save] ${username}'s achievement progress, effects and sickness were dropped here: another node owns the player now`);
 }
 
-/**
- * How long a shutdown waits for the handoffs still running, at most (and never past the shutdown deadline). A run is
- * at most drain (2 s) + answer (2 s) + save, then the SWITCH; the save is what must not be cut, and the SWITCH's
- * wait for the client's close is not needed on a node that is going down.
- */
 const HANDOFF_IDLE_MS = 6_000;
 
-/**
- * The part of the shutdown deadline kept for leaving the cluster (stopCluster), at the end: the steps before it end
- * this long before the deadline, so presence is always released, however long they take.
- */
 const STOP_MS = 3_000;
 
-/**
- * How long a shutdown waits for the gateway's unregister, at most (it has no timeout of its own). The time it does
- * not use goes to the steps after it, so a slow gateway cannot take the achievement flush's time.
- */
 const UNREGISTER_MS = 2_000;
 
 // Registered at load, before startCluster below runs the hooks; it runs only when startCluster attaches the links.
@@ -1083,8 +942,6 @@ onLinksAttached((ctx) => {
     // The client walks the player on from the drain (this node sends no more steps), and stops if the handoff is given up.
     begin: (p) => sendHandoffBegin(p.wt, p),
     stay: (p) => sendHandoffStay(p.wt, p),
-    // A drained player kept here is stopped where they stand, and the client told so: it was walking, and its moves
-    // during the drain were dropped.
     undrain: (p) => forceStopPlayerMovement(p),
     snapshot: (p) => ({
       // The character's name and id and its account's: node B logs in this character (never the active one again).
@@ -1109,8 +966,6 @@ onLinksAttached((ctx) => {
     },
     release: releaseHandedOff,
     save: saveHandedOff,
-    // The SWITCH must arrive before the close, as for a login switch. The connection is closed whatever the send
-    // did: the player is released here, and a client left on this node would never be told.
     sendSwitch: async (p, node, ticket, resume) => {
       const wt = p.wt;
       try {
@@ -1140,9 +995,6 @@ onLinksAttached((ctx) => {
   };
 });
 
-// The node is announced with the address the gateway registration below advertises.
-// Node links (spec §1): their own WebTransport listener with the engine's certificate. Neighbours pin its
-// hash; a CA-signed certificate cannot be pinned, so it is announced as "" and verified by name instead.
 const linkPort = clusterEnabled() ? nodeLinkPort(gamePort) : 0;
 const linkBindHost = nodeLinkBindHost();
 const linkTransport = linkPort > 0
@@ -1154,11 +1006,7 @@ if (linkTransport) {
   const bindWarning = nodeLinkBindWarning(linkBindHost, linkPort);
   if (bindWarning) log.warn(bindWarning);
 }
-// The assets are loaded; before the node takes a player (or a handoff), read the NPC and particle lists and the map
-// chunk indexes once, so the first arrival does not wait for them. Never throws.
 await warmStreamDataWithin();
-// A link port in use makes startCluster throw: the node does not start without its links.
-// The link hello is signed with a key derived from CLUSTER_LINK_SECRET (startCluster reads it), not the gateway secret.
 onPlayersLost((peer, restarted) => void contactsLost(peer, restarted));
 const cluster = await startCluster(
   undefined,
@@ -1180,8 +1028,6 @@ const webTransportServer = await startWebTransportServer({
   port: gamePort,
   allocateId: cluster
     ? (token: string) => {
-        // A handoff arrival keeps its id, unless a connection here still has it open (a quick hand-back): then it
-        // gets a new one, and its login is a full load (Deviation 4).
         const kept = arrivalId(playerHandoff.claimArrivalId(token), connectionOpen);
         if (kept !== null) return kept;
         const id = cluster.ids.tryNext();
@@ -1212,21 +1058,10 @@ log.info(
 
 const webTransportPort = gamePort;
 
-// The startup probe pins the server's own certificate by hash, so there is no
-// verification to skip: pinning bypasses name and chain checks by design and
-// accepts exactly this certificate. TLS_INSECURE_SKIP_VERIFY is therefore no
-// longer consulted.
-//
-// The host still has to reach our own listener. 127.0.0.1 always does, and
-// pinning does not require it to match a SAN.
 const probeHost = "127.0.0.1";
 
 async function verifyWebTransportListener(port: number): Promise<void> {
   try {
-    // The probe targets our own listener, so it pins that certificate by hash
-    // rather than skipping verification or supplying a CA. This transport has
-    // no insecureSkipVerify, and pinning is the stricter check regardless: it
-    // accepts exactly this certificate and nothing else.
     const probe = new WebTransport(`https://${probeHost}:${port}`, {
       serverCertificateHashes: [
         {
@@ -1285,17 +1120,12 @@ gatewayClient = new GatewayClient({
   assetServerUrl: process.env.ASSET_SERVER_INTERNAL_URL || process.env.ASSET_SERVER_URL || "http://localhost:8000",
 });
 
-// Cluster mode: the Gateway is told who owns which block (on registering, and on each change), so a login can go
-// straight to the owner of the saved point. Set before registering: the first registration sends every table.
 const blockTable = cluster ? clusterBlocks() : null;
 if (blockTable) gatewayClient.reportBlocksFrom(blockTable);
 
 // A stealthed player is offline to players, so the realm list's count leaves them out (stealthoffline.ts).
 gatewayClient.setHiddenCounter(() => hiddenCount(Object.values(playerCache.list() as Record<string, any>)));
 
-// Every guest and its data, and every party, go before the realm registers: nobody can be in it yet, and a Gateway
-// that is down (registerWithRetry waits for it) does not hold the clean-up back. In a cluster only the first node of
-// the region clears the shared guests and parties (cluster/startclear.ts, clearguard.ts).
 await clearShared(async () => {
   await player.clear();
   await forgetServerOrders();
@@ -1354,8 +1184,6 @@ try {
       log.success(`Registered plugin HTTP route: ${method} ${route}`);
     },
     teleportPlayer: async (playerObj: any, mapName: string, x: number, y: number): Promise<boolean> => {
-      // In cluster mode a player being handed off is not moved (false: the plugin may try again after the handoff),
-      // and the move counts as in flight for the handoff's wait.
       return await guardedTeleport(clusterEnabled(), playerObj, () => teleportPlayerWrapper(playerObj, mapName, x, y));
     },
     playCutscene: (playerObj: any, name: string): Promise<boolean> => cutscenePlayer.play(playerObj, name),
@@ -1455,12 +1283,6 @@ listener.on(Events.SERVER_TICK, async () => {
 
     const wsClosed = !p.wt || p.wt.readyState !== 1;
 
-    // The client no longer sends a periodic TIME_SYNC heartbeat, so a genuinely
-    // AFK player can sit for minutes without sending anything. An open QUIC
-    // session is itself proof of life (WebTransport's own idle timeout, default
-    // 120s, tears down dead sessions and flips readyState), so only sweep
-    // players whose socket is gone. `lastUpdated` still tracks real activity
-    // and is refreshed by any inbound packet in onTransportMessage.
     if (wsClosed) {
       inactiveSet.set(p.id, "inactive");
     }
@@ -1476,8 +1298,6 @@ listener.on(Events.SERVER_TICK, async () => {
       try {
         const dbSessionMap = new Map<string, string>();
 
-        // Chunk the IN-clause query so a 2000-player validation never blocks
-        // the database pool (and the event loop) with one giant query.
         const VALIDATION_CHUNK_SIZE = 200;
         for (let i = 0; i < userIds.length; i += VALIDATION_CHUNK_SIZE) {
           const chunk = userIds.slice(i, i + VALIDATION_CHUNK_SIZE);
@@ -1511,11 +1331,6 @@ listener.on(Events.SERVER_TICK, async () => {
   for (const playerData of players) {
     if (!playerData || inactiveSet.has(playerData.id) || !playerData.wt) continue;
 
-    // SERVER_TIME is no longer pushed on this 1Hz loop. The client anchors the
-    // clock once at login and advances it locally; browser clock drift is
-    // seconds-per-day, far below the per-minute resolution the time-of-day
-    // system reacts to. At 2000 players this removed 2000 datagrams/sec.
-
     const rawLA = typeof playerData.last_attack === "number" ? playerData.last_attack : 0;
     const lastAttackEpoch =
       rawLA > 1e11 ? rawLA :
@@ -1529,8 +1344,6 @@ listener.on(Events.SERVER_TICK, async () => {
     const { stats } = playerData;
     if (!stats) continue;
 
-    // Corpses awaiting release and ghosts do not regenerate; pin them at 0
-    // so the death state can never be healed out from under the state flags.
     if (playerData.isDead || playerData.isGhost) {
       stats.health = 0;
       stats.stamina = 0;
@@ -1553,14 +1366,9 @@ listener.on(Events.SERVER_TICK, async () => {
 
     if (!updated) continue;
 
-    // Encode once per audience: the player and their party members get the full stats, other observers the
-    // few fields their client reads (observerStats). Latest-wins absolute stats delivered as loss-tolerant
-    // datagrams (this repeats every tick, so a dropped one self-heals).
     const frames = regenStatsFrames(playerData, stats);
     playerData.wt.sendBestEffort(frames.full);
 
-    // O(observers) via the AOI reverse index - was an O(all players) cache
-    // scan per regenerating player, i.e. O(n^2) per tick.
     for (const other of findPlayersWithTargetInAOI(playerData.id)) {
       if (
         !inactiveSet.has(other.id) &&
@@ -1570,8 +1378,6 @@ listener.on(Events.SERVER_TICK, async () => {
         other.wt.sendBestEffort(frames.frameFor(other));
       }
     }
-    // Cluster mode: the viewers of the player's mirrors on neighbouring nodes see the bars fill too (the observers'
-    // fields: a party member there has the full stats from the party updates).
     if (clusterEnabled()) relayToMirrorViewers(playerData, [frames.frameFor({})], true);
   }
 
@@ -1691,8 +1497,6 @@ listener.on("onDisconnect", async (data) => {
     if (!playerData.isGuest && left && fencedSaves(playerData)) {
       fencedLeave = { p: playerData, taken: takeAchievementProgress(left) };
     }
-    // Before the saves below: they wait on the database, and what listens
-    // (creature combat, plugins) should not wait with them or miss a throw.
     listener.emit(Events.PLAYER_DISCONNECT, { player: playerData });
 
     if (playerData.wt?.data?.connectionToken) {
@@ -1704,26 +1508,16 @@ listener.on("onDisconnect", async (data) => {
 
     let worldPlayerCount: number | null = null;
     try {
-      // A warp's handoff sets the location to the destination first (Task 14): a player who leaves while it runs is
-      // counted off the map they were on, as saveHandedOff counts them.
       worldPlayerCount = await worlds.adjustPlayerCount(playerData?.handoffFromMap || playerData?.location?.map || "", -1);
     } catch (err) {
       log.error(`[WorldsFetchError] Failed to update world player count: ${err}`);
     }
 
     if (worldPlayerCount !== null) {
-      // log.info(
-      //   `World: ${playerData.location.map.replace(".json", "")} now has ${
-      //     worldPlayerCount
-      //   } players. (${data.reason})`
-      // );
     }
 
     if (!playerData.isGuest) {
       if (fencedSaves(playerData)) {
-        // Cluster mode: only while this node still owns the player (cells phase 7). With no location nothing is
-        // saved: an unfenced stats write could land after the new owner's. Who owns the player is then not known
-        // (owned stays null), and the leave settles as one this node owns.
         let owned: boolean | null = null;
         try {
           if (playerData.location) {
@@ -1755,8 +1549,6 @@ listener.on("onDisconnect", async (data) => {
       fencedLeave = null;
       await settleFencedLeave(settling.p, null, settling.taken).catch((e) => log.error(e as string));
     }
-    // Last, so the saves above are not held again once they are forgotten.
-    // Not when the player is already back in: those are the new login's rows.
     if (left && !playerCache.getByUsername(left)) {
       await forgetPlayer(left).catch((e) => log.error(e as string));
     }
@@ -1844,8 +1636,6 @@ listener.on(Events.SAVE, async () => {
           // Another node owns the player now: this session is the stale one.
           log.info(`[Save] Skipping save for ${row.username} - another node owns the player (epoch ${row.ownerEpoch})`);
           cleanupPlayerState(row);
-          // Only this connection is closed. player.kick would log out whichever session the name has here, and the
-          // account's session is the new owner's.
           try {
             row.wt?.close?.(1000, "Logged in from another location", { drain: true });
           } catch {
@@ -1932,25 +1722,15 @@ function handleBackpressure(wt: any, action: () => void, retryCount = 0) {
 }
 
 async function gracefulShutdown(signal: string) {
-  // One deadline for the whole shutdown, from the signal (SHUTDOWN_DEADLINE_MS, under the compose files' 20 s stop
-  // grace): each step below waits at most its own cap and never past it, and a step cut short is logged.
   const deadline = Date.now() + SHUTDOWN_DEADLINE_MS;
-  // In cluster mode the last STOP_MS of it are kept for leaving the cluster: every step before that one ends by
-  // stepsDeadline. With CLUSTER=false there is no such step, and the steps have the whole deadline.
   const stepsDeadline = cluster ? deadline - STOP_MS : deadline;
   log.info(`Received ${signal}, shutting down gracefully...`);
 
   gameLoop.stop();
 
-  // Achievement progress is written on the 60 s save tick: write what changed since, so a restart loses none of it
-  // (USER REQUEST 2026-10-17: "flush achievement progress on engine shutdown"). At most ACHIEVEMENT_FLUSH_MS, so a
-  // database that does not answer cannot hold the shutdown. It runs alongside the handoff wait and the unregister, so
-  // running handoffs that take their whole HANDOFF_IDLE_MS cannot leave it no time.
   const ACHIEVEMENT_FLUSH_MS = 5_000;
   const achievementsFlushed = boundedStep("writing the achievement progress", () => achievements.onSave(), stepsDeadline, ACHIEVEMENT_FLUSH_MS);
 
-  // Cells phase 6: no handoff starts from here on, and one already running finishes (its release is done, so its
-  // save and SWITCH must be too) before the connections close and the process exits. At most HANDOFF_IDLE_MS.
   if (cluster) {
     playerHandoff.stop();
     await boundedStep("waiting for the running handoffs (their saves may be lost)", () => playerHandoff.idle(), stepsDeadline, HANDOFF_IDLE_MS);
@@ -1974,14 +1754,9 @@ async function gracefulShutdown(signal: string) {
     log.debug(`Failed to close HTTP servers: ${error}`);
   }
 
-  // The achievement write started with the shutdown (above): wait for it here, then write once more what was earned
-  // while the connections were still open (the handoff wait and the unregister), before the process exits.
   await achievementsFlushed;
   await boundedStep("writing the achievement progress earned since", () => achievements.onSave(), stepsDeadline, ACHIEVEMENT_FLUSH_MS);
 
-  // This node's players are gone with it: stopCluster drops its mirrors and links, clears its directory entries
-  // and makes the node leave the live nodes. It logs a step that fails, and the wait is a little time only, so
-  // Redis cannot hold the shutdown. It has the STOP_MS kept for it at the end of the deadline.
   if (cluster) {
     await boundedStep("leaving the cluster", () => stopCluster(), deadline, STOP_MS);
   }

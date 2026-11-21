@@ -71,11 +71,6 @@ function entryIsComplete(quest: Quest, entry: QuestLogEntry): boolean {
   return true;
 }
 
-/**
- * Whether the quest is ready in the table. The entry the player carries is
- * ready only then: after a write that failed it has been put back in step
- * with the table, so it says whether the write got there after all.
- */
 async function markReady(username: string, entry: QuestLogEntry): Promise<boolean> {
   const uname = lower(username);
   try {
@@ -108,14 +103,6 @@ async function markActive(username: string, entry: QuestLogEntry): Promise<boole
   return true;
 }
 
-/**
- * The state an entry's progress calls for, written when the entry is not in
- * it: ready once every objective is met and, where a count can fall
- * (`falls`), active again once one is not. Answers whether this made the
- * quest ready, and null when the write failed. The entry is then not in the
- * state its progress calls for, and stays so until the quest is next
- * credited: an objective found at its count already tries this again.
- */
 async function settle(username: string, quest: Quest, entry: QuestLogEntry, falls = false): Promise<boolean | null> {
   if (entryIsComplete(quest, entry)) {
     if (entry.state === "ready") return false;
@@ -162,10 +149,6 @@ export function clearRadiusPlayersForTests(): void {
   radiusPlayers.clear();
 }
 
-/**
- * Add `amount` to every active objective matching (type, target).
- * Only touches the DB when a count actually changes.
- */
 export async function credit(
   username: string,
   type: QuestObjectiveType,
@@ -255,11 +238,6 @@ export async function credit(
   return updates;
 }
 
-/**
- * Set an objective's count to an absolute value. Used by collect, where the
- * player's inventory is the source of truth and items can be lost as well as
- * gained. Also used by map-wide explore objectives.
- */
 export async function sync(
   username: string,
   type: QuestObjectiveType,
@@ -497,8 +475,6 @@ export function registerExploreHooks(): void {
       const candidates = indexes().byExploreMap.get(normalized) || [];
       if (candidates.length === 0) return;
       await sync(username, "explore", normalized, 1);
-      // Radius objectives on this map are checked immediately too, so a
-      // player who logs in standing inside the radius completes it at once.
       const pos = player?.location?.position;
       if (pos) {
         await checkExplorePosition(username, normalized, Number(pos.x) || 0, Number(pos.y) || 0);

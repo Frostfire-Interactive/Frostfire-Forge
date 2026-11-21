@@ -6,12 +6,6 @@ import type { PlayerDirectory } from "./directory";
 import { MAX_FORWARD_HOPS } from "./linkcalls";
 import { storeHealth, type StoreGate } from "./health";
 
-// Reaching a player wherever they are: on this node, packets go straight to
-// their connection; on another node (cluster mode), they go there over the
-// bus. Without a cluster only this node's players can be reached, as before.
-// Actions are for what has to happen to the player object itself (a party id
-// cleared, a kick): they run on the node that holds the player.
-
 export interface LocalPlayers {
   get(key: string): any;
   getByUsername(username: string): any;
@@ -23,11 +17,6 @@ type Action = (player: any, args: any) => unknown;
 /** The node a player who just left this node went to, or null (cells phase 6 forwarding). */
 export type Forwarder = (username: string) => string | null;
 
-/**
- * How an action asked of a player's node ended. `answered`: it ran, and this is what it gave. `gone`: no node holds
- * the player, so nothing ran. `unreached`: the message never went, so nothing ran. `unsure`: no answer came in time,
- * so it may have run.
- */
 export type PlayerAnswer<T> = { status: "answered"; value: T } | { status: "gone" | "unreached" | "unsure" };
 
 /** Where an action for a player went. `offline`: no node holds them. `unreached`: nothing went out, and they may be online. */
@@ -105,11 +94,6 @@ export class Delivery {
     this.maxHeld = opts.maxHeld ?? MAX_HELD_DELIVERIES;
   }
 
-  /**
-   * Whether a message for another node may go now. With the cluster off, or the store up, at once. While the store
-   * is down it waits for it, at most `holdMs`, and at most `maxHeld` messages wait at once (spec §7: delivery pauses).
-   * False when it may not: the caller logs what is lost.
-   */
   private async storeBack(): Promise<boolean> {
     if (!this.bus || this.health.up()) return true;
     if (this.held >= this.maxHeld) return false;
@@ -162,8 +146,6 @@ export class Delivery {
       if (next && await this.passOn(next.peer, "player-action", {
         username: data?.username, action: data?.action, args: data?.args, hops: hops + 1, ...(next.epoch ? { epoch: next.epoch } : {}), ...(ask ? { ask } : {}),
       })) {
-        // A directory pass-on goes to a node that may have died since its claim: what the action carried is named
-        // here, so it is in the log if that node never runs it.
         if (next.directory) {
           log.warn(`Player action "${data?.action}" found no player ${data?.username} here, passed on to ${next.peer} by the directory${note ? `: ${note}` : ""}`);
         }
@@ -195,10 +177,6 @@ export class Delivery {
     this.directory = null;
   }
 
-  /**
-   * Where to pass a delivery or an action for a player who just left this node (the forward table, Task 13).
-   * Answers the one set before, so a test can put it back.
-   */
   setForwarder(fn: Forwarder | null): Forwarder | null {
     const previous = this.forwarder;
     this.forwarder = fn;
@@ -211,14 +189,6 @@ export class Delivery {
     return peer && this.bus && peer !== this.bus.nodeId ? peer : null;
   }
 
-  /**
-   * Where a message for `username` that found no player here goes next, or null. Never past MAX_FORWARD_HOPS in all.
-   * First the forward table (the player just left this node); then the directory, when it names another node under
-   * an epoch above the one the sender read (the player moved on after the sender looked). A message sent with no
-   * epoch counts as read at 0. A loop between two nodes ends at the hop limit. `epoch` is what the next node counts
-   * as read: the directory's, or on a forward-table hop the one this message came with, so the next node never
-   * follows an entry older than what was already known. `directory`: the hop came from the directory.
-   */
   private async nextHop(username: string, hops: number, sentEpoch: unknown): Promise<{ peer: string; epoch?: number; directory?: true } | null> {
     if (hops >= MAX_FORWARD_HOPS) return null;
     const sent = Number(sentEpoch);
@@ -328,10 +298,6 @@ export class Delivery {
     }
   }
 
-  /**
-   * Runs a registered action on the player's node and gives back what it gave (see PlayerAnswer). The answer waits at
-   * most `timeoutMs` for the other node, which has to be longer than the action can take.
-   */
   async askPlayer<T = unknown>(username: string, action: string, args: unknown, timeoutMs: number): Promise<PlayerAnswer<T>> {
     const local = this.players.getByUsername(username);
     if (local) return { status: "answered", value: await this.runLocal(local, action, args) as T };

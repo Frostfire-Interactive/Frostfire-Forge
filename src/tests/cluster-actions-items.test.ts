@@ -81,8 +81,6 @@ beforeEach(() => {
     if (warnBreaks) throw new Error("the log broke");
   });
   spy(log, "error", (message: string) => { errored.push(String(message)); });
-  // No item table loaded, as when this file runs alone: other files put an asset cache with tables of their own in
-  // place for the whole run, and an owner's answer is held to the table (systems/itembounds.ts, secfix B).
   const original = assetCache.get;
   spy(assetCache, "get", async (key: string) => key === "items" ? null : original.call(assetCache, key));
 });
@@ -596,9 +594,6 @@ test("a take for a player of this node still writes the items to them", async ()
   }
 });
 
-// ------------------------------------------------------------------ the receiver's owner handlers and helpers
-// socket/receiver.ts cannot be imported by a test (it imports the server, which starts it), so, as the other
-// receiver tests do, the code is read from its source and run with the names it uses handed in.
 const receiverSource = readReceiverSource();
 const receiverTranspiler = new Bun.Transpiler({ loader: "ts" });
 function sliceOf(from: string, to: string): string {

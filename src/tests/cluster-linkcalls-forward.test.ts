@@ -66,8 +66,6 @@ test("the same forwarded call runs once, and its answer is sent again from the w
     calls.c.handle("GRANT", () => ++runs);
     const body = { from: "a", epoch: "e1", seq: 1, name: "GRANT", body: { item: "Copper Ore" } };
     expect(await calls.b.call("c", FORWARD_CALL, body)).toEqual({ ok: true, answer: { answer: 1 } });
-    // Guard: the per-sender window. Without it a forward that was sent again (the old owner restarted and the
-    // sender resent) grants the item twice.
     expect(await calls.b.call("c", FORWARD_CALL, body)).toEqual({ ok: true, answer: { answer: 1 } });
     expect(runs).toBe(1);
   } finally {
@@ -292,8 +290,6 @@ test("forward windows of different senders and epochs never share a key", async 
   try {
     let runs = 0;
     calls.c.handle("GRANT", () => ++runs);
-    // Guard: the window key. With a plain "from|epoch" join these two are the same key, and the second is
-    // answered from the first one's cache without running.
     await calls.b.call("c", FORWARD_CALL, { from: "a|x", epoch: "y", seq: 1, name: "GRANT", body: {} });
     await calls.b.call("c", FORWARD_CALL, { from: "a", epoch: "x|y", seq: 1, name: "GRANT", body: {} });
     expect(runs).toBe(2);
@@ -309,8 +305,6 @@ test("attaching again on the same link runs each peer hook once, and the old att
     calls.a.onPeerDown(() => { downs++; });
     calls.a.detach();
     calls.a.attach(links.a);
-    // Guard: a token per attach. With `links` as the test, the first attach's hook closure is live again and
-    // the hook runs twice.
     links.a.setUp("b", false);
     expect(downs).toBe(1);
     links.a.setUp("b", true);

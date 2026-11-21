@@ -123,8 +123,6 @@ describe("away slots on the creature's home", () => {
     registry.remove(rare!.id);
     // The rare is away but still in its pool.
     expect(spawner.activeInPool(5)).toBe(2);
-    // Its pool-mate dies and respawns. Guard: isRareAlive reads the away slot's template. Without it a
-    // second rare (chance 100) spawns while the first lives on another node.
     spawner.despawn(other!.id, 5_000, { delayMs: 0 });
     spawner.tick(6_000);
     const now = [...registry.all()];

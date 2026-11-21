@@ -1,10 +1,6 @@
 import { afterEach, beforeEach, expect, mock, spyOn, test } from "bun:test";
 import { databaseModule } from "./setup";
 
-// startCluster joins the node to its neighbours over node links, and stopCluster takes them down. The node
-// is "b"; "a" is a NodeLinks on the same loopback network, built here. With links, startCluster loads
-// aoievent and the ghost kinds, which reach the database module: it is stubbed first, and the cluster
-// modules are imported after the stub (a static import would be hoisted above it).
 mock.module("../controllers/sqldatabase", () => databaseModule({
   default: async (_sql: string, _params?: any[]) => [],
 }));
@@ -302,8 +298,6 @@ test("the neighbour list follows the block table", async () => {
     peer.want(["b"]);
     await startCluster(store, address, { beatMs: 10, refreshMs: 20 }, { transport: net.transport("b.loop", 7002), pingMs: 20, deadMs: 100 });
     await until(() => !!clusterLinks()?.isUp("a"));
-    // "a" hands every block to "b": no one borders "b" any more, so it stops wanting "a" (lingers, then goes).
-    // Observed from the other end: the dialler "a" keeps its link while it wants "b", so only the want list is checked.
     const links = clusterLinks()!;
     const wanted: string[][] = [];
     const want = links.want.bind(links);
@@ -314,11 +308,6 @@ test("the neighbour list follows the block table", async () => {
   });
 });
 
-/**
- * A node "a" (the one under test) next to a live node "b" built here: b is announced and beating, and holds the
- * blocks `bOwns` of the main map ("a" the others). Neither wants the other by itself: only the live list brings them
- * together, as a node that owns no block borders no one.
- */
 async function emptyNeighbourWorld(owners: Record<string, string>) {
   process.env.NODE_ID = "a";
   const store = new CountingStore();

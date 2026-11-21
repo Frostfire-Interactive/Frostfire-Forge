@@ -123,11 +123,6 @@ const initializationPromise: Promise<any> = createSQLControllerWithRetry().then(
   throw error;
 });
 
-/**
- * A list of statements, kept whole or not at all. Only a transaction that never opened is tried
- * again: one that opened and then failed may have been kept, and a second run would write it twice.
- * One with an open-by deadline is neither opened nor tried again past it (LateError).
- */
 async function answerTransaction(id: string, statements: TransactionStatement[], maxRetries: number, retryDelay: number, timeout: number, openBy?: number) {
   try {
     const result = await runWithRetries(() => runTransaction(sqlController, statements, _databaseEngine, timeout, openBy), maxRetries, retryDelay);

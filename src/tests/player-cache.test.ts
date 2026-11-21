@@ -2,17 +2,10 @@ import { afterAll, beforeEach, describe, expect, mock, setSystemTime, spyOn, tes
 import { characterDatabaseModule, testCharacterId } from "./setup";
 import log from "../modules/logger";
 
-// Generated at server start (`bun create-config`) and gitignored, so CI has
-// no copy on disk. Mock the values instead of requiring the file.
 mock.module("../config/settings.json", () => ({
   default: { creatures: {} },
   creatures: {},
 }));
-
-// ------------------------------------------------------------ fake database
-// The statement shapes systems/player.ts sends, run against in-memory tables.
-// Anything else is an error: a read the caches should have answered shows up
-// as a statement nobody expected.
 
 type Row = Record<string, any>;
 let tables: Record<string, Row[]>;
@@ -93,8 +86,6 @@ function write(text: string, args: any[]): any {
     });
     const wanted = args.shift();
     const rows = tables[table].filter((row) => !column || same(row[column], wanted));
-    // As MySQL answers: the rows the statement changed, not the rows it found. A row written with the values it
-    // already had is not counted.
     let changed = 0;
     for (const row of rows) {
       const before = JSON.stringify(row);
@@ -164,9 +155,6 @@ mock.module("../controllers/sqldatabase", () => characterDatabaseModule({
   default: async (sql: string, params: any[] = []) => run(sql, params),
 }));
 
-// The caches of other systems are told by name when this one writes their
-// tables. What they were told is kept: those systems are not this file's to
-// load, and a table of theirs is not read again from this fake database.
 const realCache = { ...(await import("../services/datacache")) };
 let told: string[];
 mock.module("../services/datacache", () => ({
@@ -561,8 +549,6 @@ describe("a write to an account", () => {
     await location("pc_hero");
     expect(await player.arriveAt("6101", "cave", { x: 12.4, y: 99.6, direction: "up" })).toBe(true);
     expect(row("pc_hero")).toMatchObject({ map: "cave", position: "12,100", direction: "up" });
-    // The same place again: the database changes no row, and that is not a refusal. A door leads to one spot, and a
-    // player brought back inside some other way (a home item, an admin) walks out to where they were last saved.
     expect<any>(await player.setLocation("6101", "cave", { x: 12, y: 100, direction: "up" })).toEqual({ affectedRows: 0 });
     expect(await player.arriveAt("6101", "cave.json", { x: 12, y: 100, direction: "up" })).toBe(true);
     expect(await player.arriveAt("6101", "cave", { x: 12, y: 100, direction: "left" })).toBe(true);
@@ -959,8 +945,6 @@ describe("a new account", () => {
     }
   });
 
-  // USER REQUEST 2026-11-18 ("by default set the following slider values by default: weather: 60 music: 50
-  // effects: 30 ambience: 50 fps: 60")
   test("starts with the pause menu's sliders at their defaults", async () => {
     const { ensureAmbienceColumn } = await import("../systems/player");
     expect(await ensureAmbienceColumn()).toBe(true);
@@ -970,9 +954,6 @@ describe("a new account", () => {
     });
   });
 
-  // The quest log holds a row for each quest a player has taken, and a row needs its quest. A new account has
-  // taken none: the row once written for it here, with a name and no quest, is refused by the database ("Field
-  // 'quest_id' doesn't have a default value"), and everything after it was then never written.
   test("is given no row in the quest log", async () => {
     await signUp();
     expect(queries.filter((sql) => sql.startsWith("INSERT INTO quest_log"))).toEqual([]);

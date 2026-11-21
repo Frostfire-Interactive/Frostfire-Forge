@@ -2,11 +2,6 @@ import log from "../../modules/logger";
 import type { CreatureSpawner, MovedSlot } from "../../systems/creatures/spawner";
 import { inMove, registerBlockPart, type BlockOf, type BlockPart } from "../blockparts";
 
-// The creature spawn slots of a moving block (cells phase 7). Collected first (order 0), so a creature's slot has
-// left the old owner before any object of the block is touched. A live creature does not move with its slot: it
-// stays where it stands, foreign now, and the handoff watch moves it once the table says the block is the new
-// owner's. Third holders learn the new home once the block was sent.
-
 export const CREATURE_SLOTS_PART = "creature-slots";
 
 export interface CreatureSlotsDeps {
@@ -65,14 +60,9 @@ export function creatureSlotsPart(deps: CreatureSlotsDeps): BlockPart<MovedSlot[
       }
     },
     hold: (_move, slots, forMs) => {
-      // The move is not decided yet and this node keeps the slots: the spawner answers for them that much longer, so
-      // their creatures stay here, foreign, until the move is sent or put back (and nothing is removed meanwhile).
       deps.spawner.holdSlots?.(slots, deps.now(), forMs);
     },
     lost: (move, slots) => {
-      // The new owner may have taken the slots in, held by this node: its sweep then finds each creature gone and
-      // spawns it once. If it did not, the slots wait here as elsewhere ones. Either way the creatures this node still
-      // holds for them go, with no respawn and no word to the new owner, so a slot never has two.
       const { spawner } = deps;
       if (!spawner.foreignHome || !spawner.dropForeign || !spawner.despawn) {
         log.error(`The creature slots of ${where(move)} were lost, and this node cannot drop their creatures`);
@@ -88,13 +78,8 @@ export function creatureSlotsPart(deps: CreatureSlotsDeps): BlockPart<MovedSlot[
         dropped.push(`${spawner.getTemplate?.(slot.templateId)?.name ?? "Creature"} ${slot.instanceId}`);
       }
       if (dropped.length > 0) log.error(`The creature slots of ${where(move)} were lost: their creatures here were removed (${dropped.join(", ")})`);
-      // A slot another node holds stays out: that node's creature keeps its home here, and the slot waits as an
-      // elsewhere one. Put back as away now, a holder handing the creature home would make it live here while the new
-      // owner, if it took the slot, finds it gone and spawns a second. Only an abort puts it back (lostAborted).
     },
     lostAborted: (move, slots) => {
-      // The new owner never took the slots in. The ones other nodes hold go back as away slots, as a restore puts
-      // them: otherwise this node spawns them afresh once the block is its again, while their holders keep the creatures.
       const held = slots.filter((slot): slot is Extract<MovedSlot, { kind: "held" }> => slot.kind === "held" && slot.holder !== deps.self);
       if (held.length === 0) return;
       const taken = deps.spawner.importSlots(held, deps.now(), deps.self);

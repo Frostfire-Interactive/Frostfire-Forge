@@ -10,9 +10,6 @@ import { installUnhandledRejectionHandler } from "../services/unhandled";
 
 installUnhandledRejectionHandler();
 
-// The coordinator as its own process: `bun run coordinator:production`. Run one
-// or more per region; one leads and the rest stand by.
-
 // The same checks the engine makes in cluster mode (src/utility/validate_config.ts).
 const startUpErrors: string[] = [];
 if (!process.env.REDIS_URL) {
@@ -40,9 +37,6 @@ if (startUpErrors.length > 0 || !keys) {
   process.exit(1);
 }
 
-// The settle rule for a cold start (see CoordinatorOptions): split new maps once this many nodes
-// are live, or this long after the first one is, whichever comes first (the nodes alone: at most
-// 60 s). Unset: split at once.
 function positiveInteger(name: string): number | undefined {
   const raw = process.env[name];
   if (raw === undefined || raw.trim() === "") return undefined;
@@ -54,11 +48,7 @@ function positiveInteger(name: string): number | undefined {
 const expectedNodes = positiveInteger("CLUSTER_EXPECTED_NODES");
 const settleMs = positiveInteger("CLUSTER_SETTLE_MS");
 
-// Unique per process: the pid alone is 1 in every container, and two coordinators sharing an id would share a bus channel.
-// The hostname keeps to the characters the region allows, as it ends up in a Redis channel name too.
 const host = os.hostname().replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 64) || "host";
-// The tombstones, run records and move orders it writes are sealed with the store key, and what it reads is opened with
-// it, as on the nodes (storeseal.ts, security review H1).
 const store = sealStore(new RedisStore(), keys.store);
 const bus = new ClusterBus(store, `coordinator-${process.env.REGION_ID}-${host}-${process.pid}-${crypto.randomUUID().slice(0, 8)}`, keys.bus);
 const coordinator = new Coordinator(store, bus, { id: bus.nodeId, expectedNodes, settleMs });
@@ -85,8 +75,6 @@ async function shutdown(signal: string): Promise<void> {
 process.on("SIGINT", () => void shutdown("SIGINT"));
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
 
-// Redis may not be up yet: try again, waiting longer each time (up to 30 s), until it is or the process is stopped.
-// A retry may subscribe a channel the failed attempt already had; that only doubles "blocks-changed" reloads, which are harmless.
 for (let wait = 1000; !stopping; wait = Math.min(wait * 2, 30_000)) {
   try {
     await bus.start();

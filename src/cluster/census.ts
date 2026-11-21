@@ -2,14 +2,6 @@ import log from "../modules/logger";
 import type { ClusterBus } from "./bus";
 import type { LoadReport, NodeRegistry } from "./nodes";
 
-// Who is on the other nodes of this region. Two things answer that, at two costs:
-//
-// - The load reports, which every node already writes each second: how many players, how busy. Read on a short timer,
-//   so the online count every player sees costs a few store reads and no message.
-// - A node's own answer over the bus, for what a report does not hold (the names, a control panel's numbers). Asked
-//   only while someone wants it, at most once per ROSTER_FRESH_MS however many panels are open. The rows travel as
-//   one JSON string: the bus signs what it sends key by key, which is cheap for one string and not for a list.
-
 /** How often the load reports are read. */
 export const CENSUS_MS = 2_000;
 /** How long a node gets to answer. One that does not is left to its load report. */
@@ -19,11 +11,6 @@ export const ROSTER_FRESH_MS = 1_000;
 /** How long a new count must hold before players see it: longer than a load report and a census read together. */
 export const ONLINE_SETTLE_MS = 4_000;
 
-/**
- * The online count players are shown. A player crossing a border leaves one node's connections at once, and the other
- * nodes' reports only seconds later, so for that long the sum is one off though nobody came or went. A change goes out
- * once it has held, which those never do. Asked on a timer with the count now; answers with the count to send, or null.
- */
 export class SettledCount {
   private sent = 0;
   private matched = 0;

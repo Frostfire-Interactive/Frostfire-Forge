@@ -1,10 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { databaseModule, mockQuery, standInFor } from "./setup";
 
-// socket/leavesave.ts: what a leaving player keeps for their next login, saved for a disconnect and for a kick. The
-// real module is run here with stand-ins for the modules it writes through, so what it saves, and through which of
-// them, is the module's own (tests/setup.ts withLeaveSaves hands the same code the stand-ins of other files).
-
 const wrote: string[] = [];
 const seen = (line: string) => { wrote.push(line); };
 

@@ -3,29 +3,6 @@ import type { ClusterBus } from "./bus";
 import { deadKey, type NodeDeadMessage, type Tombstone } from "./coordinator";
 import type { ClusterStore } from "./store";
 
-// What a node does about a node the coordinator found dead (spec §7). The dead node's mirrors here go, the
-// creatures of this node it held respawn here, and the creatures it sent here go (its blocks are refilled, and
-// their slots respawn on the new owner). Of a node that restarted under the same id, only the creatures it sent
-// here go: the link to its new run already resets the mirrors, and an away slot it holds may be a fresh handoff
-// to the new run, which the phase 6 sweep asks about instead.
-// A notice acts on the run it names, not on the node id. A death notice for a run whose node announced a newer run
-// since (or whose run was already told restarted) is handled as a restart: the new run's mirrors and away slots are
-// live and stay.
-// A node that finds itself dead (a node-dead or a tombstone naming this run) was stalled while the coordinator
-// gave its blocks away: it fences itself, kicking its players and exiting, before it acts on what it lost.
-// A node-dead can come twice for one run, so a run is handled once, and a step that failed is tried again for that
-// run only, a few times, on the check interval.
-//
-// A notice is acted on only once the store confirms it (security review M1): the bus key alone must not fence a
-// healthy node or drop its creatures. A death notice needs the coordinator's tombstone, `cells:dead:<node>`, naming
-// the same run; the coordinator writes it before it sends the notice (coordinator.ts takeOver). A restart notice needs
-// the node's announcement to name a later run, or such a tombstone. Both records are sealed (storeseal.ts), so only a
-// node or the coordinator can have written them. A notice the store denies is dropped and logged, and not remembered
-// as handled: the real one may still come. A notice whose record cannot be read waits, and is checked again on the
-// check interval (and on a resent copy); for this node's own run that wait never fences: the tombstone watch (check)
-// and the beat (nodes.ts, which ends the lease on a tombstone and, unread, does not extend it) fence or stop the node
-// once the tombstone can be read. The grants of a run are adopted (deps.adopt) only for a confirmed notice.
-
 export const DEAD_CHECK_MS = 1_000;
 // Runs remembered as handled; the oldest go first.
 export const HANDLED_KEEP = 256;
@@ -56,10 +33,6 @@ export interface NodeDeathDeps {
   dropForeignFrom(home: string): number;
   /** Kicks this node's players and exits. Called at most once. */
   fence(why: string): void;
-  /**
-   * A confirmed notice: the run's grants are adopted here (grants.adoptFrom). Called once each time a notice is found
-   * confirmed, a resent copy of a handled one included (adoption is idempotent). Never for this node's own run.
-   */
   adopt?(nodeId: string, startedAt: number): void;
   /** A confirmed notice: the run's players are gone. `restarted`: the node is back, and what it holds now is its new run's. */
   playersLost?(peer: string, restarted: boolean): void;
@@ -95,8 +68,6 @@ function remember(set: Set<string>, key: string): void {
 
 export class NodeDeath {
   private fenced = false;
-  // Notices already handled ("node|startedAt|restarted", as handled: a death notice downgraded to a restart counts
-  // as one): a takeover cut short tells the world again.
   private handled = new Set<string>();
   // Runs ("node|startedAt") told restarted, or found to have a newer run: a death notice for them is a restart.
   private restartedRuns = new Set<string>();
@@ -128,8 +99,6 @@ export class NodeDeath {
     const key = `${message.nodeId}|${message.startedAt}|${message.restarted}`;
     if (this.running.has(key)) return;
     if (this.handled.has(key)) {
-      // A resent copy of a notice confirmed before: its steps are done, and the adoption runs again (it did before
-      // the notices were checked, and it is idempotent), so an adoption that gave up gets another go.
       this.adopt(message);
       return;
     }
@@ -137,11 +106,6 @@ export class NodeDeath {
     await this.handle(key, message, this.pending.get(key));
   }
 
-  /**
-   * A death notice naming this node's own run: the node fences only when its tombstone names that run. A notice the
-   * store denies is ignored; one whose tombstone cannot be read does not fence either: the tombstone watch (check) and
-   * the beat read it again every second, and either stops the node once it is there.
-   */
   private async fenceIfConfirmed(message: NodeDeadMessage): Promise<void> {
     const verdict = await this.verdict(message);
     if (this.fenced) return;
@@ -154,11 +118,6 @@ export class NodeDeath {
     else log.warn(`A node-dead names run ${message.startedAt} of this node (${this.deps.self}), but its tombstone could not be read: not fenced on it; the tombstone watch fences once it reads one`);
   }
 
-  /**
-   * Whether the store confirms a notice. A death notice: the tombstone names its run (for another node, a tombstone of
-   * a later run of it does too: that run is over as well, so this one is). A restart notice: such a tombstone, or the
-   * node's announcement of a later run. "unread": the store failed, and nothing is known.
-   */
   private async verdict(message: NodeDeadMessage): Promise<Verdict> {
     const own = message.nodeId === this.deps.self && message.startedAt === this.deps.startedAt;
     try {
@@ -241,8 +200,6 @@ export class NodeDeath {
         const verdict = await this.verdict(message);
         if (this.fenced) return;
         if (verdict === "denied") {
-          // Guard (test "a node-dead no tombstone names drops nothing and adopts nothing"). Not remembered as handled:
-          // the coordinator's own notice for the run may still come.
           this.pending.delete(key);
           log.warn(`A node-dead for run ${message.startedAt} of node ${peer}${message.restarted ? " (restarted)" : ""} is not confirmed by the store (no tombstone${message.restarted ? " or later announcement" : ""} names it): it is ignored`);
           return;
@@ -255,14 +212,9 @@ export class NodeDeath {
         this.adopt(message);
       }
       let restarted = message.restarted || this.restartedRuns.has(run);
-      // The steps still owed. The creatures the dead node sent here go whatever the nodeinfo read says (they go for a
-      // restart too, and a Redis outage must not leave them standing while their slots respawn on the new owner); the
-      // mirrors and away slots wait for the read.
       const owed = new Set<Step>(again?.confirmed ? again.steps : this.firstSteps(message));
       let readFailed = false;
       if (!restarted && (owed.has("mirrors") || owed.has("away"))) {
-        // Read as late as the steps allow: a new run announced under this id is live, and its mirrors and away
-        // slots are not the dead run's.
         try {
           const raw = await this.store.get(nodeInfoKey(peer));
           // A record that cannot be parsed counts as none, not as an outage: an outage keeps the notice waiting.
@@ -314,8 +266,6 @@ export class NodeDeath {
     }
   }
 
-  // A notice with nothing owed is done. One with steps owed waits for a retry. Steps that failed count towards
-  // RETRY_LIMIT, then are given up; a read that fails does not: it is an outage, and the notice stays until the read works.
   private settle(key: string, message: NodeDeadMessage, owed: Set<Step>, readFailed: boolean, again: Pending | undefined, stepFailed = false, effective?: string): void {
     if (owed.size === 0) {
       this.pending.delete(key);
@@ -333,8 +283,6 @@ export class NodeDeath {
     this.keepPending(key, { message, steps: owed, failures, readFailed, confirmed: true });
   }
 
-  // Keeps a notice for a retry. At most HANDLED_KEEP wait: past that the oldest one not yet confirmed goes (it is a
-  // notice the store could not check, so nothing of it was done), else the oldest.
   private keepPending(key: string, entry: Pending): void {
     this.pending.delete(key);
     this.pending.set(key, entry);

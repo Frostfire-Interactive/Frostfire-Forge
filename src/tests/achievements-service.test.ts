@@ -1,9 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { characterDatabaseModule } from "./setup";
 
-// Achievements: counting (systems/achievements/service.ts), earning with its rewards, and the collectables a batch
-// adds. The real store, inventory, collectables and mail systems run against a fake database.
-
 type Row = Record<string, any>;
 let tables: { achievements: Row[]; player_achievements: Row[]; inventory: Row[]; collectables: Row[]; mail: Row[] };
 let nextId = 1;
@@ -227,8 +224,6 @@ beforeEach(async () => {
   assets.set("mounts", [{ name: "Unicorn", description: "A unicorn." }]);
   store.resetChanges();
   await clearCaches();
-  // Only the players a test puts online are online: test files that run earlier can leave players in the shared
-  // cache (the order files run in differs between machines, see src/tests/setup.ts standInFor).
   playerCache.clear();
 });
 

@@ -112,8 +112,6 @@ export default (async () => {
         "Cluster mode needs CACHE=redis and REDIS_URL, aborting... Please set both environment variables to suppress this message."
       );
     }
-    // Redis carries the cluster's grants, snapshots and tombstones. Their records are sealed, but a seal does not stop a
-    // delete or a replay of an older record, so Redis must be closed to anyone without the password (security review H1). Only the shape of the URL is read here; its value is never printed.
     if (process.env.REDIS_URL) {
       const problem = redisUrlProblem(process.env.REDIS_URL, process.env.REDIS_PASSWORD);
       if (problem) startUpErrors.push(problem);
@@ -144,8 +142,6 @@ export default (async () => {
         "Cluster mode needs GATEWAY_GAME_SERVER_SECRET (node tickets are signed with it), aborting... Please set the GATEWAY_GAME_SERVER_SECRET environment variable to suppress this message."
       );
     }
-    // Node links and the cluster bus are signed with keys derived from the cluster's own secret (cluster/clusterkeys.ts,
-    // which refuses it again at start). Only its length is read here, never its value.
     if ((process.env.CLUSTER_LINK_SECRET ?? "").length < CLUSTER_SECRET_MIN_LENGTH) {
       startUpErrors.push(
         `Cluster mode needs CLUSTER_LINK_SECRET set to at least ${CLUSTER_SECRET_MIN_LENGTH} random characters (node links and the cluster bus are signed with it), aborting... Please set the CLUSTER_LINK_SECRET environment variable to suppress this message.`
@@ -153,8 +149,6 @@ export default (async () => {
     }
   }
 
-  // Validate the generated settings.json webtransport keys so typos or stale
-  // legacy schemas can't silently fall back to defaults.
   try {
     const fs = await import("node:fs");
     const path = await import("node:path");

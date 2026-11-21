@@ -3,16 +3,6 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { receiverSource } from "./receiver-source";
 
-// Cluster mode: a map can be split between the nodes of a region, so the map editor's work reaches every node. A
-// world's save has each node fetch its new collision and no-pvp bits and take its graveyards and warps, and its
-// players there fetch the changed chunks again (peer news "world-saved"). A plain map's save has each node bring its
-// copy of the map file up to date from the asset server and read the map again, then shows its players the save
-// (peer news "map-saved"). Each node marks a save under way from the saver's word of it ("map-saving") until that news,
-// or "map-not-saved", so that the asset server's word of the save, which comes first, is left to it. Live tile edits
-// and layer locks reach the admins editing the map on every node (peer news "editor-tile-edit" and
-// "editor-layer-lock"). socket/handlers/editors.ts and modules/assetloader.ts cannot be imported: these read their
-// source.
-
 const receiver = receiverSource();
 const loader = readFileSync(new URL("../modules/assetloader.ts", import.meta.url), "utf8");
 const transpiler = new Bun.Transpiler({ loader: "ts" });
@@ -350,8 +340,6 @@ test("the map editor's saves and live edits are told to the region", () => {
 });
 
 describe("/reloadmap", () => {
-  // Each node of the region reads the map again from its own copy, and its players on it load it again (peer news
-  // "map-reloaded").
   function reloading(read: any = { compressed: "new", data: { layers: ["new"] } }) {
     const sent: any[] = [];
     const maps: any[] = [{ name: "m.json", compressed: "old", data: { layers: ["old"] } }];

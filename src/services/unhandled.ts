@@ -5,11 +5,6 @@ export function isRedisError(reason: unknown): boolean {
   return typeof (reason as { code?: unknown } | null)?.code === "string" && (reason as { code: string }).code.startsWith("ERR_REDIS_");
 }
 
-/**
- * The last resort for a promise that failed with nobody to handle it. A Redis error is logged and the node keeps
- * running: Redis is away for a while, and the node must not drop its players for it. Any other reason is logged and
- * the process exits with code 1, as Bun does with no handler.
- */
 export function onUnhandledRejection(reason: unknown, exit: (code: number) => void = (code) => process.exit(code)): void {
   const stack = reason instanceof Error && reason.stack ? `\n${reason.stack}` : "";
   if (isRedisError(reason)) {

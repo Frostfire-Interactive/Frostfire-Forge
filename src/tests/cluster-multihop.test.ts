@@ -77,8 +77,6 @@ test("a forward bounced back to the node before it fails at once, and runs nowhe
     let askedB = 0;
     calls.b.setRedirect(() => { askedB++; return "c"; });
     calls.c.setRedirect(() => "b");
-    // b forwards to c (hops 1); c's redirect names b, the node that forwarded it: the two disagree about the owner,
-    // and c fails it without passing it back.
     expect(await calls.a.call("b", "HIT", {})).toEqual({ ok: false, why: "failed" });
     expect(runs).toEqual([]);
     // Guard: to === sender in forwarded(). Without it c passes the forward back to b, which asks its redirect again.
@@ -113,8 +111,6 @@ test("an onward forward over a link that is down fails the call, which runs nowh
     chainOf(calls, ["b", "c", "d"]);
     links.c.setUp("d", false);
     const outcome = await calls.a.call("b", "HIT", {});
-    // Guard: the not-ok check after the onward call in forwarded(). Taken as ok, a gets an answer for a call that
-    // ran nowhere; run here instead, c runs a call d may have run.
     expect(outcome).toEqual({ ok: false, why: "failed" });
     expect(neverRan(outcome)).toBe(false);
     expect(runs).toEqual([]);
@@ -159,8 +155,6 @@ test("an onward forward answered busy fails the call (not busy), and it runs now
     expect(releases.length).toBe(MAX_INFLIGHT_PER_PEER);
     chainOf(calls, ["b", "c", "d"]);
     const outcome = await calls.a.call("b", "HIT", {});
-    // A busy answer is about c's call to d only: a, two hops back, gets failed, never busy (which neverRan reads
-    // as never run).
     expect(outcome).toEqual({ ok: false, why: "failed" });
     expect(neverRan(outcome)).toBe(false);
     expect(runs).toEqual([]);
@@ -305,8 +299,6 @@ test("a delivery sent at the directory's current epoch is not passed on", async 
   const a = await node("a");
   await a.directory.claim("Hero", "7", "main");
   const latest = await (await node("x", { "8": { username: "Hero", ...hero } })).directory.claim("Hero", "8", "main");
-  // The entry names x now, at the epoch the sender read: a has nothing newer to go by. The sender, which read the
-  // entry, reaches x itself; a passing it on as well would hand x a second copy.
   const sender = await node("s");
   await sender.bus.toNode("a", "deliver", { username: "Hero", packets: wire("m"), bestEffort: false, epoch: latest.entry.epoch });
   await settleLong();
@@ -366,8 +358,6 @@ test("a forward-table pass-on carries the epoch the sender read", async () => {
   const a = await node("a");
   await node("b", { "8": { username: "Hero", ...hero } });
   a.delivery.setForwarder(() => "b");
-  // The sender read Hero's entry (on x); a's forward table names b. b is told the epoch the sender read, so it never
-  // follows an entry older than that one.
   const latest = await (await node("x")).directory.claim("Hero", "8", "main");
   const toB: any[] = [];
   const original = store.publish.bind(store);

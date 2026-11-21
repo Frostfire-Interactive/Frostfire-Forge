@@ -10,8 +10,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
   switch (type) {
 
       case "CUTSCENE_STARTED": {
-        // The client has begun the scene it was sent: the session's clock becomes the scene's length. A token that is
-        // not the session's (a scene already over, or never sent) is ignored.
         if (!currentPlayer) return;
         cutscenePlayer.onStarted(currentPlayer, (data as any)?.token);
         break;

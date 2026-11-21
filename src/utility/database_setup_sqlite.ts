@@ -79,8 +79,6 @@ const addDeathColumns = async () => {
   }
 };
 
-// Player subscriptions: the account columns the Gateway writes when a payment comes in, the ticked locks, and the
-// one status row the Gateway keeps. The engine adds the same at start (systems/subscriptions.ts).
 const addSubscriptionColumns = async () => {
   log.info("Adding subscription columns to accounts table...");
   const rows = (await query(
@@ -484,19 +482,11 @@ const createTradeLogTable = async () => {
   `);
 };
 
-/**
- * Cluster mode: the grant ids (hand-overs and corpse money between nodes) whose items or money were written, each
- * written in the same transaction as what it gave (systems/grantwrites.ts, which also creates it when first used).
- */
 const createGrantWritesTable = async () => {
   log.info("Creating grant_writes table...");
   await query(`CREATE TABLE IF NOT EXISTS grant_writes (id TEXT NOT NULL PRIMARY KEY, written_at INTEGER NOT NULL)`);
 };
 
-/**
- * Each player's home: the innkeeper it was set at, where they stood from that NPC, and when their
- * home item was last used (milliseconds since the epoch; 0: never). A player with no row has no home.
- */
 const createPlayerHomeTable = async () => {
   log.info("Creating player_home table...");
   await query(`
@@ -873,8 +863,6 @@ const createMountsTable = async () => {
   await query(sql);
 }
 
-// The cutscene editor's scenes (data is the whole scene document, JSON) and which characters have seen the ones that play
-// once. Same SQL as CUTSCENES_TABLE and CUTSCENE_VIEWS_TABLE (sqlite) in systems/cutscenes.ts, which makes them at engine start too.
 const createCutscenesTables = async () => {
   log.info("Creating cutscenes tables...");
   await query(`
@@ -1010,11 +998,6 @@ const addMissingColumns = async (table: string, columns: Array<{ name: string; t
   }
 };
 
-/**
- * Spell columns the MySQL schema has and this one was missing: the game reads
- * them and the spell editor writes them. An existing cast_time column needs no
- * change: SQLite keeps a 1.5 in an INTEGER column as it is.
- */
 const addSpellColumns = async () => {
   await addMissingColumns("spells", [
     { name: "ground_aoe", type: "INTEGER DEFAULT 0" },
@@ -1049,8 +1032,6 @@ const insertAreaSpells = async () => {
   );
 };
 
-/** Weapon damage columns added to items after their first release. */
-/** Where an item sits in the bags: columns the inventory table was first made without here. */
 const addInventorySlotColumns = async () => {
   await addMissingColumns("inventory", [
     { name: "slot", type: "INTEGER DEFAULT NULL" },
@@ -1112,8 +1093,6 @@ const addItemWeaponColumns = async () => {
   await addMissingColumns("items", [{ name: "soulbound", type: "INTEGER NOT NULL DEFAULT 0" }]);
   // The sprite sheet an equipped item is drawn with. Nothing set is the sheet named after the item.
   await addMissingColumns("items", [{ name: "sprite_sheet", type: "TEXT DEFAULT NULL" }]);
-  // What a vendor charges for an item where the NPC sets no price of its own: set at four times what vendors pay for it,
-  // as the NPC editor priced a newly stocked item.
   const items = (await query(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'items'`)) as any[];
   if (items[0]?.sql && !/\bbuy_price\b/.test(String(items[0].sql))) {
     await query("ALTER TABLE items ADD COLUMN buy_price INTEGER NOT NULL DEFAULT 0");
@@ -1229,8 +1208,6 @@ const createCreatureTables = async () => {
     rare_chance_pct REAL NOT NULL DEFAULT 0,
     rare_template_id INTEGER DEFAULT NULL
   )`);
-  // Achievements (/achievements) and each player's progress toward them. Same SQL as ACHIEVEMENT_TABLES.sqlite in
-  // systems/achievements/store.ts, which makes them at engine start too.
   await query(`CREATE TABLE IF NOT EXISTS achievements (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE COLLATE NOCASE,
@@ -1252,8 +1229,6 @@ const createCreatureTables = async () => {
     UNIQUE (username, achievement_id)
   )`);
   await query("CREATE INDEX IF NOT EXISTS idx_player_achievements_achievement ON player_achievements (achievement_id)");
-  // Gathering areas (/gathering): where resource nodes spawn. Same SQL as GATHERING_AREAS_TABLE.sqlite in
-  // systems/gathering/editor.ts, which makes it at engine start too.
   await query(`CREATE TABLE IF NOT EXISTS gathering_areas (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     map TEXT NOT NULL,
@@ -1269,8 +1244,6 @@ const createCreatureTables = async () => {
     respawn_max_s INTEGER NOT NULL DEFAULT 120,
     enabled INTEGER NOT NULL DEFAULT 1
   )`);
-  // Tile footprints (the map editor's Footprints tab): the prints players leave on each tile of a tileset. Same SQL as
-  // TILE_FOOTPRINTS_TABLE.sqlite in systems/footprints.ts, which makes it at engine start too.
   await query(`CREATE TABLE IF NOT EXISTS tile_footprints (
     tileset TEXT NOT NULL,
     tile_id INTEGER NOT NULL,
@@ -1280,8 +1253,6 @@ const createCreatureTables = async () => {
     fade_s INTEGER NOT NULL,
     PRIMARY KEY (tileset, tile_id)
   )`);
-  // Fishable tiles (the map editor's Fishing tab): what each tile of a tileset gives, and the items that fish it. Same
-  // SQL as FISHING_TILES_TABLE.sqlite in systems/fishing/index.ts, which makes it (and adds tools) at engine start too.
   await query(`CREATE TABLE IF NOT EXISTS fishing_tiles (
     tileset TEXT NOT NULL,
     tile_id INTEGER NOT NULL,
@@ -1382,12 +1353,6 @@ const createIndexes = async () => {
   log.success("Index creation complete!");
 };
 
-// Run the database setup
-/**
- * What each character table needs besides `character_id`: the columns that, with it, are unique (what the account-name
- * key was unique together with), and the id twins of its name-pointer columns. The twins hold no foreign key: a log row
- * outlives the character it names. `guilds` is not a character table but has a leader to point at.
- */
 const CHARACTER_KEY_SPECS: Record<string, { unique?: string[]; twins?: string[] }> = {
   inventory: {},
   stats: { unique: [] },
@@ -1418,12 +1383,6 @@ const addColumnIfMissing = async (table: string, column: string, definition: str
   if (!(await columnsOf(table)).includes(column)) await query(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 };
 
-/**
- * Many characters per account: the `characters` table, accounts.active_character_id, and a `character_id` (foreign key,
- * cascading) on every character table. Safe to run again. Tables made by this script already have a nullable account
- * name with unique keys in place of primary keys; one made before is only given the columns and indexes (SQLite cannot
- * loosen a column in place).
- */
 const addCharacterKeys = async () => {
   log.info("Adding characters table and character_id keys...");
   await query(`
@@ -1467,8 +1426,6 @@ const addCharacterKeys = async () => {
 };
 
 export const setupDatabase = async () => {
-  // await createDatabase();
-  // await useDatabase();
   await createAccountsTable();
   await addDeathColumns();
   await addSubscriptionColumns();

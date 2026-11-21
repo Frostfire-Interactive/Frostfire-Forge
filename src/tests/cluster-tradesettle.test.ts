@@ -6,10 +6,6 @@ import { linkPair, settle } from "./cluster-fakelink";
 import { characterDatabaseModule, standInFor } from "./setup";
 import { receiverSource } from "./receiver-source";
 
-// The settle fence (cluster/tradesettle.ts): after a trade across a border is lost, the bags and coins of this node's
-// player wait for a swap that may still commit on the host. These run the real inventory and currency systems
-// against a small fake database, and play the host's swap by writing that database behind the systems' backs.
-
 type Row = Record<string, any>;
 let inventoryRows: Row[] = [];
 let currencyRows: Row[] = [];
@@ -57,8 +53,6 @@ function fakeQuery(sql: string, values: any[] = []): any {
   return [];
 }
 
-// The database layer cannot be loaded for real in a test (it opens its pool at load), so, as the other trade tests
-// do, it is replaced with mock.module and not put back.
 mock.module("../controllers/sqldatabase", () => characterDatabaseModule({
   default: async (sql: string, values?: any[]) => fakeQuery(sql, values),
   transaction: async (list: Array<{ sql: string; values?: any[] }>) => {
@@ -108,12 +102,6 @@ afterEach(async () => {
   await clearCaches();
 });
 
-/**
- * `name` is a player of this node (b) whose trade node a held. They have 5 Iron Ore and 40 copper, 3 silver; the trade
- * gives away 3 ore and 2 silver. The link to a goes down, the `lost` handler reads their bags again at once (as the
- * receiver does), and the swap commits on a 50 ms later. Answers once the swap has committed, inside the window: the
- * copies held here are then from before the swap, and a write that trusted them would put back what was given.
- */
 async function lostWhileSwapping(name: string) {
   inventoryRows.push({ id: nextId++, username: name, item: "Iron Ore", quantity: 5, equipped: 0, slot: null, bag_slot: null });
   currencyRows.push({ username: name, copper: 40, silver: 3, gold: 0 });
@@ -424,8 +412,6 @@ test("unsettle drops the player's rows at once", async () => {
 
 // ------------------------------------------------------- the host refuses a swap
 
-// The host's last check before a swap: trades.accept asks the receiver's traderNamed for both players, and a player
-// of a neighbouring node is found only while tradeLink.partnerPeer has them, which peerDown ends with the link.
 const traderSource = (() => {
   const source = receiverSource();
   const start = source.search(/^const traderNamed = /m);

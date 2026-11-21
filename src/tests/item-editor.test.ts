@@ -18,8 +18,6 @@ mock.module("../controllers/sqldatabase", () => databaseModule({
 }));
 
 const cache = new Map<string, any>();
-// Like the real cache, it tells who listens for a key when the key is written (the sheets of the items are kept
-// in memory by the sprite manager until then).
 const listeners = new Map<string, Array<() => void>>();
 const written = (key: string) => { for (const listener of listeners.get(key) ?? []) listener(); };
 mock.module("../services/assetCache", () => ({

@@ -7,9 +7,6 @@ const { GatewayClient } = await import("../modules/gateway-client");
 const { default: log } = await import("../modules/logger");
 type MapBlocks = import("../cluster/blocks").MapBlocks;
 
-// In cluster mode a node registers with the gateway under its node id (one
-// realm is many nodes), and says which node and region it is.
-
 const config = (over: Partial<ServerRegistrationConfig> = {}): ServerRegistrationConfig => ({
   gatewayUrl: "http://gateway.test",
   assetServerUrl: null,

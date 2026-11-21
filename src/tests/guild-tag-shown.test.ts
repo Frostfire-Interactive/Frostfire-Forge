@@ -1,12 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { receiverSource } from "./receiver-source";
 
-// A player's guild name is drawn over their head for everyone who sees them (client core/player.ts). When it changes,
-// the player is sent again to their viewers (broadcastPlayerUpdate), which reaches the viewers of their mirrors on
-// other nodes too. A change told to the player's own node as a player action (socket/receiver.ts: a join made from
-// another node, such as in the player editor, or a kick) must do the same. receiver.ts cannot be imported: these read
-// its source.
-
 const receiver = receiverSource();
 const transpiler = new Bun.Transpiler({ loader: "ts" });
 

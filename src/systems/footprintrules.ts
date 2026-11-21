@@ -1,7 +1,3 @@
-/**
- * What needs no server in tile footprints (systems/footprints.ts): the kinds of prints, reading an editor save and the
- * rows of tile_footprints.
- */
 export const PRINT_STYLES = ["boot", "bare", "hole"] as const;
 export type PrintStyle = (typeof PRINT_STYLES)[number];
 /** How a tile's prints look: their style, colour ("#rrggbb"), darkness (0.05 to 1) and fade time (s). */

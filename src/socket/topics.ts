@@ -30,12 +30,6 @@ export const topicBus = {
     }
   },
 
-  /**
-   * Like publish, but delivers as unreliable datagrams (fire-and-forget).
-   * Use for loss-tolerant status fan-outs (e.g. CONNECTION_COUNT) so a
-   * per-second broadcast to every player doesn't contend for the reliable
-   * stream's ordering queue at 1000+ connections.
-   */
   publishBestEffort(topic: string, payload: Uint8Array): void {
     const subscribers = subscriptions.get(topic);
     if (!subscribers) return;

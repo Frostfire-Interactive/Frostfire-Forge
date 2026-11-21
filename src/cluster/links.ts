@@ -3,29 +3,6 @@ import { HelloNonces, checkHello, decodeLinkFrame, encodeLinkFrame, makeHello } 
 import type { LinkChannel, LinkSender, LinkTransport } from "./linktransport";
 import type { NodeInfo } from "./nodes";
 
-// One link per neighbouring node (spec §1). The node with the smaller id dials;
-// the first frame proves the dialler knows the cluster secret. QUIC notices a
-// dead peer only after about 27 s, so each side pings every 500 ms and drops a
-// link that has been silent for 1.5 s; the dialler then redials with backoff.
-// The check runs each ping, so a dead peer is found within deadMs + pingMs of
-// its last frame (one interval more right after a stall of our own loop).
-// The dialler owns teardown: only it lets a link go once it is no longer wanted.
-// The acceptor keeps whatever the dialler keeps, and forgets a peer once its
-// link is gone. A new HELLO for a peer whose link is up and was heard within
-// deadMs is refused (H2: a holder of the key cannot cut a live link away); one
-// for a link gone silent replaces it and reports the peer up again with no
-// down in between. A restarted peer's old link goes silent (or closes), so it
-// gets back in. stop() reports nobody down.
-// The secret is the link key derived from CLUSTER_LINK_SECRET (clusterkeys.ts).
-// A stranger gets PRE_HELLO_MS to say hello on an accepted channel.
-// No goodbye or refusal frame is ever sent before close(): on the real link a
-// frame written just before close() can be lost. The reason rides in `closed`.
-
-// Which messages go in the control lane of a link that has lanes (wtlinks.ts LaneWriter): the link's own (LINK_*:
-// hello, ok, ping) and the call layer's CALL, ANSWER and CAST (linkcalls.ts). They are small and a node waits on them;
-// ghost and AOI frames are bulk. The call layer keeps one order among its own frames. Ghost frames are not ordered against
-// calls, so one sent before a call may arrive after it: the receiver keys every ghost frame by the node it came from, and a
-// spawn for an id that is local there is refused (GhostKind.spawn), so a late ghost frame does no harm. No call waits on one.
 const CONTROL_CALL_KINDS: ReadonlySet<string> = new Set(["CALL", "ANSWER", "CAST"]);
 export const isControlKind = (kind: string): boolean => kind.startsWith("LINK_") || CONTROL_CALL_KINDS.has(kind);
 
@@ -211,9 +188,6 @@ export class NodeLinks implements LinkSender {
   private tick(fromTimer = true): void {
     if (this.stopped || !this.timer) return;
     const now = this.now();
-    // A late tick means this node's own loop stalled (a long frame, a GC pause). Frames that came
-    // meanwhile still wait behind this timer, so the silence may be ours: judge on the next tick,
-    // after they are read. Only one tick is skipped, so steady lag delays a verdict by one interval.
     let judge = false;
     if (fromTimer) {
       const late = this.lastTickAt > 0 && now - this.lastTickAt > this.pingMs * 2;
@@ -294,9 +268,6 @@ export class NodeLinks implements LinkSender {
         }
         const peer = this.peer(from);
         const old = peer.channel;
-        // A good HELLO proves only that the sender holds the key, not that it is the peer. A link that is up and
-        // was heard from within deadMs stays: the new channel is refused. A restarted peer's old link goes
-        // silent (or closes), and its next dial gets in.
         if (old && old !== channel && peer.up && this.now() - peer.heardAt <= this.deadMs) {
           log.warn(`Node link from ${from} refused: its link is up and live, so it is not replaced`);
           channel.close("link already up");
@@ -307,8 +278,6 @@ export class NodeLinks implements LinkSender {
         peer.channel = channel;
         // The gate before the hello (wtlinks.ts) frees this channel's place: it is a peer now.
         channel.authenticated?.();
-        // The peer came back (a restart, or our side missed its going): the new channel replaces the stale one.
-        // The old one's `closed` comes later and is ignored, since it is no longer the peer's channel.
         if (old && old !== channel) old.close("replaced");
         channel.send(encodeLinkFrame("LINK_OK", { from: this.self }), true);
         this.markUp(peer);
@@ -420,10 +389,6 @@ export class NodeLinks implements LinkSender {
     }, false);
   }
 
-  /**
-   * setTimeout that stop() clears. With `grace`, a timer that fires more than a ping late (this
-   * loop stalled) waits one ping more, so frames that came during the stall are read first.
-   */
   private after(ms: number, run: () => void, grace = true): Timer {
     const due = this.now() + ms;
     const timer = setTimeout(() => {

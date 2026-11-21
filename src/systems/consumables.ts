@@ -1,15 +1,3 @@
-// Using an item from the bags.
-//
-// A consumable gives back health and stamina at once (`restore_health` and
-// `restore_stamina`, set in the item editor) and is used up. Every consumable
-// shares one cooldown, kept here in memory for each player and not lost when
-// they leave.
-//
-// One consumable is the home item (`teleports_home`). It is never used up, and
-// cannot be deleted, traded or sold. Using it is answered with a cast for the
-// caller to run: what breaks the cast, and the move when it ends, are the
-// receiver's, and where home is and the hour between uses are in systems/homes.
-
 import assetCache from "../services/assetCache";
 import { atomically, nothingWritten } from "../services/batch";
 import log from "../modules/logger";
@@ -82,10 +70,6 @@ export function readyIn(username: string): number {
   return Math.max(0, (readyAt.get(lower(username)) ?? 0) - Date.now());
 }
 
-/**
- * Sets how long (ms) until `username` can use a consumable again; 0 or less clears it. A handoff's arrival sets
- * what the old node had left; it is never more than a full cooldown, whatever the other node sent.
- */
 export function setReadyIn(username: string, ms: number): void {
   const name = lower(username);
   if (!name) return;
@@ -110,10 +94,6 @@ const consumables = {
   async homeItem(): Promise<Item | null> {
     return (await definitions()).find((item) => teleportsHome(item)) ?? null;
   },
-  /**
-   * Gives a player the home item when they hold none and have a slot for it. Whether it was given:
-   * a player with full bags is asked again the next time.
-   */
   async giveHomeItem(username: string, retryMs: number = HOME_GIVE_RETRY_MS): Promise<boolean> {
     const name = lower(username);
     const stone = await consumables.homeItem();
@@ -129,8 +109,6 @@ const consumables = {
           return !!(await inventory.add(name, { name: stone.name, quantity: 1 }, batch));
         });
       } catch (error) {
-        // The player's lock is held (a handoff, another login step): the grant ran nothing, so it is tried again.
-        // Only that error; the check above, in the batch, keeps a second try from giving a second stone.
         if ((error as Error)?.name === "PlayerLockBusy" && nothingWritten(error) && tries < HOME_GIVE_TRIES) {
           await new Promise((resolve) => setTimeout(resolve, retryMs));
           continue;
@@ -140,11 +118,6 @@ const consumables = {
       }
     }
   },
-  /**
-   * A player uses an item they hold. A consumable that restores is used up and its health and
-   * stamina are put on the player's stats, as one step: when the item could not be taken, nothing
-   * is given. The home item answers the cast to run (see systems/homes for the arrival).
-   */
   async use(player: User, itemName: unknown, state: UseState = {}): Promise<UseAnswer> {
     const now = state.now ?? Date.now();
     const name = lower(player?.username);

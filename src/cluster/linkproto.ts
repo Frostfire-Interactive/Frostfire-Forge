@@ -2,11 +2,6 @@ import crypto from "crypto";
 import { BATCH_HEADER, DIRECTION_MAP, MAX_ENTRIES, encodeBatch } from "../socket/movement_batch";
 import { LINK_FRAME_BYTES } from "./wtlinks";
 
-// What travels on a node link (spec §1, §3). Reliable messages are JSON frames
-// { t, d } on the link's one stream. GHOST_MOVE goes as datagrams in the
-// client's 13-byte movement batch format: [0x01][u16 count] then per entry
-// [u32 id][i32 x][i32 y][u8 dir | flags << 4].
-
 /** How old a LINK_HELLO may be, either way, before it is refused. */
 export const HELLO_WINDOW_MS = 10_000;
 /** Entries encodeBatch puts in one datagram (1200 bytes less header and probe room: 91). Its own split, not a copy. */
@@ -18,10 +13,6 @@ export const FLAG_MOVING = 2;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-/**
- * The largest link frame decoded. A larger one is dropped: a peer cannot make this node parse an unbounded payload.
- * The same limit as the WebTransport link's frame reader (wtlinks.ts), so the loopback link holds to it too.
- */
 export const LINK_FRAME_MAX_BYTES = LINK_FRAME_BYTES;
 
 export function encodeLinkFrame(t: string, d: unknown): Uint8Array {
@@ -136,10 +127,6 @@ export function decodeGhostMoves(datagram: Uint8Array): GhostMoveEntry[] {
   return entries;
 }
 
-/**
- * The u32 of an entity id: every id comes from the world counter (entityids.ts), whether it is a
- * number (creatures, gathering nodes), a decimal string (players) or "<kind>_<n>" / "t<n>". -1: none.
- */
 export function idNumber(id: string | number): number {
   if (typeof id === "number") return Number.isInteger(id) && id >= 0 && id <= 0xffffffff ? id : -1;
   // A word, then digits: "-3" or "abc" has no id, as with a number.

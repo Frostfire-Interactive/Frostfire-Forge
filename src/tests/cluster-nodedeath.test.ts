@@ -24,8 +24,6 @@ beforeEach(() => {
 });
 afterEach(() => { for (const spy of spies.splice(0)) spy.mockRestore(); });
 
-// A death notice is acted on only when the coordinator's tombstone names that run, and a restart notice only when the
-// node announced a later run (security review M1): these write what the coordinator and the new run would have.
 async function buried(store: MemoryStore, nodeId: string, startedAt: number): Promise<MemoryStore> {
   await store.set(deadKey(nodeId), JSON.stringify({ nodeId, startedAt, at: 1 }));
   return store;
@@ -89,8 +87,6 @@ test("a death notice that follows the restart notice for the same run is handled
   await death.onNodeDead({ nodeId: "c", startedAt: 5, restarted: true });
   await death.onNodeDead({ nodeId: "c", startedAt: 5, restarted: false });
   await death.onNodeDead({ nodeId: "c", startedAt: 5, restarted: false });
-  // Guard: the record of runs told restarted. A restart notice means a newer run is live: releasing its away
-  // slots would put a creature the new run holds in the world twice.
   expect(calls).toEqual(["foreign:c"]);
 });
 
@@ -293,8 +289,6 @@ test("the handled runs are bounded: the oldest is forgotten, the newest is not",
 test("a restarted peer loses only its foreign creatures here", async () => {
   const { deps, calls } = fakeDeps();
   await new NodeDeath(await announced(new MemoryStore(), "c", 9), deps).onNodeDead({ nodeId: "c", startedAt: 5, restarted: true });
-  // Guard: the restarted check. Without it an away slot the new run holds by a fresh handoff is respawned
-  // here as well, and its creature exists twice.
   expect(calls).toEqual(["foreign:c"]);
 });
 
@@ -515,8 +509,6 @@ test("a run named by a tombstone is not granted the lease again after it ran out
   clock += LEASE_MS + 5_000;
   await store.set(tombstoneKey("a"), JSON.stringify({ nodeId: "a", startedAt: STARTED, at: 1 }));
   await registry.beat("a");
-  // Guard: the tombstone read on a lapsed lease. Without it a stalled node that wakes up owns its blocks again for
-  // the second until its fence check runs.
   expect(registry.leaseValid()).toBe(false);
   // The run stays taken, whatever the tombstone says later.
   await store.set(tombstoneKey("a"), JSON.stringify({ nodeId: "a", startedAt: STARTED - 1, at: 1 }));
@@ -588,8 +580,6 @@ test("a node whose tombstone names its run does not announce itself again; one o
   await store.del("cells:nodeinfo:a");
   await store.set(tombstoneKey("a"), JSON.stringify({ nodeId: "a", startedAt: STARTED, at: 1 }));
   await registry.beat("a");
-  // Guard: the tombstone check. Without it a taken-over node announces itself again, and the coordinator ends up
-  // forgetting the same dead run once more every few passes.
   expect(await registry.info("a")).toBeNull();
   expect(await registry.known()).toEqual([]);
   expect(registry.taken()).toBe(true);
@@ -719,8 +709,6 @@ test("P3: a lease granted again just before a takeover is revoked by the beat th
   expect(registry.leaseValid()).toBe(true);
   await store.set(tombstoneKey("a"), JSON.stringify({ nodeId: "a", startedAt: STARTED, at: 1 }));
   clock += 900;
-  // The announcement is still there, as the takeover has not reached its end. The next beat reads the tombstone
-  // although the lease is valid, and revokes it at once.
   await registry.beat("a");
   // Guard: the tombstone read on every beat. Without it the lease is renewed while the tables give the blocks away.
   expect(registry.leaseValid()).toBe(false);
@@ -824,16 +812,12 @@ test("N1: a beat whose reads were held up past the takeover and the tombstone's 
   release();
   await slow;
   await registry.beat("a");
-  // Guard: lapsed is read after the reads. Read before them it is stale, the beat announces the dead run again, and
-  // the next beat grants it a lease.
   expect(registry.taken()).toBe(true);
   expect(registry.leaseValid()).toBe(false);
   expect(await registry.known()).toEqual([]);
   expect(await store.get("cells:alive:a")).toBeNull();
 });
 
-// Security review M1: the bus key alone must not fence a healthy node, nor drop or adopt anything of a live one. A
-// notice is acted on only when the store, whose authority records are sealed, confirms it.
 test("a node-dead naming this run fences only when the tombstone names the run", async () => {
   const store = new MemoryStore();
   const { deps, calls } = fakeDeps();
@@ -862,8 +846,6 @@ test("a node-dead no tombstone names drops nothing and adopts nothing", async ()
   const death = new NodeDeath(store, deps);
   const notice = { nodeId: "c", startedAt: 5, restarted: false };
   await death.onNodeDead(notice);
-  // Guard: the verdict on a peer's notice. Without it a forged notice drops a live node's mirrors, respawns the away
-  // slots it holds (a creature then lives on two nodes) and adopts the grants it parked.
   expect(calls).toEqual([]);
   expect(adopted).toEqual([]);
   // The tombstone of an earlier run of c does not say run 5 is over.

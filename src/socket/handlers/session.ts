@@ -51,14 +51,9 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         // A handoff arrival's mark; any other connection has no arrival under its ticket and is ignored.
         playerHandoff.landed(String(wt.data?.ticketToken ?? ""), "auth_rx");
 
-        // What the client of a resumed handoff did in the gap (arrival.ts gapInputOf): the login replays it before
-        // HANDOFF_DONE (receiver.ts). Read here, before anything is awaited, so the login always finds it. It is report
-        // 0: a HANDOFF_GAP handled before this AUTH (they are not queued alike) is newer and is kept.
         const authGap = gapInputOf(parsedMessage?.gap);
         wt.data.gapUpdate = newerGap(wt.data.gapUpdate, authGap ? { seq: 0, input: authGap } : null) ?? undefined;
 
-        // The connection ticket was issued for one account: a ticket fetched
-        // for one account (or for none) logs in no other.
         if (!ticketAllows(wt.data?.ticketAccount, token)) {
           log.debug(`Login refused on connection ${wt.data?.id}: the token is not the one its ticket was issued for`);
           sendPacket(wt, packetManager.loginFailed());
@@ -66,9 +61,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           break;
         }
 
-        // A node ticket opens one connection in the whole cluster (cells phase 6). It was spent in Redis when this
-        // connection opened (socket/server.ts); a ticket spent first by another connection logs in nothing.
-        // A Gateway ticket has no spend (null). Only "spent" logs in: "reused" and "unknown" (the store failed) do not.
         const ticketSpend = wt.data?.ticketSpent ? await wt.data.ticketSpent : null;
         if (ticketSpend !== null && ticketSpend !== "spent") {
           const unchecked = ticketSpend === "unknown";
@@ -97,8 +89,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         const prefetched = loginPrefetch.take(String(wt.data?.ticketToken ?? ""));
         pendingAuthentications.set(wt.data.id, { wt, token, language: parsedMessage?.language || "en", prefetched: prefetched?.data });
 
-        // A player arriving by handoff plays the character the snapshot carries, never the account's active one read
-        // again: it may have been changed on the character page while they crossed.
         const arriving = playerHandoff.arrivingCharacter(String(wt.data?.ticketToken ?? ""));
         authWorker.postMessage({ token, id: wt.data.id, known: prefetched?.characterId, characterId: arriving?.characterId });
 
@@ -121,8 +111,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         }
         player.logout(currentPlayer.id);
         listener.emit(Events.PLAYER_LOGOUT, { player: currentPlayer });
-        // Close the connection so the onDisconnect handler fires and does the
-        // full in-memory cleanup (despawn, remove from cache, update friends, etc.)
         if (wt.readyState === 1) {
           wt.close(1000, "Player logout");
         }

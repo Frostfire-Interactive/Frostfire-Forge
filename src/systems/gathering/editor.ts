@@ -1,10 +1,3 @@
-/**
- * Gathering editor: what the admin gathering editor window (/gathering) asks for, built as the mailbox editor is
- * (systems/mailboxeditor.ts). A record is an area of the map the admin is on: a circle where nodes of one item spawn,
- * how many stand at once, how much one gather gives, and how soon a gathered node grows back. Each change is checked,
- * written to gathering_areas and then to the cache, and answered with every area of the map as it then stands.
- * Preview answers where nodes would stand with the settings as typed, placed as the spawner places them.
- */
 import query from "../../controllers/sqldatabase";
 import log from "../../modules/logger";
 import { tableCache } from "../../services/datacache";
@@ -67,10 +60,6 @@ export const GATHERING_AREAS_TABLE: Record<"mysql" | "sqlite", string> = {
 
 let ready = false;
 
-/**
- * Start-time safety step: makes the table on a database whose setup ran before it was added, and lists the tool's
- * permission. Safe on every start, and never throws: without the table, no area spawns and a change is refused.
- */
 export async function ensureGatheringSchema(): Promise<boolean> {
   ready = false;
   try {

@@ -3,9 +3,6 @@ import type { RedisClient } from "bun";
 import log from "../modules/logger";
 import { RedisStore } from "../cluster/redisstore";
 
-// A Redis client that has given up (Bun 1.4.4 does so once connectionTimeout has passed) is replaced by a fresh one.
-// No socket anywhere: the fake clients keep the handlers RedisStore assigns, and the tests fire them by hand.
-
 const REVIVE_TEST_MS = 5;
 
 type Connect = "ok" | "fail" | "hang";
@@ -544,8 +541,6 @@ describe("RedisStore revival of the subscriber", () => {
     const handlerB = () => {};
     await store.subscribe("cells:b", handlerB);
     const old = main.subscriber!;
-    // Two microtasks after the fresh client answers its last subscribe: after the store has seen it, before the
-    // attempt that waits on all the subscribes has resumed.
     state.onSubscribeOfFirst = (channel) => {
       if (channel !== "cells:b") return;
       queueMicrotask(() => queueMicrotask(() => { void store.unsubscribe("cells:b", handlerB); }));

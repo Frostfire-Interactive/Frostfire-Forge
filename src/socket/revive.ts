@@ -1,10 +1,5 @@
 import log from "../modules/logger";
 
-// Reviving a player in place at full health (the admin REVIVE): corpse, ghost and Resurrection Sickness cleared,
-// clean totals recomputed, the death state written, and the map shown the player alive. One body for the REVIVE
-// command (the target is on this node) and the cells-revive action (the admin is on another node, cells phase 6),
-// so the two cannot drift apart. What it needs of the node comes in `deps` (receiver.ts reviveDeps).
-
 export interface ReviveDeps {
   clearSickness(target: any): void;
   synchronizeStats(username: string): Promise<any>;
@@ -27,10 +22,6 @@ export interface ReviveDeps {
 
 export type ReviveResult = "revived" | "not-dead";
 
-/**
- * `beforeRevived` runs after the party is told and before PLAYER_REVIVED is emitted: the REVIVE command sends the
- * admin's "Revived" note there, so the note still comes before the event. If it throws, the event is not emitted.
- */
 export async function revivePlayer(target: any, deps: ReviveDeps, beforeRevived?: () => void): Promise<ReviveResult> {
   if (!target.isDead && !target.isGhost) return "not-dead";
   target.isDead = false;

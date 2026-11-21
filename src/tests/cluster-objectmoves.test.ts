@@ -27,8 +27,6 @@ const made = { loot: [] as string[], chests: [] as string[], skeletons: [] as st
 beforeEach(() => {
   warnings = [];
   warnSpy = spyOn(log, "warn").mockImplementation((message: string) => { warnings.push(String(message)); });
-  // A moved chest's rolled items are held to the item table (objectmoves.ts isRolledItem). These tests are not about
-  // names: no table is loaded, so an item table another test file left in the asset cache does not drop their rolls.
   const original = assetCache.get;
   itemsSpy = spyOn(assetCache, "get").mockImplementation(async (key: string) => key === "items" ? null : original.call(assetCache, key));
 });
@@ -347,16 +345,12 @@ test("a move that did not happen puts every kind back as this node's own", async
   expect(tornadoes.tornadoesOn(MAP).map((t) => t.id)).toEqual([twister.id]);
   expect(shown).toEqual([]);
   expect(calls.filter((c) => c.startsWith("dropMirror"))).toHaveLength(4);
-  // An item taken from the restored chest, then the same data restored again. The part refuses only what is still
-  // here; that a move restores once is the order's to keep (blockmove.ts).
   const gem = (await lootChest.open(chest, "p1"))!.items.find((i: any) => i.itemName === "Gem");
   expect(await lootChest.takeItems(chest, "p1", "alice", [gem.index], false)).not.toBeNull();
   const skeletonHere = skeletons.get(s.id);
   warnings.length = 0;
   await part.restore(move, data);
   expect(tornadoes.tornadoesOn(MAP)).toHaveLength(1);
-  // Guard: the chest and skeleton adoptOwn refuse an id this node owns. Without it the chest is replaced by the
-  // collect-time copy and the gem is takeable again, and the skeleton is replaced with its first timer left running.
   expect((await lootChest.open(chest, "p1"))!.items.map((i: any) => i.itemName)).toEqual(["Opal"]);
   expect(skeletons.get(s.id)).toBe(skeletonHere);
   expect(warnings.some((w) => w.includes(`Chest ${chest}`) && w.includes("already this node's own"))).toBe(true);
@@ -382,8 +376,6 @@ test("a tornado taken while the tick awaits its harm is not shown again by this 
   expect(data.tornadoes.map((t) => t.id)).toEqual([twister.id]);
   release();
   await ticking;
-  // Guard: the tick reads the map's own list, not a copy (tornadoes.ts). Without it the list holds the tornado twice:
-  // once as this node's own and once as the new owner's mirror.
   expect(lists.at(-1)!.map((t) => t.id)).toEqual([twister.id]);
 });
 

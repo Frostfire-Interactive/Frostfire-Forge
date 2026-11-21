@@ -89,8 +89,6 @@ test("invariant: index mirrors a set of forward playersInAOI sets", () => {
   see("p5", "p1");
   unsee("p4", "p1");
 
-  // For every viewed id, the reverse index must equal the set of viewers whose
-  // forward set contains it.
   for (const viewed of ids) {
     const expected = new Set<string>();
     for (const [viewer, set] of forward) {

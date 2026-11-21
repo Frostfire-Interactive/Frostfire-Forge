@@ -2,12 +2,6 @@ import { beforeEach, describe, expect, mock, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { databaseModule } from "./setup";
 
-// USER REPORT 2026-11-18: "Not all settings in clientconfig are saving to the database when changed." They were saved;
-// a login then read them back as their defaults, and the next change saved those defaults over them.
-//
-// A real in-memory SQLite database behind the engine's query function, so a statement that leaves a column out really
-// gets no value for it. A table the test did not create is an empty one (the login reads many).
-
 let db: Database;
 
 mock.module("../controllers/sqldatabase", () => databaseModule({
@@ -72,8 +66,6 @@ beforeEach(async () => {
 });
 
 describe("a login's settings", () => {
-  // The login read runs on a login worker (socket/authentication.ts), a thread of its own where the step that adds
-  // these columns at start (ensureAmbienceColumn) never ran. Nothing in this file runs it either.
   test("are every setting saved, read on a thread that never added the newer columns", async () => {
     setUp(CLIENTCONFIG);
     db.run(`INSERT INTO clientconfig (username, character_id, fps, music_volume, effects_volume, ambience_volume, weather_volume, muted, auto_loot)
@@ -104,8 +96,6 @@ describe("a login's settings", () => {
 describe("the CLIENTCONFIG packet", () => {
   const sent = (config: any[]) => JSON.parse(new TextDecoder().decode(packetManager.clientConfig(config)[0])).data;
 
-  // Equipping from a bag sends the settings again from the row they are held in (socket/handlers/items.ts), where Auto
-  // loot is 1 or 0. The client turns its box on only for true, and the next change it sends would save it off.
   test("says Auto loot as true or false, though the held row has it as 1 or 0", () => {
     expect(sent([{ fps: 60, music_volume: 50, effects_volume: 50, auto_loot: 1, muted: 0 }])[0].auto_loot).toBe(true);
     expect(sent([{ fps: 60, music_volume: 50, effects_volume: 50, auto_loot: 0, muted: 0 }])[0].auto_loot).toBe(false);

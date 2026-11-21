@@ -8,10 +8,6 @@ export const PRESENCE_HOLD_MS = 120_000;
 /** The most times a claim or a release runs when the store goes down under it. */
 export const PRESENCE_ATTEMPTS = 3;
 
-// Keeps the directory in step with the players this node holds: a claim when
-// a player is added at login, a release when they are removed. The release
-// waits for the claim, so a quick login and logout cannot leave a stale entry.
-
 export interface PresenceOptions {
   /** No displaced-login for this claim: the player arrived by a handoff, and the old node already let them go. */
   quiet?(username: string): boolean;
@@ -19,15 +15,7 @@ export interface PresenceOptions {
   holdReleaseMs?(value: any): number;
   /** A held release was made: the player's client never reached the new node, and they are gone. */
   onLost?(value: any): void;
-  /**
-   * Runs after each claim, before the claim counts as done: the owner epoch is taken here (ownerepoch.ts). Answers
-   * the epoch the directory entry holds now, which a lift raises; null keeps the claimed one.
-   */
   onClaimed?(player: any, entry: DirectoryEntry): Promise<number | null>;
-  /**
-   * The names of the other characters of the player's account (its own name may be among them): a login displaces
-   * a session of any of them on another node, as one account plays one character at a time. None when not given.
-   */
   siblings?(player: any): Promise<string[]>;
   /** The store's health. The node's (health.ts) unless a test gives another. */
   health?: StoreGate;
@@ -43,15 +31,11 @@ export function trackPresence(
   const claims = new Map<string, Promise<number | null>>();
   const held = new Set<ReturnType<typeof setTimeout>>();
 
-  // While the store is down a claim or a release waits for it, then runs (spec §7: the directory pauses). One still
-  // waiting when this stops is not made: startCluster's teardown sweeps this node's entries after this.
   const gate = options.health ?? storeHealth;
   let stopped = false;
   const whenUp = <T>(what: string, work: () => Promise<T>): Promise<T> =>
     runWhenUp(gate, what, work, { holdMs: options.storeHoldMs ?? PRESENCE_HOLD_MS, attempts: PRESENCE_ATTEMPTS, alive: () => !stopped });
 
-  // Another character of the account, live on another node: that node closes it. The directory is only read for
-  // it: the entry is that character's and goes when its node lets it go.
   const displaceSiblings = async (username: string, value: any) => {
     if (!options.siblings) return;
     try {
@@ -69,9 +53,6 @@ export function trackPresence(
   const stopAdd = playerCache.onAdd((key, value) => {
     const username = value?.username;
     if (typeof username !== "string" || !username) return;
-    // A claim that fails after it swapped the entry (the store went down at the node sets) runs again and then reads
-    // this node's own new entry as the previous one, so the login it displaced would never hear of it. The claim
-    // reports each entry its swap replaced as it happens; those from other nodes are kept across the attempts.
     const replaced = new Map<string, DirectoryEntry>();
     const note = (entry: DirectoryEntry | null) => {
       if (entry && entry.nodeId !== directory.nodeId) replaced.set(`${entry.nodeId}/${entry.playerId}/${entry.epoch}`, entry);
@@ -100,8 +81,6 @@ export function trackPresence(
       .catch((error) => {
         if (error instanceof StoppedWaiting) log.debug(`Directory claim for ${username} was not made: ${error.message}`);
         else log.error(`Directory claim for ${username} failed: ${error}`);
-        // A swap that happened before the failure still took those logins' entries: they are told, so the player is
-        // not live there and here.
         if (!options.quiet?.(username)) for (const previous of replaced.values()) onDisplaced(previous, username, value);
         return null;
       }));
@@ -122,8 +101,6 @@ export function trackPresence(
     claims.delete(key);
     const username = value?.username;
     if (!claim || typeof username !== "string") return;
-    // A player handed to another node stays in the directory under this node until the new node claims it (a new
-    // epoch, so this release then does nothing) or the hold runs out (the client never arrived).
     const holdMs = Number(options.holdReleaseMs?.(value)) || 0;
     if (holdMs <= 0) {
       release(claim, username);

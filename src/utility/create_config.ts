@@ -142,8 +142,6 @@ if (!fs.existsSync(path.join(configPath, "settings.json"))) {
   );
   console.log(`Created settings file at ${path.join(configPath, "settings.json")}`);
 } else {
-  // Migrate legacy WebSocket-era keys so existing installations get the
-  // current schema instead of silently falling back to defaults.
   const settingsPath = path.join(configPath, "settings.json");
   const existing = JSON.parse(fs.readFileSync(settingsPath, "utf8")) as Record<string, any>;
 
@@ -206,9 +204,6 @@ if (!fs.existsSync(aoiPath)) {
   fs.writeFileSync(aoiPath, JSON.stringify(AOI_CONFIG, null, 2));
   console.log(`Created AOI config file at ${aoiPath}`);
 } else {
-  // aoi.json survives rebuilds (src/config is bind-mounted in Docker), so an
-  // old file never picks up new defaults. Backfill missing keys and force the
-  // spatial grid on: creature aggro and AOI lookups rely on it.
   const existing = JSON.parse(fs.readFileSync(aoiPath, "utf-8"));
   const merged = { ...AOI_CONFIG, ...existing, USE_SPATIAL_GRID: true };
   if (JSON.stringify(merged) !== JSON.stringify(existing)) {

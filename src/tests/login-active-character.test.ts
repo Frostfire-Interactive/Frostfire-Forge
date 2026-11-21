@@ -3,10 +3,6 @@ import { Database } from "bun:sqlite";
 import { readFileSync } from "fs";
 import { databaseModule, standInFor } from "./setup";
 
-// Engine login plays the account's active character (multiple characters per account, Task 5). The login worker's
-// own code (socket/authentication.ts) runs against an in-memory SQLite database made by the engine's SQLite setup:
-// token -> account -> accounts.active_character_id -> characters row.
-
 let db = new Database(":memory:");
 
 const run = (sql: string, params: any[] = []) => {

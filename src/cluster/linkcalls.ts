@@ -1,51 +1,13 @@
 import type { LinkSender } from "./linktransport";
 
-// Requests and answers between linked nodes (spec §4). Every action on an
-// entity another node owns is a call to that node. Each call carries this
-// node's epoch (new on every attach) and a sequence number counting up from
-// 1 within it. The receiver keeps a window of the numbers it has seen from each
-// peer, so a call sent again after a link replacement runs once, and a lost
-// answer is answered again from the window. A peer-down or a timeout ends a
-// call with no answer: the caller cannot tell whether it ran, and never sends
-// it again (an action is applied at most once).
-//
-// A call for an entity that moved to another node (a handoff, spec §5) is
-// forwarded to the new owner (FORWARD). The new owner runs it as from the
-// original sender, and keeps a window per original sender and epoch, so a
-// forward sent twice still runs once. An entity that moved on again is
-// followed: each node passes the forward on, up to MAX_FORWARD_HOPS in all.
-// A forward redirected back to the node that sent it fails at once: the two
-// nodes disagree about the owner, and it runs on neither. A longer loop ends at
-// the hop limit, or at the forward window of a node that still has the call
-// pending.
-//
-// A call that ends "failed" may still have run: a forward that timed out, or
-// a second copy refused while the first still runs, tells the caller nothing
-// about the action. Callers treat every outcome that is not ok as "may have
-// been applied", never as "did not run", except the ones `neverRan` names: a
-// call refused as busy (never admitted to the window), one too big to send,
-// and one that never left this node.
-//
-// A busy answer is sent only for a number not in the window, and names the
-// copy it refuses (`try`, counted up on each resend). A busy answer to an
-// older copy is ignored: the copy sent after it may still run.
-
 export type CallFailure = "down" | "timeout" | "failed" | "busy" | "too-big";
 /** `unsent`: the frame never left this node (no link up, or the send was refused at once). */
 export type CallOutcome<T> = { ok: true; answer: T } | { ok: false; why: CallFailure; unsent?: boolean };
 
-/**
- * How many calls from one peer run at once. A call past this is answered busy without being admitted, so a peer
- * cannot fill this node's memory with calls that never end. It did not run, and may be sent again.
- */
 export const MAX_INFLIGHT_PER_PEER = 256;
 /** The largest call body sent, as JSON. A larger one is refused before it is sent (the frame limit is 4 MiB). */
 export const MAX_CALL_BODY_BYTES = 1024 * 1024;
 
-/**
- * Whether the call certainly did not run on the peer: refused as busy, too big to send, or never sent. Every other
- * failure may have run (see the note above), and a caller must treat it as applied.
- */
 export function neverRan(outcome: CallOutcome<unknown>): boolean {
   if (outcome.ok) return false;
   return outcome.why === "busy" || outcome.why === "too-big" || outcome.unsent === true;
@@ -79,11 +41,6 @@ type AnswerFrame = { seq: number; epoch: string; answer?: unknown; failed?: true
 type CastFrame = { epoch: string; name: string; body: unknown };
 type Pending = { peer: string; frame: CallFrame; resolve: (outcome: CallOutcome<unknown>) => void; timer: ReturnType<typeof setTimeout> };
 
-/**
- * The sequence numbers seen from one peer in one epoch. A number at or below
- * the highest seen minus `size` is stale: its answer may have been dropped, so
- * it is refused rather than run a second time.
- */
 export class SeqWindow {
   private readonly entries = new Map<number, { done: boolean; answer?: unknown; failed?: boolean }>();
   private highest = 0;
@@ -106,10 +63,6 @@ export class SeqWindow {
     return this.entries.has(seq);
   }
 
-  /**
-   * Whether `seq`, when not in the window, is refused as stale: not a sequence number, or too old to tell
-   * (it may have run, and its entry was dropped).
-   */
   stale(seq: number): boolean {
     return !Number.isInteger(seq) || seq <= 0 || seq <= this.highest - this.size;
   }
@@ -137,18 +90,8 @@ export class LinkCalls {
   private readonly handlers = new Map<string, CallHandler>();
   private readonly casts = new Map<string, CastHandler>();
   private readonly pending = new Map<number, Pending>();
-  /**
-   * Per peer: the epoch its calls came in, and the window for it. A new epoch replaces the window, and
-   * the epoch it replaced is remembered as retired (a few per peer): a late frame of a retired epoch,
-   * from a connection that was replaced, must not bring the old window back over the new one.
-   */
   private readonly windows = new Map<string, { epoch: string; window: SeqWindow; retired: string[] }>();
 
-  /**
-   * Calls forwarded to this node, per original sender and epoch: a forward sent again (the old owner
-   * restarted, and the sender resent the call to it) runs once. Kept apart from `windows`, which a
-   * sender's own new epoch replaces.
-   */
   private readonly fwdWindows = new Map<string, SeqWindow>();
   private redirect: CallRedirect | null = null;
   private readonly upHooks = new Set<(peer: string) => void>();
@@ -186,20 +129,10 @@ export class LinkCalls {
     return () => { this.downHooks.delete(fn); };
   }
 
-  /**
-   * Where calls this node receives run. A call for an entity that moved away (spec §5) is forwarded to its new
-   * owner (again from there while hops are left), which runs it as from the original sender and dedups it by the
-   * original sequence number.
-   */
   setRedirect(fn: CallRedirect | null): void {
     this.redirect = fn;
   }
 
-  /**
-   * Start on `links`. The handlers are registered before the links are kept, and each one checks
-   * that these are still the links in use: NodeLinks cannot remove a handler, so after a detach
-   * the old ones stay registered and do nothing.
-   */
   attach(links: LinkSender): void {
     if (this.links === links) return;
     if (this.links) this.detach();
@@ -209,8 +142,6 @@ export class LinkCalls {
     links.on("CALL", (data, from) => { if (live()) void this.serve(links, session, data as CallFrame, from).catch(() => {}); });
     links.on("ANSWER", (data, from) => { if (live()) this.answered(data as AnswerFrame, from); });
     links.on("CAST", (data, from) => { if (live()) this.received(data as CastFrame, from); });
-    // A peer-up may come with no down before it (a replaced link): calls still pending to that
-    // peer are sent again with their numbers, and the peer's window keeps them from running twice.
     links.onPeerUp((peer) => {
       if (!live()) return;
       this.resend(links, peer);
@@ -284,8 +215,6 @@ export class LinkCalls {
       const out: AnswerFrame = failed ? { seq: frame.seq, epoch: frame.epoch, failed: true } : { seq: frame.seq, epoch: frame.epoch, answer };
       links.send(from, "ANSWER", out);
     };
-    // A number already in the window is a resend: it is answered from the window, never refused. A number too old
-    // for the window may have run, so it is answered failed below, never busy.
     if (!window.has(frame.seq) && !window.stale(frame.seq) && (this.running.get(from) ?? 0) >= MAX_INFLIGHT_PER_PEER) {
       if (this.session === session) {
         const busy: AnswerFrame = { seq: frame.seq, epoch: frame.epoch, busy: true };
@@ -333,12 +262,6 @@ export class LinkCalls {
     return (await handler(body, from)) ?? null;
   }
 
-  /**
-   * A call another node forwarded here: run as from its original sender, once per (sender, epoch, seq). When its
-   * entity moved on again it is passed on while hops are left, and fails once none are. It is never passed back to
-   * its original caller: it runs here instead, and the handler refuses an entity that is not here. One redirected
-   * back to the node that forwarded it fails at once.
-   */
   private async forwarded(raw: any, sender: string): Promise<ForwardAnswer> {
     const from = typeof raw?.from === "string" ? raw.from : "";
     const epoch = typeof raw?.epoch === "string" ? raw.epoch : "";
@@ -346,8 +269,6 @@ export class LinkCalls {
     const seq = Number(raw?.seq);
     const hops = Number.isInteger(raw?.hops) && raw.hops > 0 ? raw.hops : 1;
     if (!from || !epoch || !name || name === FORWARD_CALL) return { failed: true };
-    // An honest forward names the original caller: never this node (it would run as its own call), and never
-    // the node that forwarded it (a node forwards only calls it received from others).
     if (from === this.links?.self || from === sender) return { failed: true };
     const key = JSON.stringify([from, epoch]);
     let window = this.fwdWindows.get(key);
@@ -366,8 +287,6 @@ export class LinkCalls {
       // Back to the original caller is never a hop: it would refuse a forward naming itself. Run here instead.
       if (to && to !== from && to !== this.links?.self) {
         if (to === sender) {
-          // The node that forwarded it names this node, and this node names it: they disagree about the owner.
-          // Not run on either; passing it back would only spend hops.
           failed = true;
         } else if (hops >= MAX_FORWARD_HOPS) {
           // Not run here either: the entity is not here, and an action runs at most once.

@@ -1,10 +1,5 @@
 import { BLOCK_SIZE_PX, blockKey, type BlockExtent, type MapBlocks } from "./blocks";
 
-// The block owners as the Gateway is told them (POST /blocks, modules/gateway-client.ts): per map, the table's epoch,
-// its size in blocks and one character per block naming the owner, so the Gateway can send a login straight to the
-// node that owns the saved point. The Gateway has its own copy of the decoder (src/gateway/blockroute.ts in the
-// Gateway repo); both read the same layout.
-
 /** One character per owner: the index of the node in `nodes`, spelled with these. */
 export const REPORT_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 /** The character of a block no node owns. */
@@ -39,10 +34,6 @@ export interface BlockReportSource {
 const whole = (value: number) => Number.isSafeInteger(value) && value >= 1;
 const bare = (map: string) => (map.endsWith(".json") ? map.slice(0, -5) : map);
 
-/**
- * The compact table of one map, or null when there is nothing to say or it cannot be said: no table yet (epoch 0), no
- * known size, a table too large for a report, more owners than the alphabet holds, or a name that is not one.
- */
 export function encodeBlockReport(map: string, table: MapBlocks, extent: BlockExtent | undefined, blockPx: number = BLOCK_SIZE_PX): BlockReport | null {
   const name = bare(map);
   if (!name || name.length > MAX_REPORT_NAME) return null;
@@ -79,11 +70,6 @@ export function reportOf(source: Pick<BlockReportSource, "ownersOf" | "epochOf" 
   return encodeBlockReport(map, { epoch, owners: source.ownersOf(map) }, source.extentOf(map));
 }
 
-/**
- * The owner of the block a position is in: what BlockTable.ownerOf says for the same table, including the clamp of a
- * position on or past the far edge into the last block and of a negative or non-finite one into block 0. Null for a
- * block no node owns.
- */
 export function decodeBlockOwner(report: Pick<BlockReport, "blockPx" | "blocksX" | "blocksY" | "nodes" | "owners">, x: number, y: number): string | null {
   const block = (px: number, count: number) => Math.min(Number.isFinite(px) ? Math.max(0, Math.floor(px / report.blockPx)) : 0, count - 1);
   const char = report.owners[block(y, report.blocksY) * report.blocksX + block(x, report.blocksX)];

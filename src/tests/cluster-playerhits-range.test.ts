@@ -97,8 +97,6 @@ test("a legal hit across a block border, at the edge of the spell's range, reach
   caller.attach(a);
   linkCalls.attach(b);
   try {
-    // The caster stands on node a, mirrored here; it has moved 100 px since the mirror last updated, inside the drift.
-    // The target is local here, and sits the spell's range plus the tolerance, less 1 px, past where the hit was cast.
     const spell = { id: 1, range: 200, aoe_radius: 0 } as any;
     setSpellLookup((id) => (id === 1 ? spell : undefined));
     const seen: PlayerHit[] = [];

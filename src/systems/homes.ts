@@ -1,14 +1,3 @@
-// A player's home: the inn their home item takes them to.
-//
-// An NPC marked as an innkeeper (in the NPC editor) makes its inn the home of a
-// player who asks. The home is kept as that NPC and where the player stood by
-// it, so it moves with the innkeeper and is somewhere a player can stand. A
-// player with no home, or whose innkeeper is gone, goes to the world's spawn:
-// `where` answers nothing then, and the caller knows where that is.
-//
-// Going home starts an hour's cooldown, kept with the home in the database so a
-// restart does not end it.
-
 import query from "../controllers/sqldatabase";
 import { rowCache, turns } from "../services/datacache";
 import { readNpcList } from "./npcStreaming";
@@ -113,10 +102,6 @@ const homes = {
   async of(username: string): Promise<Home> {
     return (await rows.get(username)) ?? { ...NO_HOME };
   },
-  /**
-   * Makes an innkeeper's inn a player's home, from where they stand. Who may is the caller's to
-   * have asked (see cannotSetHome). When they last went home is left as it was.
-   */
   async set(player: Guest, npc: Pick<Npc, "id" | "position">): Promise<void> {
     const username = String(player.username).toLowerCase();
     const here = placeOf(player);

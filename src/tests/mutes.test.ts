@@ -1,11 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { characterDatabaseModule as databaseModule } from "./setup";
 
-// ------------------------------------------------------------ fake database
-// The statements the mute system sends, run against an in-memory table. A
-// statement it does not know is an error, so a read that is not the cache
-// filling itself fails the test that made it.
-
 type Row = Record<string, any>;
 let table: Row[];
 /** Every statement sent, in order. */
@@ -46,8 +41,6 @@ async function database(sql: string, params: any[] = []): Promise<any> {
 
 mock.module("../controllers/sqldatabase", () => databaseModule({
   default: database,
-  // All of its statements or none: one that is refused puts the table back. One written with its
-  // answer lost stands for a transaction kept whole and never answered.
   transaction: async (statements: Array<{ sql: string; values?: any[] }>) => {
     const before = structuredClone(table);
     const results: any[] = [];

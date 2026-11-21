@@ -2,16 +2,10 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, spy
 import { characterDatabaseModule, testCharacterId } from "./setup";
 import { DEFAULT_RANKS } from "../systems/guildranks";
 
-// Generated at server start (`bun create-config`) and gitignored, so CI has
-// no copy on disk. Mock the values instead of requiring the file.
 mock.module("../config/settings.json", () => ({
   default: { creatures: {} },
   creatures: {},
 }));
-
-// ------------------------------------------------------------ fake database
-// A few statement shapes are all the systems use, so the fake runs them for
-// real against in-memory tables instead of answering query by query.
 
 type Row = Record<string, any>;
 let tables: Record<string, Row[]>;
@@ -393,8 +387,6 @@ describe("player editor snapshot", () => {
     );
     tables.quest_objective_progress.push({ username: "hero", quest_id: 1, objective_id: 10, count: 3 });
 
-    // The login reads the character (multiple characters per account): one per account, named after it, with its rows
-    // keyed by character_id (the stand-in keeps them by name: characterKeyedByName).
     tables.characters = tables.accounts.map((a) => ({
       id: testCharacterId(a.username), account_id: a.id, name: a.username, class_id: null, map: a.map, position: a.position, direction: a.direction,
       stealth: a.stealth, noclip: a.noclip, party_id: a.party_id, guild_id: a.guild_id, is_dead: a.is_dead,

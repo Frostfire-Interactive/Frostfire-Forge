@@ -1,13 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { databaseModule } from "./setup";
 
-// ------------------------------------------------------------ fake database
-// The statements systems/weather sends, run against an in-memory table, with
-// a pause in each one so that two requests sent together really do
-// interleave. The only reads it knows are the sender's permissions and the
-// table read again after a write that failed: a check that asked the database
-// instead of the weathers held would fail the test that made it.
-
 type Row = Record<string, any>;
 let tables: { weather: Row[]; permissions: Row[] };
 /** A statement matching this is refused, as a lost connection would refuse it. */

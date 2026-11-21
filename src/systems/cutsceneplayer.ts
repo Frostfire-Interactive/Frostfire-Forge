@@ -1,15 +1,3 @@
-/**
- * Cutscene sessions: playing a saved scene (systems/cutscenes.ts) to a player, holding them still and out of harm's
- * way while it runs, running the end of it, and the triggers that start scenes by themselves. The scene store, the
- * document and the editor's packets are cutscenes.ts; whether a player is held, and which of their packets a held
- * player is refused, is the leaf cutsceneheld.ts, so the receiver and the damage paths need not load this.
- *
- * A session lives on the player object as `player.cutscene`: the scene's name, a random token the client must give back,
- * whether it holds the player, its phase and the clock that ends it. The client is trusted with nothing: a scene ends
- * when the client says so, but also when its clock runs out, so a client that disappears or never answers cannot
- * leave a player held. Timers are only the means; a hold is judged by comparing times (cutsceneheld.ts isHeld), so it
- * ends by itself even if every timer failed.
- */
 import { randomBytes } from "node:crypto";
 import { deliverToPlayer, registerPlayerAction, tryOnPlayer } from "../cluster/deliver";
 import { onPeerNews, tellPeers } from "../cluster/peernews";
@@ -200,11 +188,6 @@ function startClock(player: any, state: CutsceneState, ms: number): void {
   (state.clock as any)?.unref?.();
 }
 
-/**
- * The clock ran out. A scene the client never began is dropped as a stop would drop it, with no end to run: the player
- * never saw it. One that began is over: its end runs, as if the client had said so. The client is told either way, in
- * case it is still showing it.
- */
 function expire(player: any, state: CutsceneState): void {
   if (state.phase === "done") return;
   // Nothing of an end runs for a player changing node: the clock waits to see where they land.
@@ -228,12 +211,6 @@ export interface PlayOptions {
   chain?: { origin: Place | null; depth: number };
 }
 
-/**
- * Plays the saved scene `name` to the player. Refused when there is no such scene, the player is dead or a ghost, in a
- * scene already, changing server node, or a mirror of a player of another node, or is not on the scene's map (unless a
- * chain just moved them there). Otherwise a token is made, the player is held when the scene locks, and CUTSCENE_PLAY is
- * sent with the scene resolved and without its triggers; the session's clock is 30 s until the client says it has begun.
- */
 export async function begin(player: any, name: string, options: PlayOptions = {}): Promise<PlayResult> {
   if (!player || player.remote) return no("on another server node");
   if (player.isDead || player.isGhost) return no("dead or a ghost");
@@ -308,10 +285,6 @@ function setMarks(player: any, state: CutsceneState, fromMs: number): void {
   }
 }
 
-/**
- * CUTSCENE_STARTED: the client has begun the scene. The clock becomes the scene's length and 5 s, and the marks on its
- * timeline are set to fire. A token that is not the session's, or a session that has begun, is ignored.
- */
 export function onStarted(player: any, token: unknown): boolean {
   const state = live(player);
   if (!state || state.token !== token || state.phase !== "pending") return false;
@@ -328,11 +301,6 @@ export function carriedScene(player: any): CarriedScene | null {
   return state ? { ...state, marks: state.plan.marks, at: Date.now() } : null;
 }
 
-/**
- * A scene the player brought from the node they left goes on here: the same showing under the same token, which their
- * client is still playing, so nothing is sent and they are not stopped again. The clock runs to the time it had, and
- * the marks the old node did not fire are set; a clock that ran out on the way runs the end once the player has landed.
- */
 export function adopt(player: any, carried: CarriedScene): void {
   const { marks, at, ...fields } = carried;
   const state = sessionOf(fields, marks);
@@ -343,11 +311,6 @@ export function adopt(player: any, carried: CarriedScene): void {
   if (state.phase === "running") setMarks(player, state, at - state.startedAt);
 }
 
-/**
- * CUTSCENE_END: the scene is over or was skipped. A skip of a scene that is not skippable is ignored, unless it comes
- * within 2 s of the scene's end: the client's clock and the server's are not the same. Otherwise the scene finishes and
- * its end runs. A token that is not the session's is ignored.
- */
 export async function onEnd(player: any, token: unknown, skipped: boolean): Promise<boolean> {
   const state = live(player);
   if (!state || state.token !== token) return false;
@@ -359,10 +322,6 @@ export async function onEnd(player: any, token: unknown, skipped: boolean): Prom
   return true;
 }
 
-/**
- * Ends the player's scene from the server: the client is told to drop it, and nothing of its end runs (no next scene, no
- * teleport). A chain that had moved the player is still taken home. True when there was a scene.
- */
 export async function stop(player: any): Promise<boolean> {
   const state = live(player);
   if (!state) return false;
@@ -371,10 +330,6 @@ export async function stop(player: any): Promise<boolean> {
   return true;
 }
 
-/**
- * A player left (a disconnect or a logout): the clock, the marks and the session go, and nothing else. A player who
- * is in the middle of a chain stays wherever the chain had taken them: the place a login puts them is the saved one.
- */
 export function clear(player: any): void {
   const state = player?.cutscene as CutsceneState | undefined;
   if (state && state.phase !== "done") retire(player, state);
@@ -402,11 +357,6 @@ async function go(player: any, map: string, x: number, y: number): Promise<boole
   }
 }
 
-/**
- * What follows a scene: the scene `end.next`, moving the player to its map first when that is another one (the chain
- * remembers where it began); else `end.teleport`; else, when a chain moved the player, home to where it began. A dead
- * player, a ghost or one changing node is left where they are.
- */
 async function runEnd(player: any, state: CutsceneState, how: Ending): Promise<void> {
   if (player.isDead || player.isGhost || player.remote || inHandoff(player)) return;
   let origin = state.origin;
@@ -444,10 +394,6 @@ async function mapSpawn(map: string): Promise<{ x: number; y: number }> {
   return { x: 0, y: 0 };
 }
 
-/**
- * Where a scene begins, for the player a chain moves to its map: its first camera key (an offset from the actor it
- * follows when it follows one), else the map's spawn.
- */
 function startOf(scene: CutsceneDoc, spawn: { x: number; y: number }): { x: number; y: number } {
   let first: CameraKey | undefined;
   for (const track of scene.tracks) {
@@ -502,10 +448,6 @@ export function carriedChain(player: any): CarriedChain | null {
   return movingTo.get(keyOf(player)) ?? null;
 }
 
-/**
- * A chain that brought the player here goes on: its scene begins as a login's does, once the client has had time to
- * load the map. A scene that cannot begin takes them home to where the chain began, as the end of a chain does.
- */
 export function adoptChain(player: any, carried: CarriedChain): void {
   const user = lower(player?.username);
   const timer = setTimeout(() => {
@@ -636,10 +578,6 @@ export async function reindex(): Promise<void> {
   indexTriggers(await allScenes());
 }
 
-/**
- * Starts the scene of one trigger for a player if they qualify: their level, and a scene that plays once not having
- * been seen. A scene cannot begin while one runs (or while a chain is moving the player). True when it began.
- */
 async function tryEntry(player: any, entry: IndexEntry): Promise<boolean> {
   if (!player || player.remote || live(player) || chaining.has(keyOf(player))) return false;
   if (entry.trigger.minLevel > (Number(player.stats?.level) || 0)) return false;
@@ -684,8 +622,6 @@ const pendingLogins = new Set<string>();
 function whenInWorld(player: any): void {
   const user = lower(player?.username);
   if (!user) return;
-  // A player handed over from another node is not logging in: they were already in the world, and they walked into
-  // the areas they stand in there, so standing in one here is not walking into it.
   if (player.wt?.data?.handoffLanding) {
     pendingLogins.delete(user);
     enteredAlready(player);
@@ -715,11 +651,6 @@ function enteredAlready(player: any): void {
   if (standing.length > 0) inside.set(String(player.id), new Set(standing.map((e) => `${e.scene}|${e.trigger.id}`)));
 }
 
-/**
- * Looks at the players on the maps that have area triggers and starts the scene of one a player has just walked into.
- * Maps without area triggers are not looked at, and nothing is done when there are none at all. Run once a second, as
- * the quests' explore areas are (systems/quests/objectives.ts).
- */
 export async function tickAreas(): Promise<void> {
   if (areas.size === 0) {
     if (inside.size > 0) inside = new Map();
@@ -752,10 +683,6 @@ export async function tickAreas(): Promise<void> {
 
 // ---------------------------------------------------------------- commands
 
-/**
- * /cutscene: `play <name> [player|map]`, `stop [player]`, `list`, `reset <name> <player>`. Returns what to tell the admin.
- * The same permission as the editor.
- */
 export async function runCommand(admin: any, args: string[]): Promise<string[]> {
   if (!canUseEditor(admin)) return ["You don't have permission to use this command"];
   const usage = ["Use /cutscene play <name> [player|map], /cutscene stop [player], /cutscene list or /cutscene reset <name> <player>"];
@@ -837,10 +764,6 @@ onPeerNews("cutscene-map", async (news) => {
 const CUTSCENE_ACTION = "cells-cutscene";
 type RemoteAsk = { play: string } | { stop: true };
 
-/**
- * A player who is not on this node: their node plays the scene to them or ends theirs (the player action
- * "cells-cutscene"), and tells the admin how it went. What to tell the admin now: nothing when it went there.
- */
 async function onTheirNode(admin: any, username: string, ask: RemoteAsk): Promise<string[]> {
   const reached = await tryOnPlayer(username, CUTSCENE_ACTION, { by: admin.username, ...ask });
   if (reached === "sent") return [];
@@ -869,10 +792,6 @@ registerPlayerAction(CUTSCENE_ACTION, async (target, args) => {
 
 let started = false;
 
-/**
- * Starts the triggers and the clean-up: reads the scenes' triggers, listens to the events they follow and indexes them
- * again when the cached list changes. Called once at startup (socket/server.ts).
- */
 export async function init(): Promise<void> {
   if (started) return;
   started = true;

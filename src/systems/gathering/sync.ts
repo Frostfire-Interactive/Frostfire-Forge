@@ -1,8 +1,3 @@
-// Which gathering nodes each player is sent: those on their layer within their AOI radius, as creatures are
-// (creatures/sync.ts). A node is sent once when it comes in range and despawned when the player is well past the
-// edge (radius * SYNC_EXIT_HYSTERESIS), so standing at the edge does not churn. The client clears its nodes on
-// LOAD_MAP, so a map load is answered with resync. Nodes are found by the spawner's spatial cells (nodesNear), and
-// nodes that spawn are queued and sent once per tick (flush), one packet per player, not one per node.
 import { SYNC_EXIT_HYSTERESIS } from "../creatures/constants";
 import type { GatherNode, GatherNodeSnapshot } from "./types";
 
@@ -133,10 +128,6 @@ export class GatherSync {
     nodes.set(node.id, node);
   }
 
-  /**
-   * Sends the nodes spawned since the last flush: one packet per player, at most MAX_ENTER_PER_REFRESH of them; any
-   * left over are not marked sent, so the player's next refresh picks them up. Called once per tick.
-   */
   flush(): void {
     if (this.fresh.size === 0) return;
     const fresh = this.fresh;

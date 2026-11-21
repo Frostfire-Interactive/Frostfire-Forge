@@ -12,11 +12,6 @@ export interface LocalCertificateOptions {
   caPath?: string;
   validityDays?: number;
   hostnames?: string[];
-  /**
-   * Replace the existing files even when they look usable. Needed to recover
-   * from an expired CA-signed certificate, which is otherwise never touched
-   * (see certificateNeedsRegeneration) and would be reported as valid.
-   */
   force?: boolean;
 }
 
@@ -37,12 +32,6 @@ export interface CertificateStatus {
   validTo: string | null;
 }
 
-/**
- * Truthful one-shot summary of a certificate file. Unlike
- * certificateNeedsRegeneration this reports expiry for CA-signed
- * certificates too, so callers can tell "expired, renew via your CA" apart
- * from "valid".
- */
 export function getCertificateStatus(certPem: string): CertificateStatus {
   const unusable: CertificateStatus = {
     parseable: false,
@@ -99,8 +88,6 @@ export function getCertificateStatus(certPem: string): CertificateStatus {
     parseable: true,
     selfSigned,
     supportsPinning,
-    // Only self-signed certificates are ours to replace; a CA-signed one
-    // that omits a name or has expired is the operator's to reissue.
     needsRegeneration: selfSigned ? !supportsPinning : false,
     expired,
     daysRemaining,
@@ -164,10 +151,6 @@ export function buildTbsCertificate(
   cert: any,
   publicKeySpki: ArrayBuffer,
   signatureOid: string = ECDSA_SHA256_OID,
-  // RFC 5758 section 3.2: ecdsa-with-SHA256 parameters MUST be absent.
-  // Including the NULL parameter causes strict TLS stacks (rustls/wtransport
-  // trust-anchor verification) to reject the certificate. RSA signatures
-  // (sha256WithRSAEncryption) require the NULL parameter instead.
   includeSignatureNullParams = false
 ): any {
   const { asn1, pki, util } = forge;
@@ -300,10 +283,6 @@ export async function generateLocalCertificate(options: {
   (cert as any).tbsCertificate = tbsCertificate;
   (cert as any).signature = rawEcdsaSignatureToDer(new Uint8Array(signature)).toString("binary");
 
-  // Build the outer certificate manually instead of pki.certificateToPem:
-  // forge appends a NULL parameter to the signatureAlgorithm for non-PSS
-  // algorithms, which strict TLS stacks reject (RFC 5758 requires absent
-  // parameters for ecdsa-with-SHA256).
   const certificateAsn1 = asn1.create(asn1.Class.UNIVERSAL, asn1.Type.SEQUENCE, true, [
     tbsCertificate,
     asn1.create(asn1.Class.UNIVERSAL, asn1.Type.SEQUENCE, true, [
@@ -339,19 +318,9 @@ export function computeCertificateHash(certPem: string): string {
 }
 
 export function certificateSupportsPinning(certPem: string): boolean {
-  // Being self-signed is deliberately not required. serverCertificateHashes
-  // constrains the key and the validity period, not the issuer, so a
-  // short-lived certificate signed by a local CA is pinnable by Chromium
-  // *and* validates normally in Safari, which does not implement pinning at
-  // all and refuses a self-signed leaf. One certificate then serves both.
   return getCertificateStatus(certPem).supportsPinning;
 }
 
-/**
- * DNS names and IP addresses in the certificate's SAN, in the form the cert
- * scripts take them: X509Certificate prints IPv6 expanded
- * ("0:0:0:0:0:0:0:1"), which comes back here as "::1".
- */
 export function certificateSanHostnames(certPem: string): string[] {
   let san: string;
   try {
@@ -382,15 +351,6 @@ export function isSelfSigned(certPem: string): boolean {
   }
 }
 
-/**
- * Whether `certPem` covers every name in `hostnames`.
- *
- * Regeneration otherwise keys only off expiry and pinning suitability, so
- * adding a hostname (a LAN address, say) leaves the old certificate in place
- * and the new name silently fails to validate. The comparison goes through
- * certificateSanHostnames, not the raw SAN text, which prints IPv6 expanded
- * and so never contains a requested "::1".
- */
 export function certificateCoversHostnames(certPem: string, hostnames: string[]): boolean {
   const names = certificateSanHostnames(certPem);
   return hostnames.every((host) => names.includes(host));
@@ -467,15 +427,11 @@ export async function ensureLocalCertificate(options: LocalCertificateOptions): 
     let needsRegen = certificateNeedsRegeneration(certPem);
     if (!needsRegen && options.hostnames?.length) {
       const cert = new X509Certificate(certPem);
-      // Only self-signed certificates are ours to replace; a CA-signed one
-      // that omits a name is the operator's to reissue.
       if (cert.verify(cert.publicKey) && !certificateCoversHostnames(certPem, options.hostnames)) {
         needsRegen = true;
       }
     }
     if (!needsRegen) {
-      // Only self-signed certificates are candidates for regeneration;
-      // production CA-signed certificates are never touched.
       const cert = new X509Certificate(certPem);
       if (cert.verify(cert.publicKey) && await certificateHasNullSignatureParams(certPem)) {
         needsRegen = true;
@@ -496,8 +452,6 @@ export async function ensureLocalCertificate(options: LocalCertificateOptions): 
 
   const certPem = fs.readFileSync(certPath, "utf8");
   if (certificateSupportsPinning(certPem) && isSelfSigned(certPem)) {
-    // A CA-signed certificate is skipped: it already chains to a trusted
-    // root, and adding a leaf to the root store would be wrong.
     await trustLocalCertificate(certPath);
   }
 

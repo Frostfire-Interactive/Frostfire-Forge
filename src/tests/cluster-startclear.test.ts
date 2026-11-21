@@ -4,10 +4,6 @@ import { MemoryStore } from "../cluster/memorystore";
 import { NodeRegistry, type NodeInfo } from "../cluster/nodes";
 import { clearOnStart } from "../cluster/startclear";
 
-// What a node's start may wipe in the shared database (player.clear: verification codes, party ids, guests, parties).
-// In a cluster only the first node of a region does it: a node that starts or restarts next to running ones would
-// delete the guests and parties of everyone playing there.
-
 const info = (nodeId: string, regionId = "eu"): NodeInfo => ({
   nodeId, regionId, publicHost: `${nodeId}.example.com`, port: 3000, wtPort: 3002, useSSL: true, startedAt: 1000,
 });

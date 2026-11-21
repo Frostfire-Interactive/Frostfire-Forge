@@ -4,8 +4,6 @@ import { MemoryStore } from "../cluster/memorystore";
 import { trackPresence } from "../cluster/presence";
 import playerCache from "../services/playermanager";
 
-// The listeners stay on the shared playerCache for the whole run, so they are
-// registered once here; each test uses names of its own.
 const store = new MemoryStore();
 const directory = new PlayerDirectory(store, "a");
 const displaced: Array<{ previous: DirectoryEntry; username: string }> = [];

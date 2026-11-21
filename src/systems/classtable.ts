@@ -1,7 +1,3 @@
-/**
- * The classes table (systems/classes.ts), as the setup scripts and the start-time step make it. On its own so the
- * setup scripts need nothing else of the game to make it.
- */
 export const CLASSES_TABLE = {
   mysql: `CREATE TABLE IF NOT EXISTS classes (
       id INT AUTO_INCREMENT PRIMARY KEY UNIQUE NOT NULL,

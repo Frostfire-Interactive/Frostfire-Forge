@@ -3,9 +3,6 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { databaseModule } from "./setup";
 
-// Phase 7 wiring: what startCluster attaches and takes off again, the creature module's handlers, and the receiver's
-// hooks. The database is stubbed. The receiver cannot be imported (it loads the whole server), so its part is read
-// from its source.
 mock.module("../controllers/sqldatabase", () => databaseModule({ default: async (_sql: string, _params?: any[]) => [] }));
 // Generated at server start and gitignored, so CI has no copy on disk.
 mock.module("../config/settings.json", () => ({ default: { creatures: {} }, creatures: {} }));
@@ -56,8 +53,6 @@ async function until(check: () => boolean | Promise<boolean>, ms = 1_000): Promi
 // startCluster refuses a node without the link secret (security review H2); the bus key is derived from it.
 const LINK_SECRET = "phase7-wiring-link-secret-0123456789abcdef";
 const BUS_KEY = deriveClusterKeys(LINK_SECRET).bus;
-// The node reads its store through the seal (security review H1): what a test puts there as the coordinator or another
-// node would is written through it too.
 const sealed = (store: InstanceType<typeof MemoryStore>) => sealStore(store, deriveClusterKeys(LINK_SECRET).store);
 const mainMap = { name: "main.json", width: 300, height: 100, tileWidth: 32, tileHeight: 32 };
 const address = { publicHost: "b.example.com", port: 3000, wtPort: 3000, useSSL: true, linkHost: "b.loop", linkPort: 7012, certHash: "" };
@@ -549,8 +544,6 @@ test("items claimed from another node that cannot be written here are parked aga
   expect(receiverCode).toContain('0, "CHEST_TAKE", asked.grantId)');
 });
 
-// The receiver's hand-over helpers, run from its source with the names they use handed in (as the other receiver
-// tests do), and a grant store that records what is parked again.
 const helpers = (() => {
   const start = receiverCode.indexOf("function stillHere(");
   const end = receiverCode.indexOf("/** getPlayersNearPoint, and the mirrored players", start);
@@ -560,10 +553,6 @@ const helpers = (() => {
   return new Function(`"use strict";\n${transpiler.transformSync(`function make({ ${names} }: any) { ${body}\nreturn { receiveHanded, pickupLootHere }; }`)}\nreturn make;`)();
 })();
 
-/**
- * The real batch (its database stubbed): `writeFails` throws inside it, before anything is sent; `keptFails` has the
- * rows sent and kept, then a kept step fail, as a row cache that cannot be updated after the commit does.
- */
 function handing(opts: { here?: boolean; writeFails?: boolean; keptFails?: boolean; parkFailsAt?: number } = {}) {
   const parked: any[] = [];
   const errors: string[] = [];

@@ -1,18 +1,3 @@
-/**
- * Player subscriptions: what a player who has not paid may not do.
- *
- * The game owner charges a monthly subscription through the Gateway. An admin
- * ticks, in the control panel (or with /subscription), what an unsubscribed
- * player may not do; each tick is one row of `subscription_locks`. The
- * Gateway sets `accounts.subscribed` when a payment comes in, and writes
- * `subscription_status.enabled = 1` only while it has all its Stripe settings,
- * so a game without them can never lock its players out.
- *
- * Every check reads the copy held here, never the database: the two tables are
- * table caches (datacache.ts), read at startup and again once a minute, so a
- * change made in another realm or by the Gateway arrives within that minute.
- * A change made here is written to the database first and then to the cache.
- */
 import query from "../controllers/sqldatabase";
 import log from "../modules/logger";
 import { tableCache } from "../services/datacache";
@@ -83,16 +68,6 @@ async function hasColumn(name: string): Promise<boolean> {
   return Number(rows?.[0]?.count) > 0;
 }
 
-/**
- * Start-time safety step. The setup scripts add the same columns and tables,
- * but a database that is already live may not have had its setup run before
- * this version starts, and a login that selects a missing column fails for
- * everyone. So the columns and tables are added here, if they are missing,
- * before the first login and before the table caches are read. Safe on every
- * start: whatever is there is left alone. If it cannot be done, one warning is
- * logged and the feature stays off: everyone counts as subscribed and nothing
- * is locked. It never throws, so it cannot stop the server from starting.
- */
 export async function ensureSubscriptionSchema(): Promise<boolean> {
   ready = false;
   try {
@@ -175,11 +150,6 @@ export interface SubscriptionSubject {
   isSubscribed?: boolean | null;
 }
 
-/**
- * Whether `subject` may not do `id`: subscriptions are on, `id` is ticked, and
- * they are not an admin and have not paid. A guest counts as not subscribed
- * (a guest cannot subscribe). Only ever asked of the player who acts.
- */
 export function isLocked(subject: SubscriptionSubject | null | undefined, id: string): boolean {
   if (!subject || !enabled || !locked.has(id)) return false;
   if (subject.isAdmin) return false;
@@ -201,15 +171,8 @@ export function subscriptionState(): { enabled: boolean; locks: string[]; option
   };
 }
 
-/** True while subscriptions are on (the Gateway has its Stripe settings). */
-export const subscriptionsEnabled = (): boolean => enabled;
-
 let turn: Promise<unknown> = Promise.resolve();
 
-/**
- * Ticks (`on`) or unticks `id`. The database is written first, then the
- * cache; the checks follow at once, in this realm.
- */
 export function setLock(id: string, on: boolean): Promise<{ success: boolean; message: string }> {
   // One change at a time, so two admins cannot leave the cache different from the table.
   const mine = turn.then(() => change(id, on));

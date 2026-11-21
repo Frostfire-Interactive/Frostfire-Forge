@@ -2,8 +2,6 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { serverFetch } from "../modules/https_servers";
 import { generateLocalCertificate } from "../utility/local_cert";
 
-// An HTTP/2-only server on this machine, as the Gateway's internal port answers: the first request to it probes
-// HTTP/3, which nothing answers, before falling back.
 let server: ReturnType<typeof Bun.serve>;
 beforeAll(async () => {
   const cert = await generateLocalCertificate({ validityDays: 1 });

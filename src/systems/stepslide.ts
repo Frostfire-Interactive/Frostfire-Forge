@@ -2,13 +2,6 @@
 
 export type StepCollision = { value?: boolean; reason?: string; [key: string]: unknown } | null | undefined;
 
-/**
- * A diagonal step into a wall only loses the blocked axis: the player slides along the open one (e.g. moving upright
- * under a wall keeps going right) instead of stopping. Diagonal is read from the offset (stepX, stepY), not this
- * tick's move: above 30 Hz a slow step can move 0 px on one axis for a tick, and that tick's slide is then just no move.
- * A noclip player is never slid: they walk on through on both axes.
- * Returns where the step ends, what it runs into there, and which axis was dropped (it carries nothing on).
- */
 export function slideStep(
   start: { x: number; y: number },
   target: { x: number; y: number },

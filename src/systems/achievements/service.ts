@@ -1,8 +1,3 @@
-// The rules of achievements without the network around them: what an event adds to whose progress, and what happens
-// when an achievement is reached. A player's progress changes in their turn (store.inTurn), so two events that come
-// together are counted one after the other and an achievement is earned once. Earning one is one batch
-// (services/batch): the row with its date, the reward item in the bags (or in the mail when they are full) and the
-// mount, all kept or none. index.ts gives it the real dependencies; the tests give it their own.
 import { deliverToPlayer } from "../../cluster/deliver";
 import log from "../../modules/logger";
 import { atomically } from "../../services/batch";
@@ -87,8 +82,6 @@ export class AchievementService {
     if (!(await store.definitionsOfType(deed.type)).some((def) => matches(def, deed))) return;
     const earned: Array<{ def: AchievementDef; done: Earned }> = [];
     await store.inTurn(deed.username, async () => {
-      // Looked at again in the turn: an achievement deleted, switched off or changed while this waited for it is not
-      // counted, and leaves no row for the player behind.
       if (!(await store.definitionsOfType(deed.type)).some((def) => matches(def, deed))) return;
       const rows = await store.rowsOf(deed.username);
       // and once more after the rows are read, which may have waited for the database
@@ -117,9 +110,6 @@ export class AchievementService {
           store.clearChanged(deed.username, def.id);
           earned.push({ def, done });
         } else {
-          // Nothing was reported given, but the write may have been made (one that timed out, say): the rows held
-          // are forgotten, so the next read asks the database. One short, so the next deed of its kind tries again
-          // (and finds it earned already if it was written).
           failed = true;
           store.markChanged(deed.username, def.id, def.count - 1);
         }
@@ -181,11 +171,6 @@ export class AchievementService {
     await this.tellCircle(String(online?.username ?? username), def);
   }
 
-  /**
-   * "<name> has completed [<achievement>]" as a line from the game, to who is online: in party chat to the party,
-   * and in guild chat to the guild members who are not in the party (no one is told twice). The line carries the
-   * achievement's id so the client can make its name a link to the reader's own achievements window.
-   */
   private async tellCircle(username: string, def: AchievementDef): Promise<void> {
     let circle: { party: string[]; guild: string[] };
     try {

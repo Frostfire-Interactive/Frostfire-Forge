@@ -6,12 +6,6 @@ import { FrameDecoder } from "../socket/framing";
 import { SLOW_CROSSING_MS, crossingLogLevel } from "../cluster/handoff";
 import { receiverSource } from "./receiver-source";
 
-// Final review 2, Minors M2, M3, M4 and M7.
-//   M2: the per-crossing summary lines are debug unless the crossing was slow.
-//   M3: a notice sent just before a close is written before the session closes (close with drain).
-//   M4: a stream write that fails for another reason than a closed session closes the connection once, with 1011.
-//   M7: the node-debug comments no longer say "admin", and DebugAsker has no isAdmin.
-
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 const tick = (ms = 5) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -142,9 +136,6 @@ const sites: Array<{ name: string; source: string; run: (wt: any) => void }> = [
 ];
 
 describe("M3: the notice is written before the close", () => {
-  // The sites above are run from their source. Two others cannot be: the one in the login handler (receiver.ts, the
-  // earlier session of the same account on this node) and the stale-owner one in the save (server.ts). So every
-  // close with this reason is also checked as source text: all of them pass drain.
   test("every close that says 'Logged in from another location' drains, receiver and server alike", () => {
     const files: Array<[string, string]> = [["receiver", receiver], ["server", server]];
     let total = 0;
@@ -388,8 +379,6 @@ describe("M7: the node-debug comments say any logged-in player gets the table", 
   test("no comment calls the request or the overlay an admin's", () => {
     expect(nodedebug).not.toContain("an admin's CLUSTER_DEBUG");
     expect(nodedebug).not.toContain("Not an admin");
-    expect(nodedebug).toContain("any logged-in player gets the table");
     expect(editors).not.toContain("The admin's \"Cluster Nodes\"");
-    expect(editors).toContain("open to any logged-in player");
   });
 });

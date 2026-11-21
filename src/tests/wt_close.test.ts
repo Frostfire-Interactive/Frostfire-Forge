@@ -16,8 +16,6 @@ test("WT session close fires onClose handler", async () => {
   fs.writeFileSync(keyPath, generated.keyPem);
 
   const previousCertEnv = process.env.TLS_CERT_PATH;
-  // Pin the generated cert via caPem (the strict verification path that
-  // previously rejected forged certs with NULL signature-algorithm params).
   process.env.TLS_CERT_PATH = certPath;
 
   let closeCount = 0;

@@ -1,20 +1,11 @@
 import type { BlockOwner } from "./blocks";
 import type { NodeInfo } from "./nodes";
 
-// Where a login belongs in cluster mode: on the node that owns the block the
-// player spawns in. The node that got the login hands it over with SWITCH
-// (socket/receiver.ts); a block no live node owns is played where the login is.
-
 export type LoginRoute = "here" | { switchTo: NodeInfo };
 
 /** The live nodes are read at most this often: every login asks. */
 const LIVE_CACHE_MS = 1000;
 
-/**
- * "here" when this node owns the spawn block, when no one does, or when its
- * owner is not live (phase 7 takes a dead node's blocks over; until then its
- * players log in where they are) or cannot be reached (it announced no address).
- */
 export function routeLogin(
   spawn: { map: string; x: number; y: number },
   blocks: { ownerOf(map: string, x: number, y: number): BlockOwner | null } | null,

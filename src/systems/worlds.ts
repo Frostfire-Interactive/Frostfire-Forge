@@ -23,18 +23,9 @@ function withWorldsLock<T>(action: () => Promise<T>): Promise<T> {
 }
 
 async function getRedisClient(): Promise<any | null> {
-  // The cache's own client, which comes back after an outage (services/redisclient.ts). Without CACHE=redis there is no
-  // Redis to ask: Bun's singleton would look for one on this machine and hold the first login of every start behind the
-  // worlds' lock until it gave up, 31 s later.
   return process.env.CACHE?.toLowerCase() === "redis" ? sharedRedis() : null;
 }
 
-/**
- * A statement that changes the worlds table, then `change` made to the worlds
- * held. A statement that throws may still have been applied (a timeout, say),
- * so the table is read again rather than the list left as it was. Either way
- * the player counts, which only the list holds, are kept.
- */
 async function write(sql: string, values: any[], change: (list: WorldData[]) => WorldData[]): Promise<void> {
   try {
     await query(sql, values);
@@ -93,8 +84,6 @@ const worlds = {
       const world = worldsList.find((w) => w.name === worldName);
       if (!world) return null;
 
-      // Use Redis HINCRBY for atomic cross-process counter updates. The Redis
-      // client is the cache's shared one (CACHE=redis), the same RedisCacheService uses.
       const redisClient = await getRedisClient();
       if (redisClient) {
         try {

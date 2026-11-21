@@ -1,7 +1,3 @@
-// What the mute, ignore and report commands do and say. The receiver hands
-// each one the player who asked and what they typed, and sends what comes
-// back: nothing here touches a connection.
-
 import playerCache from "../services/playermanager";
 import { accountNameOf } from "./characterids";
 import { characterByName } from "./characterstore";
@@ -62,8 +58,6 @@ export async function muteCommand(actor: any, args: string[], now = Date.now()):
   if (targetAccount !== null && targetAccount === (await accountNameOf(lower(actor.username)))) return "You cannot mute yourself";
   if (await player.isAdmin(target)) return "You cannot mute other admins";
 
-  // A second word that is not a duration is the start of the reason, unless it is the word that
-  // says there is none: with it, a reason may begin with what would read as one.
   const duration = parseDuration(args[1]);
   const reason = args.slice(duration === null && lower(args[1]) !== "permanent" ? 1 : 2).join(" ");
   await mutes.mute(target, actor.username, duration, reason, now);
@@ -89,11 +83,6 @@ export interface IgnoreAnswer {
   unfriended?: { target: string; mine: string[]; theirs: string[] };
 }
 
-/**
- * /ignore <username>. The player ignored is told nothing. A friendship
- * between the two ends on both sides: a friend is shown when the other is
- * online, which is not for someone they ignore to see.
- */
 export async function ignore(actor: any, name: unknown): Promise<IgnoreAnswer> {
   if (!String(name ?? "").trim()) return { message: "Usage: /ignore <username>" };
   const me = lower(actor.username);
@@ -148,11 +137,6 @@ export const CATEGORY_LABELS: Record<ReportCategory, string> = {
   other: "Other",
 };
 
-/**
- * Files a report from `actor` on the player named. The lines attached are the
- * reported player's latest that reached the reporter. `report` is there when
- * one was filed, for the staff to be told of.
- */
 export async function report(actor: any, name: unknown, category: unknown, details: unknown, now = Date.now()): Promise<{ message: string; report?: Report }> {
   if (!lower(name).trim()) return { message: "Usage: /report <username> <reason>" };
   const target = await characterName(name);

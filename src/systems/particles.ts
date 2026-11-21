@@ -35,10 +35,6 @@ function brightnessOf(v: unknown): number {
   return v === null || v === undefined || v === "" || !Number.isFinite(n) ? 1 : Math.max(0, n);
 }
 
-/**
- * A particle's image: the name of the sprite (asset server, assets/sprites) it emits in place of the round dot, or null
- * for the dot. Only a plain file name is kept (the asset server refuses anything else).
- */
 export function imageOf(v: unknown): string | null {
   const name = typeof v === "string" ? v.trim() : "";
   return name && name.length <= 255 && !/[\\/]|\.\./.test(name) && !name.includes("\0") ? name : null;
@@ -107,11 +103,6 @@ function values(particle: Particle): unknown[] {
   return [particle.size, particle.color, particle.velocity, particle.lifetime, particle.opacity, particle.visible ? 1 : 0, particle.gravity, particle.name, particle.localposition, particle.interval, particle.amount, particle.staggertime, particle.spread, particle.affected_by_weather ? 1 : 0, particle.zIndex || 0, particle.glow_intensity || 0, particle.glow_radius || 0, particle.static_light ? 1 : 0, brightnessOf(particle.brightness), particle.affected_by_time ? 1 : 0, particle.time_on || null, particle.time_off || null, imageOf(particle.image)];
 }
 
-/**
- * The particle a row holds once `written` (what values() gave) has been written to it. A number column keeps a
- * number, rounded where it is a whole one; any other keeps text, which is what a statement sends for whatever it is
- * given; and nothing is kept where nothing was given.
- */
 function asWritten(written: unknown[]): Particle {
   const row: Record<string, unknown> = {};
   COLUMNS.forEach((column, i) => {
@@ -126,10 +117,6 @@ function asWritten(written: unknown[]): Particle {
   return fromRow(row);
 }
 
-/**
- * Lowered when a write failed and the table could not be read again: what is held is then not known to be what the
- * table holds, and the next list() reads it.
- */
 let sure = true;
 
 /** The particles held: every row of the table, read at startup and kept in step by each write here. */
@@ -150,11 +137,6 @@ async function load(): Promise<Particle[]> {
 // One write at a time: each changes the particles held and puts them back.
 let writing: Promise<unknown> = Promise.resolve();
 
-/**
- * A statement that changes the particles table, then `change` made to the particles held. A statement that throws
- * may still have been applied (a timeout, say), so the table is read again rather than the particles left as they
- * were; if it cannot be read either, the next list() reads it.
- */
 function write(sql: string, written: unknown[], change: (list: Particle[]) => Particle[]): Promise<any> {
   const work = async () => {
     let response;
@@ -209,12 +191,6 @@ const particles = {
     return load();
   },
 
-  /**
-   * Renames a particle and every reference to it: the comma-separated particle lists of npcs, spells and mounts.
-   * Returns how many rows of each referred to it. Which rows those are is read from the lists held, and each row
-   * written is changed in its list too; the maps' own NPCs and the plugins' spells, which are no rows of the
-   * database, are left to the caller.
-   */
   async rename(from: string, to: string): Promise<{ npcs: number; spells: number; mounts: number }> {
     await write("UPDATE particles SET name = ? WHERE name = ?", [to, from], (list) => list.map((p) => (sameName(p.name, from) ? { ...p, name: to } : p)));
     const counts = { npcs: 0, spells: 0, mounts: 0 };
@@ -249,11 +225,6 @@ const particles = {
   },
 }
 
-/**
- * After a rename that failed part way: a statement that throws may still have been applied (a timeout, say), so
- * every list the rename writes is read again. Of the spells only the column it writes is: what else the server
- * holds of a spell, and the spells of plugins, are not the database's to give back.
- */
 async function rereadReferences(): Promise<void> {
   const again = async (what: string, read: () => Promise<unknown>) => {
     try {
@@ -280,10 +251,6 @@ async function rereadReferences(): Promise<void> {
   });
 }
 
-// Columns added to particles after their first release: a database set up before then gets them here, so saving
-// particles never fails on them. glow_radius: how far a particle's glow reaches (glow_intensity is its brightness
-// only); static_light: the particle is one steady light at its position instead of an emitted stream; brightness: how
-// much light the whole particle gives off (1 = as drawn); image: the sprite it emits in place of the round dot.
 for (const col of [
   { name: "glow_radius", type: "FLOAT NOT NULL DEFAULT 0" },
   { name: "static_light", type: "INT NOT NULL DEFAULT 0" },

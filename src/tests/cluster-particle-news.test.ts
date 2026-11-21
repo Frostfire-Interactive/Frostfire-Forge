@@ -1,11 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { receiverSource } from "./receiver-source";
 
-// Cluster mode: a particle saved in the particle editor on one node is sent to every player online in the region; a
-// rename reaches the particle NPCs of the maps every node holds; a test is shown to the players of the map on every
-// node (peer news "particle" and "test-particle"). The particle list itself is shared (the "particles" cache key).
-// socket/handlers/editors.ts cannot be imported: these read its source.
-
 const receiver = receiverSource();
 const transpiler = new Bun.Transpiler({ loader: "ts" });
 

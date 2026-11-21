@@ -1,19 +1,5 @@
 import type { ClusterStore } from "./store";
 
-// Orders to move a block from one node to another (spec §2, rebalancing). The coordinator writes an order; the
-// old owner carries it out (blockmove.ts); the coordinator commits the new owner in the block table once the
-// order says "sent". Every change of state is one swapIfEpoch on the order's revision, so two writers (the old
-// owner finishing, the coordinator giving up on it) can never both move one order on.
-//
-// Orders are sealed whole (storeseal.ts, security review H1): every revision, its state, epoch and notes included, is
-// sealed by the node or coordinator that writes it, and the swap's Lua compares only the epoch field, which stays at
-// the top of the JSON. A reader (get, all) refuses an order whose seal fails: it counts as missing. So no state can be
-// forged, a "sent" while the old owner still serves the block included. What a Redis writer can still do is delete an
-// order, or put back an earlier sealed revision of the same order. Rolling "sent" back to "sending" lets an old owner
-// whose call had no known outcome abort and put its parts back while the new owner holds them. That is a store
-// rollback, the same class as a restore of Redis from an old snapshot. It is closed in blockmove.ts (close): the old
-// owner asks the new owner over the signed link before a put-back, and writes a held order forward to "sent".
-
 export type MoveState = "ordered" | "sending" | "sent" | "aborted" | "done";
 
 export interface MoveOrder {
@@ -29,11 +15,6 @@ export interface MoveOrder {
   to: string;
   /** The block's owner epoch when the order was made: the commit is refused if the owner changed since. */
   blockEpoch: number;
-  /**
-   * When the state last changed (wall clock). Wall time on purpose: the order is stored and read on other hosts (the
-   * old owner, a later leader), where a monotonic clock means nothing. Clock skew between hosts shifts any timeout
-   * measured from it.
-   */
   at: number;
 }
 

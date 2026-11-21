@@ -1,9 +1,6 @@
 import { expect, test, mock, beforeEach, afterEach } from "bun:test";
 import { databaseModule } from "./setup";
 
-// A ground AoE zone belongs to its caster's layer: it is announced to the players near it on that layer, ticks hit
-// only that layer's players inside its radius, and a late joiner is sent only the zones of their layer in range.
-// Real grid / layer / player modules; only the database is stubbed.
 mock.module("../controllers/sqldatabase", () => databaseModule({
   default: async (_sql: string, _params?: any[]) => [],
 }));
@@ -300,8 +297,6 @@ test("a send that throws does not stop the pass: the zone still ticks", async ()
   expect(caster.stats.health).toBe(60);
 });
 
-// Cluster mode: a player of a neighbouring node standing in the zone (a mirror) is hit through the mirror hit
-// handler (receiver.ts sends it to the owner, which applies it), never here.
 const { mirrorPlayers } = await import("../cluster/mirrors");
 
 function addMirror(id: string, x: number, y: number, layerId: string | null, extra: any = {}): any {

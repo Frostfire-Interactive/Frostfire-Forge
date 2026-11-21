@@ -10,9 +10,6 @@ import { receiverSource } from "./receiver-source";
 // The bus signs its envelopes (security review H1): every bus of a test shares this key.
 const TEST_BUS_KEY = "test-bus-key";
 
-// Party, guild and friend invitations, held where the one who answers can find
-// them: in this process without a cluster, in the cluster store with one.
-
 const invite = (fields: Partial<Invitation> = {}): Invitation => ({
   action: "INVITE_PARTY",
   originator: "7",
@@ -182,10 +179,6 @@ describe("an invitation across nodes", () => {
     expect(await a.invitations.take("auth-1")).toBeNull();
   });
 });
-
-// ------------------------------------------------- what the receiver does with an answer
-// socket/receiver.ts cannot be imported (it imports the server, which starts it), so
-// INVITATION_RESPONSE is run from its source with the names it uses handed in as fakes.
 
 describe("INVITATION_RESPONSE", () => {
   const receiver = receiverSource();

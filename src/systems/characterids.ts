@@ -2,21 +2,9 @@ import query from "../controllers/sqldatabase";
 import playerCache from "../services/playermanager";
 import { nameKey } from "./characterstore";
 
-// The characters.id of a character, by its name. A character's rows (inventory, stats, quests and the rest) are kept
-// by that id; the systems that hold them know a player by name (their copies of the rows, and their turns, are kept
-// under it), so each statement they send is given the id this answers for the name.
-//
-// Nothing is kept here between asks. A player online carries its own id, which is the answer while it is online; for
-// any other name the database is asked each time. A name can pass to another character (a deleted character's name
-// is freed), so an id kept for a name could be a character that is gone, and its rows another's.
-
 /** Whether `id` is a characters.id as given (a whole number above 0). */
 const isId = (id: unknown): id is number => Number.isInteger(Number(id)) && Number(id) > 0;
 
-/**
- * The id of the character named `name`: the player online under that name, else the database (a character that is
- * not deleted). Null when there is no such character.
- */
 export async function characterIdOf(name: string | null | undefined): Promise<number | null> {
   if (!name) return null;
   const key = nameKey(name);
@@ -27,12 +15,6 @@ export async function characterIdOf(name: string | null | undefined): Promise<nu
   return isId(id) ? Number(id) : null;
 }
 
-/**
- * The username of the account the character named `name` belongs to, lower case: what the account's own tables
- * (permissions, mutes) are kept by. The player online under that name first, then the database. Null for a name that
- * is no character's (not deleted): a name is never taken as an account's own username, since a freed name can be
- * given to a character of another account. Never shown to players.
- */
 export async function accountNameOf(name: string | null | undefined): Promise<string | null> {
   if (!name) return null;
   const key = nameKey(name);
@@ -57,10 +39,6 @@ export async function siblingNamesOf(name: string | null | undefined): Promise<s
   return names.length ? names : [String(name)];
 }
 
-/**
- * The names characters (not deleted) go by now, for `names` as they were kept (any case): by each name's lower case.
- * A name that is no character's has no entry.
- */
 export async function currentNames(names: string[]): Promise<Map<string, string>> {
   const keys = [...new Set(names.map((name) => nameKey(String(name ?? "").trim())).filter(Boolean))];
   const found = new Map<string, string>();

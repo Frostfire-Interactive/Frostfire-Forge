@@ -3,12 +3,6 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { databaseModule } from "./setup";
 
-// Viewer pose changes by datagram (socket/posedgram.ts, socket/pose_codec.ts, broadcastPoseToAOI): a viewer's copy of
-// a pose change is a datagram with the player's pose revision, not a stream frame (one native write each, the cost
-// that stalled a node at 800 players). The current pose is sent again at 100 and 400 ms, a newer change stops the
-// repeats of the older one, and the revision keeps rising across a handoff. What a client needs to see a player for
-// the first time stays on the stream. The client half is the Gateway's src/modules/posedgram.test.ts.
-
 mock.module("../controllers/sqldatabase", () => databaseModule({
   default: async (_sql: string, _params?: any[]) => [],
 }));
@@ -139,9 +133,6 @@ const kinds = (c: { frames(): any[] }) => c.frames().map((f) => f.type);
 
 beforeEach(() => resetPoseStats());
 afterEach(() => poseRepeats.configure({}));
-
-// ---- the client's rule, as the Gateway's posepacket.ts has it: a pose is applied only for a player the client knows,
-// ---- and only if its revision is newer than the one shown; a reliable sheet or pose is the new baseline.
 
 function viewerScreen() {
   const shown = new Map<string, { revision: number; state: string }>();
@@ -312,7 +303,7 @@ describe("what a client needs to see a player for the first time stays reliable"
   test("the own copy of sendSpriteSheetAnimation rides the stream and the viewers' copy the datagram", async () => {
     // sendSpriteSheetAnimation lives in the receiver, which a test cannot import: cut out and run as packet-srv.test.ts does.
     const source = readFileSync(join(import.meta.dir, "..", "socket", "receiver.ts"), "utf8").replace(/\r\n/g, "\n");
-    const from = source.indexOf("/** The layer fields of a SPRITE_SHEET_ANIMATION packet");
+    const from = source.indexOf("const POSE_LAYER_FIELDS = [");
     const to = source.indexOf("async function sendAnimation(");
     if (from < 0 || to <= from) throw new Error("the pose code was not found in receiver.ts");
     const names = ["playerCache", "equipmentSheetsToken", "getPlayerSpriteSheetData", "getMountSpriteUrl", "packetManager", "sendPacket", "broadcastPoseToAOI", "lookSignature", "log", "drawnEquipment", "notePoseCall", "notePoseSelf"];

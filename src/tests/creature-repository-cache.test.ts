@@ -1,10 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { databaseModule } from "./setup";
 
-// The creature tables are read into the asset cache at startup and after each
-// editor change (loadIntoCache). What the editor asks for in between is
-// answered from what that read holds, not from the database.
-
 type Row = Record<string, any>;
 let db: Record<string, Row[]>;
 let nextId: number;

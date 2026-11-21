@@ -3,28 +3,6 @@ import log from "../modules/logger";
 import { registerPlayerAction, runOnPlayer } from "./deliver";
 import type { ClusterStore } from "./store";
 
-// Items handed over across a border, kept until someone writes them (spec §7). The owner of a corpse, ground loot,
-// a chest or a gathering node takes the items off and answers with them; the player's node writes them. An answer
-// that is lost used to lose the items. Now the owner parks the hand-over under cells:grant:<id> before it answers,
-// and whoever takes that key writes it: the asker when the answer came (claim), else the player's node when the
-// owner's recovery asks it to (cells-grant-recover), else the owner itself, to the rows. `take` reads and deletes
-// in one step, so one of them gets it and the grant is written at most once.
-//
-// Corpse money sent to a member on another node (GRANT) carries a grant id too: the receiver marks the id given
-// (cells:granted:<id>) before it writes, so a share whose answer was lost can be sent again.
-//
-// With no store attached nothing is parked, no grant id is made, and every path runs as before.
-//
-// The owner's checks run only while its node may act as owner (its lease, cells phase 7): a node cut off from the
-// store, or taken over, writes no grant to the rows. Each grant a run parks is listed under that run, so when the run
-// is over another node adopts what it still checked (adoptFrom).
-//
-// The grant records are sealed (storeseal.ts, security review H1): a record a node did not write counts as missing.
-// A record names its own id, its owner node and the run that parked it; one read under another id, or listed under
-// another run, is not taken as that grant. An id put in a run's list by hand is ignored unless its sealed record names
-// that run. What a seal cannot stop is a record put back after it was taken (the same sealed bytes): the database
-// row of each grant id written (systems/grantwriter.ts) keeps that from being written twice.
-
 export const GRANT_TTL_MS = 600_000;
 /** When the owner checks a parked grant, from the park: past the call timeout (10 s), so an answer that came is claimed. */
 export const GRANT_RECOVER_DELAYS_MS: readonly number[] = [12_000, 30_000, 60_000];
@@ -81,10 +59,6 @@ export function describeGrant(grant: Pick<HandOver, "items" | "copper">): string
   return parts.join(", ") || "nothing";
 }
 
-/**
- * The items and money an item call's answer hands over: `items` (corpse, chest), `item` as a row (ground loot,
- * `{ item, quantity }`) or `item` as a name with `quantity` (a gathered node), and `copper`.
- */
 export function handOverOf(answer: Record<string, unknown>): { items: GrantItem[]; copper: number } {
   const rows: any[] = Array.isArray(answer.items)
     ? answer.items
@@ -101,11 +75,6 @@ export function handOverOf(answer: Record<string, unknown>): { items: GrantItem[
   return { items, copper };
 }
 
-/**
- * Whether a writer's error was thrown before its batch's transaction was sent (services/batch.ts nothingWritten).
- * The batch module is loaded only here, when a write failed: it loads the database layer, which this module does not
- * need otherwise. The writer that threw has loaded it already.
- */
 async function wroteNothing(error: unknown): Promise<boolean> {
   try {
     return (await import("../services/batch")).nothingWritten(error);
@@ -147,10 +116,6 @@ interface Pending {
 
 export class Grants {
   private store: ClusterStore | null = null;
-  /**
-   * Counts the detaches (an attach detaches first). A timer set before a stop finds it changed, also when the node
-   * attached again with the same store object (tests), and does nothing.
-   */
   private generation = 0;
   private self = "";
   /** The list of grants this run parked, or null when the run is not known. */
@@ -183,10 +148,6 @@ export class Grants {
     this.mayAct = opts.mayAct ?? (() => true);
   }
 
-  /**
-   * Stops the checks. A grant not yet claimed stays parked until it runs out: its asker can still claim it. Each one is
-   * logged by id and by what it holds, so one that runs out unclaimed is on record by name.
-   */
   detach(): void {
     for (const { grant, timer } of this.pending.values()) {
       if (timer) clearTimeout(timer);
@@ -215,15 +176,6 @@ export class Grants {
     return `${this.self || "node"}:${randomUUID()}`;
   }
 
-  /**
-   * Parks a hand-over and schedules its recovery. The grant id, or null (no store, or the write failed).
-   *
-   * `id`: a grant that was taken and could not be written is parked again under its own id (security review Important
-   * 3). Every copy of one hand-over then shares one grant_writes row (systems/grantwrites.ts), so a copy the store
-   * brings back after a rollback, and the re-park, are written at most once between them. The record is this node's
-   * now: its owner and run are this node's, so it is listed under this run and adopted from this run's list. Guard
-   * (test "a re-parked hand-over keeps its id: a rolled-back copy of it and the re-park are written once").
-   */
   async park(handOver: HandOver, id?: string): Promise<string | null> {
     const store = this.store;
     if (!store) return null;
@@ -240,8 +192,6 @@ export class Grants {
     }
     // Every later line about this grant names only its id: this one ties the id to what it holds.
     log.info(`Hand-over ${grant.id} (${grant.call}) parked for ${grant.username}: ${describeGrant(grant)}`);
-    // A check of the same id still scheduled here (a recover on this node took it) is replaced: one entry per id, and the
-    // one it replaced is stale (current).
     const before = this.pending.get(grant.id);
     if (before?.timer) clearTimeout(before.timer);
     const entry: Pending = { grant, timer: null, takeFailed: false };
@@ -251,12 +201,6 @@ export class Grants {
     return grant.id;
   }
 
-  /**
-   * A run of a node is over (node-dead, or a restart under the same id; this node's own last run too): the grants it
-   * still checked are checked here from now on. One node adopts them, the first to set the adopt key. A store that
-   * fails, or a lease this node does not hold, is tried again, GRANT_ADOPT_TRIES times in all; past that the run's
-   * grants are checked by no one, and only their askers can claim them. How many were adopted.
-   */
   async adoptFrom(nodeId: string, startedAt: number, attempt = 1): Promise<number> {
     const store = this.store;
     const generation = this.generation;
@@ -276,8 +220,6 @@ export class Grants {
         // Gone: claimed, recovered or written already (or a record that is not sealed, which the store logged).
         const grant = grantOf(await store.get(grantKey(id)), id);
         if (!grant) continue;
-        // Guard (test "an id listed under a run its record does not name is not adopted"): only the grants this run
-        // parked. A live run's grant listed here by hand stays with its own owner.
         if (grant.owner !== nodeId || grant.run !== startedAt) {
           log.warn(`Hand-over ${grant.id} is listed under run ${startedAt} of node ${nodeId}, but was parked by run ${grant.run} of node ${grant.owner}: not adopted from that list`);
           continue;
@@ -324,21 +266,12 @@ export class Grants {
     void store.removeFromSet(runKey, id).catch(() => {});
   }
 
-  /**
-   * A check of `entry` is done with it: off the checks and this run's list. An entry a re-park under the same id
-   * replaced (park) is not, since the newer one is listed and checked by that id: removing it would leave the re-park
-   * unchecked here and not adoptable. The unlist goes before the write, so a re-park's list comes after it.
-   */
   private settle(store: ClusterStore, entry: Pending): void {
     if (!this.current(entry)) return;
     this.pending.delete(entry.grant.id);
     this.unlist(store, entry.grant.id);
   }
 
-  /**
-   * The asker takes the grant: true only for the one caller that got it. `handed` is what the answer carried, for the
-   * log line when the store fails: a take that ran on the store but whose reply was lost leaves the grant to nobody.
-   */
   async claim(id: string, handed?: Pick<HandOver, "items" | "copper">): Promise<boolean> {
     const store = this.store;
     if (!store) {
@@ -353,11 +286,6 @@ export class Grants {
     }
   }
 
-  /**
-   * Marks a money grant id given: true the first time, false when it was given before. With no store it is always
-   * true. Throws when the store cannot set the mark: the caller does not give it, since a share sent again after a
-   * mark that was never set would be given twice. A share that may exist twice becomes one that is lost by name.
-   */
   async firstApply(id: string): Promise<boolean> {
     const store = this.store;
     if (!store) return true;
@@ -382,12 +310,6 @@ export class Grants {
     await this.write(grant, lower(grant.username) === lower(player?.username) ? player : null);
   }
 
-  /**
-   * Whether `entry` is still the one checked for its id. A re-park under the same id (park) replaces it: the stale one
-   * schedules, checks and settles nothing from then on, so one id has one chain of checks, and the re-park stays
-   * pending and listed. Guard (test "a re-park under the same id on this node replaces its check: one chain of checks
-   * per id").
-   */
   private current(entry: Pending): boolean {
     return this.pending.get(entry.grant.id) === entry;
   }
@@ -419,8 +341,6 @@ export class Grants {
       return;
     }
     if (held === null) {
-      // Claimed or recovered: nothing more to do. After a take here that failed on the store, that take may have run
-      // and its value gone with the failed reply: nobody has written it.
       if (entry.takeFailed) log.error(`Hand-over ${grant.id} for ${grant.username} may be lost: ${describeGrant(grant)} (a take of it here failed on the store, and it is gone now)`);
       this.settle(store, entry);
       return;
@@ -498,19 +418,11 @@ export class Grants {
     try {
       await writer(grant, player);
     } catch (error) {
-      // Thrown before its transaction was sent (the player's lock held on another node, a lock store that timed out):
-      // nothing was written, and the grant, already taken off the store, is parked again under its own id. Any other
-      // failure may come after the commit: parked again, it could be given twice, so it is logged lost by name.
       if (await wroteNothing(error) && await this.parkAgain(grant, error)) return;
       log.error(`Hand-over ${grant.id} for ${grant.username} is lost: ${describeGrant(grant)}: ${error}`);
     }
   }
 
-  /**
-   * Parks a grant that could not be written again, under its own id (park). False when it could not be parked. The
-   * first re-park of a grant here is a warn, later ones info (security review Minor 9): a grant whose bounds are not read
-   * yet is parked again at every check until they are.
-   */
   private async parkAgain(grant: ParkedGrant, error: unknown): Promise<boolean> {
     // Guard (test "a re-parked hand-over keeps its id: a rolled-back copy of it and the re-park are written once").
     const id = await this.park({ username: grant.username, items: grant.items, copper: grant.copper, call: grant.call }, grant.id);

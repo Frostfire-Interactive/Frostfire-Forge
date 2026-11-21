@@ -2,13 +2,6 @@ import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
 import { characterDatabaseModule } from "./setup";
 import { GuardError } from "../controllers/sqltransaction";
 
-// Two players trading: the window's rules, and the swap. The real trade,
-// inventory, currency and trade log systems run against a fake database, and
-// after a trade what each player holds there is compared with what was offered.
-//
-// Named to run before questrewards.test.ts, which stands in for the inventory
-// and currency systems in every file that runs after it.
-
 mock.module("../config/settings.json", () => ({
   default: { creatures: {} },
   creatures: {},

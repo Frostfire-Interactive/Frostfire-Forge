@@ -5,8 +5,6 @@ import type { ClusterStore } from "./store";
 
 export { ATTEMPT_MS, REVIVE_MS };
 
-// Epoch checks run in Redis, so no other write can land between the read and the write.
-// A value that is not JSON (or has no epoch) has epoch 0, as in MemoryStore.
 const SWAP_IF_EPOCH = `
 local held = redis.call('GET', KEYS[1])
 local epoch = 0
@@ -38,22 +36,12 @@ if epoch ~= tonumber(ARGV[1]) then return 0 end
 redis.call('PEXPIRE', KEYS[1], ARGV[2])
 return 1`;
 
-// Nothing queues while Redis is away, and a lost connection is replaced by a fresh client every REVIVE_MS (the clients
-// and their revival are services/redisclient.ts, which the cache client shares: Bun 1.4.4 stops reconnecting once the
-// connection has been away longer than connectionTimeout). The first connection is waited for CONNECT_WAIT_MS at most.
-/**
- * How long one command may wait for Redis's answer (ms). Bun's client has no timeout of its own, so a Redis that
- * accepts the connection and then stalls would hold every caller without a deadline of its own for ever.
- * A command that misses it is rejected, like a call that failed.
- */
 export const STORE_CALL_MS = 2_000;
 /** After this many deadline misses in a row, and until a command is answered in time, the store says it is down. */
 export const STORE_STALL_MISSES = 3;
 
 /** The cluster's store in Redis (REDIS_URL). Subscriptions use a second connection, as Redis requires. */
 export class RedisStore implements ClusterStore {
-  // The main connection (its client is this.main.client), and the subscriber's, once it is made (its client is
-  // this.sub.client; subscriber is the promise of it).
   private main: RedisSlot;
   private sub: RedisSlot;
   private subscriber: Promise<RedisClient> | null = null;
@@ -63,15 +51,11 @@ export class RedisStore implements ClusterStore {
   // Per channel, the subscribe in flight or done: a second subscribe waits for it.
   private listening = new Map<string, Promise<void>>();
 
-  // The first connection, until it is made. With the offline queue off a call made before it is up would be
-  // refused, so calls wait for it (a while at most: Redis may not be there, and then they fail like any other).
   private connecting: Promise<void> | null;
   private stopped = false;
   // Commands in a row that missed their deadline; reset by one that is answered in time (see isUp).
   private misses = 0;
   private stalledLogged = false;
-  // While stalled: a cheap command now and then, so the store hears when Redis answers again even if no caller is
-  // sending anything (callers wait for the store to be up).
   private stallProbe: ReturnType<typeof setInterval> | null = null;
 
   constructor(
@@ -111,10 +95,6 @@ export class RedisStore implements ClusterStore {
     return this.main.client!;
   }
 
-  // One command, with a deadline of callMs from the moment the client is chosen (waiting for the first connection
-  // has its own bound in redis()). A miss rejects, and counts toward stallMisses; the command may still reach Redis
-  // later, as with any call whose answer is lost. A command that fails some other way is no stall: it does not count,
-  // and it does not clear the count either. The late answer of a command that missed its deadline is not read.
   private async call<T>(run: (client: RedisClient) => Promise<T>): Promise<T> {
     const client = await this.redis();
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -305,8 +285,6 @@ export class RedisStore implements ClusterStore {
       const dispatch = this.dispatchers.get(channel);
       if (!dispatch) continue;
       try {
-        // The client may still hold the listener it was given: unsubscribing first keeps it from being added twice
-        // (it refuses when it holds no subscription, which is as good).
         try { await client.unsubscribe([channel]); } catch {}
         await client.subscribe(channel, dispatch);
       } catch (error) {
@@ -315,9 +293,6 @@ export class RedisStore implements ClusterStore {
     }
   }
 
-  // Puts every channel of the store on the fresh subscriber, with the dispatch function the store holds for it, and
-  // takes off it a channel that was left or given a new dispatch since (it would otherwise run its handlers twice
-  // when the channel is subscribed to again). The store can change while this waits: the caller compares again.
   private async subscribeAll(fresh: RedisClient, on: Map<string, (message: string) => void>): Promise<void> {
     for (const [channel, dispatch] of this.dispatchers) {
       if (on.get(channel) === dispatch) continue;
@@ -339,9 +314,6 @@ export class RedisStore implements ClusterStore {
     return true;
   }
 
-  // What a fresh subscriber is given before it takes the lost one's place: what is on the fresh client. The store can
-  // change while the channels are put on it, and in the turn between the last subscribe and this code resuming: so what
-  // the store holds is compared once more, with no await between that comparison and the adoption.
   private async subscribeFresh(fresh: RedisClient, stale: () => boolean): Promise<boolean> {
     const on = new Map<string, (message: string) => void>();
     do {
@@ -351,12 +323,6 @@ export class RedisStore implements ClusterStore {
     return true;
   }
 
-  /**
-   * False while the main connection is lost, and once closed here; the subscriber's connection does not count.
-   * Also false after stallMisses commands in a row missed their deadline (a Redis that holds the connection and does
-   * not answer), until one is answered in time. A stall starts no revival: the connection is not lost, and a fresh
-   * client would meet the same Redis.
-   */
   isUp(): boolean {
     return this.main.isUp() && this.misses < this.stallMisses;
   }

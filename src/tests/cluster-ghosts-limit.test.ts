@@ -7,10 +7,6 @@ import { databaseModule, mockQuery } from "./setup";
 import log from "../modules/logger";
 import { linkMesh, linkPair } from "./cluster-fakelink";
 
-// The limit fix wave, fixes 1 and 2: the scan compares state without turning all of it into JSON, spreads the
-// comparison over several scans (never the release), and asks for targets through a cache that drops with the
-// block table; flushTick keeps its order in a list. One owner "a" with the real mirrorTargets and band, and
-// MeshLink peers that record what they are sent.
 mock.module("../controllers/sqldatabase", () => databaseModule({ default: mockQuery }));
 mock.module("../config/settings.json", () => ({ default: { creatures: {} }, creatures: {} }));
 

@@ -3,10 +3,6 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { databaseModule } from "./setup";
 
-// A walk resumed after a handoff makes up the ticks it stood still. From the drain on the old node to the first step
-// on the new one the server does not step the player, while the client walks on: without the catch-up the server is
-// that many steps behind the client for the rest of the walk, and the client slows down to meet it at every border.
-
 mock.module("../controllers/sqldatabase", () => databaseModule({ default: async () => [] }));
 mock.module("../config/settings.json", () => ({ default: { creatures: {} }, creatures: {} }));
 
@@ -66,8 +62,6 @@ test("wiring: the receiver hands the resumed walk its standstill; the MOVEXY tak
   const receiver = readFileSync(join(import.meta.dir, "..", "socket", "receiver.ts"), "utf8");
   const built = receiver.indexOf("{ walk: arrivalState.walk, idleMs: arrivalState.walkIdleMs, committedAt: arrival?.committedAt ?? Date.now() }");
   expect(built).toBeGreaterThan(-1);
-  // The same standstill is told to the client in HANDOFF_DONE, and handed to the MOVEXY that makes it up.
-  // (less what a gap report's replay walked of it: `catchUp`, below)
   const done = receiver.indexOf("catchUpMs: doneWalk ? resumeCatchUpMs(catchUp, Date.now(), TICK_MS) : 0,");
   expect(done).toBeGreaterThan(built);
   const set = receiver.indexOf("wt.data.resumeCatchUp = catchUp;");
@@ -88,9 +82,6 @@ test("wiring: the receiver hands the resumed walk its standstill; the MOVEXY tak
   expect(block).toContain("} finally {\n            muteEcho = false;");
   expect(movement).toContain("if (!muteEcho) sendPacket(wt, packetManager.moveXY(movementData));");
 });
-
-// The client walked the gap as its keys said and reports it with AUTH: a key let go or turned in the gap is walked here
-// as the client walked it before HANDOFF_DONE, so the node's point is the drawn one (to a tick's step), not up to 36 px past it.
 
 test("a gap report is read as stretches of a MOVEXY direction or a stand, each 0 to MAX_RESUME_CATCH_UP_MS long", () => {
   expect(gapInputOf({ segments: [{ walk: "RIGHT", ms: 40 }, { walk: "", ms: 20.5 }], held: "Down" })).toEqual({ segments: [{ walk: "right", ms: 40 }, { walk: "", ms: 20.5 }], held: "down" });
@@ -119,8 +110,6 @@ test("the replay walks each ended stretch in the whole steps nearest its length,
   // Turned: right 50 (1.5 ticks: 2 steps), down 50 (2 steps); down goes on, making up only the rest.
   const turned = gapPlanOf({ segments: [{ walk: "right", ms: 50 }, { walk: "down", ms: 50 }], held: "down" }, catchUp, 10_170, T)!;
   expect(turned).toEqual({ steps: ["right", "right", "down", "down"], spentMs: 100, walk: "down" });
-  // A stretch is counted on its own, not from where the stand before it ended in a tick: the client walks every stretch
-  // to a whole tick (handoffwalk.ts GapLog.stepLeft), and a stand of 17 ms then 2 ticks right is 2 steps, not 1.
   expect(gapPlanOf({ segments: [{ walk: "", ms: 17 }, { walk: "right", ms: 66 }], held: "" }, catchUp, 10_170, T)!.steps).toEqual(["right", "right"]);
   expect(resumeCatchUpSteps({ ...catchUp, walk: "down", spentMs: turned.spentMs }, "down", 10_170, T)).toBe(Math.round(200 / T) - Math.round(100 / T) - 1);
   // A stretch the client's rounding left 0 ms long is passed over, not the end of the replay.
@@ -185,11 +174,6 @@ test("wiring: AUTH keeps the report before anything is awaited; the login replay
   const packets = readFileSync(join(import.meta.dir, "..", "socket", "packet_manager.ts"), "utf8");
   expect(packets).toContain('JSON.stringify({ type: "HANDOFF_BEGIN", data: { report: true, gapUpdates: true, ...(at ?? {}) } })');
 });
-
-// A change of key after AUTH (a release or a turn as the login runs, or as HANDOFF_DONE is on its way) is sent as a
-// HANDOFF_GAP with the whole gap so far. The login walks the newest it has; a later one is walked again from the same
-// point once it comes, as if the login had read it, and answered (HANDOFF_GAP_DONE). The client walks the gap on until
-// the answer: the node ends where the client's draw is, not up to a round trip of walk past it.
 
 const { MAX_GAP_UPDATES, gapUpdateOf, newerGap } = await import("../socket/arrival");
 

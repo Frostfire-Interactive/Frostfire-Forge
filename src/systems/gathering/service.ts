@@ -1,7 +1,3 @@
-// The rules of one gather, without the network: whether a player may start, and what happens when their cast ends.
-// The receiver runs the cast between the two (castGather). When the cast ends the checks run again, and the player
-// claims the node: claims that land in the same CLAIM_WINDOW_MS get one winner at random. The node is taken out of
-// the world the moment the winner is picked; if the item then cannot be given, the node is put back.
 import log from "../../modules/logger";
 import { randInt } from "../creatures/constants";
 import { CLAIM_WINDOW_MS, ClaimWindow } from "./claims";

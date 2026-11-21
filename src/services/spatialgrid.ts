@@ -8,8 +8,6 @@ export class SpatialGrid {
 
   private cellSize: number;
 
-  // Mirrors of players another node owns (cluster mode, phase 4): in the grid so AOI finds them,
-  // flagged so code can tell them from local players.
   private remote = new Set<string>();
 
   private stats = {
@@ -53,8 +51,6 @@ export class SpatialGrid {
     if (remote) this.remote.add(playerId);
     else this.remote.delete(playerId);
 
-    // A local player taking over a mirror's id, or a mirror filed again: move the entry, so the
-    // old cell does not keep the id. (Neither happens outside cluster mode.)
     if ((remote || wasRemote) && this.playerCells.has(playerId)) {
       this.updatePlayer(playerId, x, y, map);
       return;

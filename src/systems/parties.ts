@@ -6,13 +6,6 @@ import { needCharacterId } from "./characterids";
 /** A party as the table has it: `members` is the comma-separated list, the leader first. */
 type PartyRow = { id: number; leader: string; members: string | null };
 
-// Every party. Reads are answered from these rows, and every change below is
-// written to the database and then to them. A write the database does not
-// answer has them read again instead (see `writing`).
-//
-// Who is in a party is who its member list names (characters, by name).
-// characters.party_id says the same after each change here, and is what a
-// login reads. The row is its leader's character's (character_id, leader_id).
 const rows = tableCache<PartyRow>("parties", async () => {
     const result = await query("SELECT id, leader, members FROM parties", []) as any[];
     return (result || []).map((row: any) => ({ id: row.id, leader: row.leader, members: row.members }));
@@ -43,15 +36,6 @@ async function change(partyId: number, changed: Partial<PartyRow>): Promise<void
     if (party) await rows.put({ ...party, ...changed }, byId(partyId));
 }
 
-/**
- * Runs one write. `accounts` are the usernames whose party_id it sets: the
- * player system caches accounts, and is told to read those again whether or
- * not the write was answered.
- *
- * When it is not answered the parties are read again too: a statement that
- * timed out may still have been applied, so what is held can be trusted no
- * longer. The failure is still thrown, for the caller to answer with.
- */
 async function writing<T>(accounts: Array<string | null | undefined>, write: () => Promise<T>): Promise<T> {
     try {
         return await write();

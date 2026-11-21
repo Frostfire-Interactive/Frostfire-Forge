@@ -110,10 +110,6 @@ const loot = {
     return remoteLoot.delete(id) ?? null;
   },
 
-  /**
-   * Cluster mode, a block moving away: this node's loot `id` leaves it. Nothing is shown and no hook fires: its
-   * viewers keep it as the new owner's mirror (objectmoves.ts).
-   */
   takeOwn(id: string): LootItem | null {
     const lootItem = lootItems.get(id);
     if (!lootItem) return null;
@@ -124,11 +120,6 @@ const loot = {
     return lootItem;
   },
 
-  /**
-   * Cluster mode: loot of a block that moved here (or back, after a move that did not happen) becomes this node's
-   * own, with the time it has left. "mirror" when it was shown here as a mirror, "new" when not. null when this node
-   * already owns loot of that id: that one is kept, and the item is not there twice.
-   */
   adoptOwn(item: LootItem, now: number = Date.now()): "mirror" | "new" | null {
     if (lootItems.has(item.id)) return null;
     const known = remoteLoot.delete(item.id) !== undefined;

@@ -1,20 +1,3 @@
-/**
- * CREATURE_MOVE as a binary datagram.
- *
- *   [u8 0x04][u16 count, little endian] then per creature 13 bytes:
- *   [u32 id][i32 x][i32 y][u8 flags]      flags: bits 0-2 the direction (DIRECTION_ORDER), bit 3 moving
- *
- * Widths: the id is a creature id (a number from the world counter, at most 0xffffffff); x and y are
- * Math.round of a map pixel position, which is far inside an i32; the direction is one of eight names. An entry
- * outside that (a non-integer or oversized id, a position outside i32, an unknown direction name) has no record:
- * encodeCreatureMove gives null and the caller sends it as the JSON CREATURE_MOVE, so what the client is told never
- * differs from the JSON packet. The client's decoder (Gateway core/creaturemoves.ts) reads the same layout.
- *
- * Each record is encoded once per tick and the records of a viewer's creatures are joined, so a datagram costs
- * 3 + 13 per creature (a 20 creature view: 263 bytes). The transport splits a payload past the datagram size
- * into several datagrams of whole records (TransportConnection.sendBestEffort).
- */
-
 export const CREATURE_MOVE_HEADER = 0x04;
 export const CREATURE_MOVE_HEADER_BYTES = 3;
 export const CREATURE_MOVE_ENTRY_BYTES = 13;

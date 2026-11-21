@@ -3,9 +3,6 @@ import { Database } from "bun:sqlite";
 import { databaseModule, standInFor } from "./setup";
 import { CHARACTER_TABLES } from "../utility/charactertables";
 
-// The schema for many characters per account, as database_setup_sqlite.ts makes it, in an in-memory SQLite database
-// (foreign keys on, as the engine's connection has them). The setup's own query function is this database.
-
 const db = new Database(":memory:");
 db.exec("PRAGMA foreign_keys = ON");
 

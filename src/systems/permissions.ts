@@ -9,36 +9,18 @@ type PermissionsRow = { permissions: string };
 /** The longest list the permissions column holds as it was given. */
 const LIST_LENGTH = 255;
 
-// Each player's rows of the permissions table, as it has them: one, or none
-// for a player who holds no permission. Permissions are the account's: the
-// table is kept by the account's username, and a character is answered with
-// its account's row. The rows are held by the character's name; reads are
-// answered from these, and every change below is written to the database and
-// then to them (and the account's other characters' rows are let go).
-// A name that is no character's holds no permission.
 const rows = rowCache<PermissionsRow[]>("permissions", async (username) => {
     const account = await accountNameOf(username);
     if (!account) return [];
     return (await query("SELECT permissions FROM permissions WHERE username = ?", [account])) as PermissionsRow[] || [];
 }, { perPlayer: true });
 
-// The permissions there are to give. Nothing writes this table while the
-// server runs: the database setup fills it.
 const types = tableCache<{ name: string }>("permission_types", async () =>
     (await query("SELECT name FROM permission_types")) as { name: string }[] || []
 );
 
-// One write to a player's row at a time: statements sent side by side reach
-// the database in no set order, so the row held could end as one left it and
-// the table as the other did.
 const oneAtATime = turns();
 
-/**
- * A write of a player's row: the statement, then `left` as the rows held.
- * When what it left cannot be said here (`left` null), or it failed, in which
- * case it may still have been written (one that timed out, say), the rows are
- * forgotten instead and the next read asks the database.
- */
 function write(username: string, sql: string, values: (account: string) => unknown[], left: PermissionsRow[] | null): Promise<void> {
     return oneAtATime(username, async () => {
         try {
@@ -70,22 +52,12 @@ export function covers(held: readonly string[], name: string): boolean {
     return dot > 0 && held.includes(`${name.slice(0, dot)}.*`);
 }
 
-/**
- * Whether a holder of `held` may give `name` to someone. A holder of
- * `server.*` gives anything. The server family (`server.*` and every
- * `server.` permission) is otherwise given only by one who holds that very
- * permission; anything else by a holder of `permission.*`, or one who holds it.
- */
 export function canGrant(held: readonly string[], name: string): boolean {
     if (held.includes("server.*")) return true;
     if (name.startsWith("server.")) return held.includes(name);
     return held.includes("permission.*") || covers(held, name);
 }
 
-/**
- * Whether a holder of `held` may change what a holder of `target` holds, or
- * their admin role: only one who could have given them all of it.
- */
 export function outranks(held: readonly string[], target: readonly string[]): boolean {
     return target.every((name) => canGrant(held, name));
 }

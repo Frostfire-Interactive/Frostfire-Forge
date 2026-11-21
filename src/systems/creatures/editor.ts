@@ -1,8 +1,3 @@
-/**
- * Creature editor: validation and CRUD dispatch for the admin editor window.
- * Every packet is permission-checked by the caller and validated here before
- * anything is written.
- */
 import assetCache from "../../services/assetCache";
 import log from "../../modules/logger";
 import { serverFetch } from "../../modules/https_servers.ts";
@@ -56,12 +51,6 @@ export interface SpriteSheetOption {
   template?: boolean;
 }
 
-/**
- * Editor image URLs are asset-server PATHS, not absolute URLs: the game server
- * reaches the asset server on an internal address (a container name in Docker)
- * that a browser cannot resolve. The editor window prefixes these with the
- * asset server URL the client was configured with.
- */
 const iconPath = (name: string | null): string | null =>
   name ? `/icon?name=${encodeURIComponent(name.replace(/\.(png|jpg|jpeg|gif)$/i, ""))}` : null;
 
@@ -80,9 +69,6 @@ export async function listSpriteSheets(force = false): Promise<Record<string, Sp
     const response = await serverFetch(`${assetServerUrl}/sprite-sheets`);
     if (!response.ok) throw new Error(`status ${response.status}`);
     const body = (await response.json()) as { spriteSheets?: Array<{ name: string; slot?: string; icon?: string | null; hasTemplate?: boolean; hasImage?: boolean }> };
-    // Equipment sheets are named after the item that wears them, so the item's
-    // own icon is the right preview. A sheet image is a strip of frames and is
-    // unreadable as a thumbnail, so it is never used.
     const items = ((await assetCache.get("items")) || []) as Item[];
     const iconByItem = new Map(items.filter((i) => i?.name).map((i) => [i.name.toLowerCase(), iconPath(i.icon ?? null)]));
 
@@ -137,10 +123,6 @@ export async function listIcons(force = false): Promise<SpriteSheetOption[]> {
 /** Sprites, cached after the first successful fetch. */
 let spriteCache: SpriteSheetOption[] | null = null;
 
-/**
- * Ask the asset server which sprites exist. A spell's icon is one of these:
- * the hotbar and the spell book draw it from /sprite?name=<icon>.
- */
 export async function listSprites(force = false): Promise<SpriteSheetOption[]> {
   if (spriteCache && !force) return spriteCache;
   const assetServerUrl = process.env.ASSET_SERVER_INTERNAL_URL || process.env.ASSET_SERVER_URL;
@@ -254,13 +236,6 @@ export interface AbilitySetPlan {
   deleteIds: number[];
 }
 
-/**
- * Replace a creature's whole ability list with `incoming` (the editor saves a
- * creature's abilities together). Every entry is validated first; errors name
- * the entry by position and spell. An incoming id is only kept when it is one
- * of this template's own abilities - anything else is inserted fresh, so an
- * edit can never rewrite another creature's ability.
- */
 export function planAbilitySet(
   templateId: number,
   incoming: unknown,
@@ -324,8 +299,6 @@ export function validatePatrolPath(input: any, ctx: ValidationContext): string[]
   const errors: string[] = [];
   const map = String(input?.map ?? "").replace(".json", "");
   if (!ctx.maps.has(map)) errors.push(`Map "${map}" does not exist.`);
-  // The editor sends points as an array; accept a points_json string/array too
-  // so no client shape is rejected outright.
   let points = Array.isArray(input?.points) ? input.points : [];
   if (points.length === 0 && input?.points_json !== undefined && input?.points_json !== null && input?.points_json !== "") {
     if (Array.isArray(input.points_json)) points = input.points_json;

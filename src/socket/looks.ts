@@ -1,17 +1,3 @@
-/**
- * Which sprite looks a client holds, so an animation change can go out as a small pose packet.
- *
- * A look is the set of sheets a player is drawn with: the mount, the body, the head and the worn items' sheets,
- * named as in SPRITE_SHEET_ANIMATION. The client builds a player's layered animation from those names and, for a
- * pose change, only needs the pose name. So a viewer may be sent the pose alone exactly when the last full sheet
- * it was sent for that player has the same look. Anything else (a viewer that was never sent one, an equipment or
- * mount change, a sheet table that was edited) gets the full packet, which also records its look here.
- *
- * The record is a signature of the sheets that were really sent, not a revision counter, so it cannot claim more
- * than the client has: a packet built from older data records the older look and the next pose goes out in full.
- * It is kept per connection, so a new connection starts empty.
- */
-
 /** The sheet fields of a SPRITE_SHEET_ANIMATION packet, in the order they are written. */
 export const LOOK_FIELDS = [
   "mountSprite", "bodySprite", "headSprite", "armorHelmetSprite", "armorShoulderguardsSprite", "armorNeckSprite",

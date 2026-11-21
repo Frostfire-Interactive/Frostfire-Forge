@@ -6,11 +6,6 @@ import { MirrorStore, RemoteObjects, mirrorPlayers } from "../cluster/mirrors";
 import { characterDatabaseModule } from "./setup";
 import { FakeLink, linkPair, settle } from "./cluster-fakelink";
 
-// The ghost publisher and receiver, two Ghosts joined by a fake link pair (no
-// NodeLinks), and aoiEvent both ways. aoievent loads socket/aoi, which reaches
-// the database module: it is stubbed first, and aoievent is imported after the
-// stub (a static import would be hoisted above it).
-// The ignore list of "ignorer" (they ignore "speaker") is the only row it holds.
 mock.module("../controllers/sqldatabase", () => characterDatabaseModule({
   default: async (sql: string, params?: any[]) =>
     sql === "SELECT ignored FROM ignores WHERE username = ? ORDER BY created_at" && params?.[0] === "ignorer" ? [{ ignored: "speaker" }] : [],
@@ -24,10 +19,6 @@ const spatialGrid = (await import("../services/spatialgrid")).default;
 type Seen = { log: string[]; mirrors: Map<number, any> };
 const newSeen = (): Seen => ({ log: [], mirrors: new Map() });
 
-/**
- * A test kind: entities the owner holds in `world`; the mirror side records what it was told. A record with
- * `refuse` set is refused, the way the player kind refuses an id that is a local player.
- */
 function testKind(world: Map<number, any>, seen: Seen, name: GhostKindName = "loot"): GhostKind {
   return {
     name,
@@ -51,8 +42,6 @@ function testKind(world: Map<number, any>, seen: Seen, name: GhostKindName = "lo
   };
 }
 
-// Owner "a" mirrors to "b" whatever is at x >= 3000 (a stand-in for the 1250 px strip), and keeps a mirror
-// already there to x >= 2936 (the 64 px hysteresis), as mirrorTargets does with `previous`.
 const targets = (_map: string, x: number, _y: number, previous: ReadonlySet<string>) =>
   new Set(x >= (previous.has("b") ? 2936 : 3000) ? ["b"] : []);
 
@@ -588,8 +577,6 @@ test("forwardFromPlayer forwards from where the player stands, and builds the pa
     expect(fromWire(got[0].packets)).toEqual([packet]);
     expect(got[1]).toMatchObject({ bestEffort: false, speaker: "talker" });
 
-    // A stealthed player is heard by admins only, a vanished one by admins and their party: the neighbour is told
-    // which, and whose party, and keeps the rule for its own listeners.
     forwardFromPlayer(player({ username: "sneak", isStealth: true }), packets);
     forwardFromPlayer(player({ username: "sneak", isVanished: true }), packets);
     await settle();

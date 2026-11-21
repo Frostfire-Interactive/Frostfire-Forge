@@ -5,14 +5,6 @@ type Ask = (sql: string, values?: any[]) => Promise<any>;
 type Statement = { sql: string; values: any[] };
 type RunAll = (statements: Statement[]) => Promise<unknown>;
 
-/**
- * Gives every guild that has no guild_ranks rows yet the default ranks and
- * one member row per name on its old comma list: the leader at rank 0, the
- * rest at the lowest rank. Each guild is written as one transaction, so a
- * failure leaves it untouched and setup can run again. A name already in
- * guild_members (or listed by a newer guild) is skipped, since a player can
- * be in one guild only. Answers how many guilds it changed.
- */
 export async function migrateGuildRanks(ask: Ask, runAll: RunAll): Promise<number> {
     const guilds = ((await ask("SELECT id, leader, members FROM guilds")) || []) as Array<{ id: number; leader: string; members: string | null }>;
     const done = new Set((((await ask("SELECT DISTINCT guild_id FROM guild_ranks")) || []) as any[]).map((row) => Number(row.guild_id)));

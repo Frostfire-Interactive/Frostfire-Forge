@@ -75,9 +75,6 @@ test("a player still in the cache is written back", async () => {
   playerCache.remove(p.id);
 });
 
-// With CLUSTER unset the party writes stay as they were: the party id is neither read nor cleared. The receiver
-// cannot be imported by a test, so its gates are read from the source. Whitespace is collapsed so a re-indent does
-// not break the checks.
 const socket = join(import.meta.dir, "..", "socket");
 const flat = (text: string) => text.replace(/\s+/g, " ");
 const receiver = flat(readFileSync(join(socket, "receiver.ts"), "utf8"));

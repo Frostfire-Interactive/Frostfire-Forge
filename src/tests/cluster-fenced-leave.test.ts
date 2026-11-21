@@ -3,10 +3,6 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { characterDatabaseModule, withLeaveSaves } from "./setup";
 
-// Row 41(b) of cells phase 7: a leave (a disconnect or a handoff) writes the achievement progress, and keeps the
-// effects and sickness for a later login here, only while this node owns the player. server.ts cannot be imported (it
-// starts the server), so the leave paths are run from its source with the names they use handed in. The achievement
-// store, the effect manager and the sickness map are the real ones; only the database is stubbed.
 mock.module("../controllers/sqldatabase", () => characterDatabaseModule({
   default: async (_sql: string, _params?: any[]) => [],
 }));
@@ -100,8 +96,6 @@ function leftoversKept(username: string): { effects: boolean; sick: boolean } {
   const probe: any = { id: `probe-${username}`, username, stats: {} };
   const sick = resurrection.restoreOnLogin(probe);
   if (sick) {
-    // restoreOnLogin arms a timer and caches the probe: put the sickness back for the next look, and drop the probe
-    // (other test files share the player cache).
     resurrection.forgetSickness(probe);
     resurrection.saveOnDisconnect({ username, resurrectionSickUntil: probe.resurrectionSickUntil });
   }
@@ -492,9 +486,6 @@ describe("the kick save (a newer login of the account)", () => {
     expect(wrote).not.toContain("location by session");
   });
 
-  // The PLAYER_DISCONNECT listeners as the systems register them: some look up by the player's id (creatures, fishing,
-  // gathering, the cutscene's "inside"), some by its name (vendor buyback and trade end, the cutscene's seen views, the
-  // achievement flush). Each records the player it ran for and clears what it holds for it.
   const makeLeave = withNames(["listener", "Events"], `${functionOf("export function leaveKickedPlayer(").replace("export ", "")}
 return leaveKickedPlayer;`);
   const PLAYER_DISCONNECT = "onPlayerDisconnect";

@@ -98,12 +98,6 @@ const addDeathColumns = async () => {
   }
 };
 
-/**
- * Player subscriptions: the account columns the Gateway writes when a payment
- * comes in, the ticked locks, and the one status row the Gateway keeps. The
- * engine adds the same at start (systems/subscriptions.ts), so a database whose
- * setup was not run before an update is still safe.
- */
 const addSubscriptionColumns = async () => {
   log.info("Adding subscription columns to accounts table...");
   const columns = [
@@ -265,11 +259,6 @@ const createSpellsTable = async () => {
   await query(sql);
 };
 
-/**
- * cast_time was first created as INT, which rounds a 1.5 second cast to 2.
- * Cast times are fractional in the game (the cast timer and the heal
- * coefficient both use them as such), so let the column hold them.
- */
 const widenSpellCastTime = async () => {
   const rows = (await query(
     `SELECT DATA_TYPE as type FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'spells' AND COLUMN_NAME = 'cast_time'`,
@@ -633,8 +622,6 @@ const createDefaultWeather = async () => {
     log.debug("Default weather 'darkness' already exists - skipping");
   }
 
-  // "rainy" and "snowy" are drawn by name, as much as their precipitation says; "sandstorm" only in the desert
-  // zones, as harsh as its wind speed says.
   const more: Array<[string, string]> = [
     ["rainy", "('rainy', 0, 'left', 6, 85, 58, 50)"],
     ["snowy", "('snowy', 0, 'left', 4, 80, 25, 80)"],
@@ -862,19 +849,11 @@ const createTradeLogTable = async () => {
   `);
 };
 
-/**
- * Cluster mode: the grant ids (hand-overs and corpse money between nodes) whose items or money were written, each
- * written in the same transaction as what it gave (systems/grantwrites.ts, which also creates it when first used).
- */
 const createGrantWritesTable = async () => {
   log.info("Creating grant_writes table...");
   await query(`CREATE TABLE IF NOT EXISTS grant_writes (id VARCHAR(191) NOT NULL PRIMARY KEY, written_at BIGINT NOT NULL)`);
 };
 
-/**
- * Each player's home: the innkeeper it was set at, where they stood from that NPC, and when their
- * home item was last used (milliseconds since the epoch; 0: never). A player with no row has no home.
- */
 const createPlayerHomeTable = async () => {
   log.info("Creating player_home table...");
   await query(`
@@ -975,8 +954,6 @@ const createMountsTable = async () => {
   await query(sql);
 };
 
-// The cutscene editor's scenes (data is the whole scene document, JSON) and which characters have seen the ones that play
-// once. Same SQL as CUTSCENES_TABLE and CUTSCENE_VIEWS_TABLE (mysql) in systems/cutscenes.ts, which makes them at engine start too.
 const createCutscenesTables = async () => {
   log.info("Creating cutscenes tables...");
   await query(`
@@ -1102,10 +1079,6 @@ const createLootTableItemsTable = async () => {
   )`);
 };
 
-/**
- * Vendors, added after the first release: what a vendor pays for an item (copper, one unless set
- * otherwise), and what an NPC stocks (JSON: a list of item names and their prices there).
- */
 const addVendorColumns = async () => {
   const columns = [
     { table: "items", name: "sell_price", type: "INT NOT NULL DEFAULT 1" },
@@ -1122,14 +1095,6 @@ const addVendorColumns = async () => {
   }
 };
 
-/**
- * Consumables and inns, added after the first release: what using an item restores, whether it can
- * be used in combat, which item takes its player home, and which NPCs keep an inn.
- */
-/**
- * What a vendor charges for an item where the NPC sets no price of its own, added after vendors:
- * set at four times what vendors pay for it, as the NPC editor priced a newly stocked item.
- */
 const addBuyPriceColumn = async () => {
   const exists = (await query(
     `SELECT COUNT(*) as count FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'items' AND COLUMN_NAME = 'buy_price'`,
@@ -1317,8 +1282,6 @@ const createCreatureTables = async () => {
     rare_chance_pct DECIMAL(5,2) NOT NULL DEFAULT 0,
     rare_template_id INT DEFAULT NULL
   )`);
-  // Achievements (/achievements) and each player's progress toward them. Same SQL as ACHIEVEMENT_TABLES.mysql in
-  // systems/achievements/store.ts, which makes them at engine start too.
   await query(`CREATE TABLE IF NOT EXISTS achievements (
     id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
@@ -1341,8 +1304,6 @@ const createCreatureTables = async () => {
     PRIMARY KEY (username, achievement_id),
     INDEX idx_player_achievements_achievement (achievement_id)
   )`);
-  // Gathering areas (/gathering): where resource nodes spawn. Same SQL as GATHERING_AREAS_TABLE.mysql in
-  // systems/gathering/editor.ts, which makes it at engine start too.
   await query(`CREATE TABLE IF NOT EXISTS gathering_areas (
     id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
     map VARCHAR(191) NOT NULL,
@@ -1359,8 +1320,6 @@ const createCreatureTables = async () => {
     enabled TINYINT(1) NOT NULL DEFAULT 1,
     INDEX idx_gathering_areas_map (map)
   )`);
-  // Tile footprints (the map editor's Footprints tab): the prints players leave on each tile of a tileset. Same SQL as
-  // TILE_FOOTPRINTS_TABLE.mysql in systems/footprints.ts, which makes it at engine start too.
   await query(`CREATE TABLE IF NOT EXISTS tile_footprints (
     tileset VARCHAR(64) NOT NULL,
     tile_id INT NOT NULL,
@@ -1370,8 +1329,6 @@ const createCreatureTables = async () => {
     fade_s INT NOT NULL,
     PRIMARY KEY (tileset, tile_id)
   )`);
-  // Fishable tiles (the map editor's Fishing tab): what each tile of a tileset gives, and the items that fish it. Same
-  // SQL as FISHING_TILES_TABLE.mysql in systems/fishing/index.ts, which makes it (and adds tools) at engine start too.
   await query(`CREATE TABLE IF NOT EXISTS fishing_tiles (
     tileset VARCHAR(64) NOT NULL,
     tile_id INT NOT NULL,
@@ -1530,12 +1487,6 @@ const createIndexes = async () => {
   log.success("Index creation complete!");
 };
 
-/**
- * Clean break from the stub quest system: drop legacy tables/columns on
- * existing databases. Drop-only — table creation always happens afterwards
- * in setupDatabase, so the quests tables exist no matter what state the
- * database was in before.
- */
 const dropLegacyQuestTables = async () => {
   let dropQuests = false;
   try {
@@ -1598,13 +1549,6 @@ const dropLegacyQuestTables = async () => {
   }
 };
 
-/**
- * What each character table needs besides `character_id`. `unique`: the columns that, with it, are unique (what the
- * account-name key was unique together with); a table with a list gets a unique key, one without only an index.
- * `nameKey`: the table's primary key was on the account name: it becomes a unique key (below). `twins`: the id twins of
- * its name-pointer columns. They hold no foreign key: a log row outlives the character it names. `guilds` is not a
- * character table but has a leader to point at.
- */
 const CHARACTER_KEY_SPECS: Record<string, { unique?: string[]; nameKey?: string[]; twins?: string[] }> = {
   inventory: {},
   stats: { unique: [] },
@@ -1660,14 +1604,6 @@ const addIndexIfMissing = async (table: string, name: string, sql: string) => {
   if (!(await indexExists(table, name))) await query(sql);
 };
 
-/**
- * Many characters per account: the `characters` table, accounts.active_character_id, and a `character_id` (foreign key,
- * cascading) on every character table, as the add-column and add-index steps above: each part is added only when it is
- * missing, so this is safe to run on a database that has it, and on one that has rows. Existing rows get no
- * character_id here (a later migration fills it); the keys that were on the account name are therefore not dropped but
- * eased: a primary key on it becomes a unique key (which takes NULL, so a character row without the account name is
- * allowed) and the column may be NULL. The primary keys on character_id are for when every row has one.
- */
 const addCharacterKeys = async () => {
   log.info("Adding characters table and character_id keys...");
   // accounts.id is INT here, and a foreign key must match its column's type.

@@ -69,10 +69,6 @@ export interface ClusterTiming {
   censusMs?: number;
 }
 
-/**
- * The node-to-node links (spec §1). Tests give a loopback transport and shorter pings. The hello is signed with the
- * link key derived from CLUSTER_LINK_SECRET (clusterkeys.ts), never with the client-ticket secret.
- */
 export interface ClusterLinkOptions {
   /** null: no node links (tests that do not need them, or NODE_LINK_PORT=0). */
   transport: LinkTransport | null;
@@ -93,23 +89,9 @@ export interface CreaturePosition {
 const BEAT_MS = 1000;
 // Every 10 s the block table is read again, in case a "blocks-changed" message was missed.
 const REFRESH_MS = 10_000;
-// A block no one owns waits for the coordinator to give it out (to this node or another). While a
-// coordinator holds the lock it waits as long as that takes (a cold start holds the split until the
-// nodes are up); this long without one seen, this node spawns there itself.
 const UNOWNED_GRACE_MS = 10_000;
-// The block mover reads the orders of the blocks it gave away this often (well inside ORDER_KEEP_MS, 300 s), and
-// tries its seed again this often until it succeeds.
 const MOVER_REVIEW_MS = 5_000;
-// Load per block is players + 0.1 x active creatures + 0.15 x the players each player sees (spec §2): every pair
-// that sees each other costs a move sent each tick and a share of the pose changes sent to each viewer, which a
-// crowd pays and a spread of the same players does not.
-// A creature costs far less than a player (a player's frames are written per socket).
 const CREATURE_LOAD = 0.1;
-/**
- * Load a player adds to its block for each player it sees. Weighed by what a pair costs the main thread: about 79 us
- * per ordered pair (a pose change is sent to each viewer, about 175 us a write at 0.45 changes a second) against about
- * 480 us per player, i.e. about 0.15 (stall2500 report, fix 3). It was 0.02 when a pair cost only its movement entry.
- */
 export const VISIBLE_PAIR_LOAD = 0.15;
 
 interface RunningNode {
@@ -166,8 +148,6 @@ let creatures: (() => Iterable<CreaturePosition>) | null = null;
 let creaturesTotal: (() => number) | null = null;
 const blockListeners = new Set<(maps: string[]) => void>();
 
-// Mirror moves go out right after each game tick (spec §3). Registered once: the loop has no way to
-// remove a hook, and the call does nothing until startCluster attaches the ghosts.
 gameLoop.addAfterTickHook(() => ghosts.flushTick());
 
 const bare = (map: string) => map.replace(/\.json$/, "");
@@ -175,10 +155,6 @@ const bare = (map: string) => map.replace(/\.json$/, "");
 /** How long the directory keeps a handed-off player under this node while the new node has not claimed them. */
 export const HANDOFF_PRESENCE_HOLD_MS = 10_000;
 
-/**
- * What the engine does for the cluster. The receiver sets these at load: it owns the player sessions, and this
- * module does not import it.
- */
 export interface EngineHooks {
   /** A login claimed here: takes the owner epoch (adoptOwnerEpoch). Answers the epoch the entry holds now, or null. */
   claimed(player: any, entry: DirectoryEntry, directory: PlayerDirectory): Promise<number | null>;
@@ -251,10 +227,6 @@ const RESTART_KEPT_MS = 60_000;
 const whitelistKey = (): string => `cells:whitelist:${regionId()}`;
 const restartKey = (): string => `cells:restart:${regionId()}`;
 
-/**
- * Tells the region's other nodes what an admin ordered, and keeps what a node that starts later has to join. A node
- * that is down misses a shutdown, which is not kept: it was stopped already. Does nothing outside cluster mode.
- */
 export async function sendServerOrder(order: ServerOrder): Promise<void> {
   const bus = clusterBus();
   const store = clusterStore();
@@ -297,12 +269,6 @@ export function setFenceExit(exit: (code: number) => void): (code: number) => vo
   return previous;
 }
 
-/**
- * This node's run is over (spec §7): the coordinator gave its blocks to other nodes while it was stalled, or its run
- * was taken. It must not go on simulating them. Its players are sent away (their saves are fenced on their owner
- * epochs, so a save from a player another node owns now writes nothing), and the process exits for its supervisor to
- * start a new run. Before the exit the grants it still checks are logged by name (grants.detach).
- */
 function fenceNode(self: string, why: string, exitMs: number): void {
   log.error(`Cluster node ${self} stops (${why}): its players are sent away, and the process exits in ${exitMs} ms`);
   for (const p of Object.values(playerCache.list()) as any[]) {
@@ -320,11 +286,6 @@ function fenceNode(self: string, why: string, exitMs: number): void {
   }, exitMs);
 }
 
-/**
- * Refuses a node whose row copies are kept in its own process. The trade host writes the rows of a player on
- * another node, and that node reads them from its copy: with a copy of its own, the swap never reaches it, and
- * its next write puts the old coins and items back. Names the variable and never its value.
- */
 export function requireSharedCache(env: Record<string, string | undefined> = process.env): void {
   if (!usesSharedCache(env)) throw new Error("Cluster mode needs CACHE=redis: the nodes must share one copy of the player rows");
 }
@@ -344,22 +305,14 @@ export async function startCluster(
   const teardown: Teardown = { quiet: [], links: [], rest: [] };
   if (ownsStore) teardown.rest.push({ what: "close its store", run: () => store!.close() });
   try {
-    // Every start is held to it, whoever made the store: a node that hands in its own store still reads the
-    // player rows of another node from its own copy of them.
     requireSharedCache();
-    // The link, bus and store keys (H2, and security review H1): a node without CLUSTER_LINK_SECRET does not start, so
-    // no link or bus runs unsigned and no store record goes unsealed.
     const keys = requireClusterKeys();
-    // Every record that carries authority (grants, snapshots, tombstones, run announcements, settle marks, move orders)
-    // is sealed with the store key on its way in and opened on its way out, for everything made below (storeseal.ts).
     store = sealStore(store, keys.store);
     // Phase 7: the store's health is read from the start. Handoffs, delivery, presence and snapshots ask it (Task 19).
     storeHealth.attach(store, timing.healthPollMs);
     teardown.rest.push({ what: "stop watching its store", run: () => storeHealth.detach() });
     const registry = new NodeRegistry(store);
     const blocks = new BlockTable(store);
-    // The node stops acting as owner once its lease has lapsed or its run was taken (nodes.ts): no grant is written
-    // to the rows, no snapshot is written and nothing spawns here meanwhile.
     const mayAct = () => registry.leaseValid() && !registry.taken();
     // Fenced once, by whichever finds it first: the tombstone watch, a node-dead naming this run, or the beat.
     let fenced = false;
@@ -371,15 +324,8 @@ export async function startCluster(
       if (fencedNode) fencedNode.fenced = true;
       fenceNode(self, why, timing.fenceExitMs ?? FENCE_EXIT_MS);
     };
-    // Phase 7: grants parked for players are recovered by their owner (Task 18), before the links come up: a call
-    // answered over them may park one. Each is listed under this run, for adoption should the run die.
     grants.attach(store, self, { run: startedAt, mayAct: () => mayAct() && !fenced });
     teardown.rest.push({ what: "detach its grants", run: () => grants.detach() });
-    // The links come first, and their handlers before their listener: a neighbour may dial as soon as it reads
-    // an announcement (a stale one, from this node's last run, may still be there), and a frame that finds no
-    // handler is lost. A port in use ends the start before anything else is attached (a node without links
-    // would show a world cut at every border).
-    // The block mover, made with the links (it answers BLOCK_MOVE over them); null on a node without links.
     let mover: BlockMover | null = null;
     let nodeLinks: NodeLinks | null = null;
     let followBlocks = () => {};
@@ -389,8 +335,6 @@ export async function startCluster(
     if (links?.transport) {
       const linked = new NodeLinks({ self, secret: keys.link, transport: links.transport, nodeInfo: (id) => registry.info(id), pingMs: links.pingMs, deadMs: links.deadMs });
       nodeLinks = linked;
-      // Dynamic: aoievent reaches socket/aoi, which loads much of the engine (no cycle at module load, and
-      // a node without links, or the cluster off, never loads it).
       const { attachAoiEvents, detachAoiEvents } = await import("./aoievent");
       const { loadGhostKinds } = await import("./kinds");
       await loadGhostKinds();
@@ -409,11 +353,7 @@ export async function startCluster(
         new BorderBand((map) => blocks.ownersOf(map), self, () => blocks.maps()),
       );
       attachAoiEvents(linked, (map) => blocks.ownersOf(map));
-      // Calls between nodes (actions across a border, spec §4). Their handlers are registered at module
-      // load by the modules that own each entity kind, and do nothing before this.
       linkCalls.attach(linked);
-      // Phase 6: a call or delivery that reaches this node for an entity it just handed off goes on to the new
-      // owner. The forward table's keys are lowercase; a delivery names the player as it was sent.
       linkCalls.setRedirect(redirectCall(forwardTable));
       const previousForwarder = delivery.setForwarder((username) => forwardTable.to(`user:${username.toLowerCase()}`));
       teardown.links.push({
@@ -424,8 +364,6 @@ export async function startCluster(
           forwardTable.clear();
         },
       });
-      // The handoffs, the trade's peer-down and the DoT credit start here (registered at module load, Deviation 24).
-      // Newest first at teardown: the hooks are undone before the forwarding stops, both before the calls detach.
       const undoHooks = runLinkHooks({
         calls: linkCalls,
         links: linked,
@@ -434,14 +372,9 @@ export async function startCluster(
         store,
       });
       teardown.links.push({ what: "undo its link hooks", run: () => undoHooks() });
-      // Phase 7: loot, chests, skeletons and tornadoes move with their block (Task 16). The creature slots' part is
-      // registered by the creature module's link hook, which ran above.
       const { registerObjectMoves } = await import("./kinds/objectmoves");
       const undoObjectMoves = registerObjectMoves({ ghosts, now: Date.now, blockOf: (map, x, y) => blocks.blockOf(map, x, y) });
       teardown.links.push({ what: "unregister its object moves", run: () => undoObjectMoves() });
-      // The old owner carries a move order out; the new owner answers BLOCK_MOVE (Task 20). The handler is set before
-      // the listener starts. Undone before the link calls detach.
-      // The sealed store, held for the tombstone read below (a closure loses the narrowing of `store`).
       const moveStore = store;
       const blockMover = new BlockMover({
         self,
@@ -467,8 +400,6 @@ export async function startCluster(
       const stopMover = blockMover.start();
       teardown.links.push({ what: "stop answering block moves", run: () => stopMover() });
       await linked.start();
-      // Link with the nodes whose blocks touch ours, on every map; again whenever the table changes. There
-      // is no table to follow until it is read below.
       followBlocks = () => {
         const follow = () => linked.want(linkPartners(blocks.maps().map((map) => blocks.ownersOf(map)), self, liveNodes));
         follow();
@@ -490,8 +421,6 @@ export async function startCluster(
     // What happens here that the region's other nodes show their own players too (cluster/peernews.ts).
     peerNews.attach(bus, self, regionId());
     teardown.rest.push({ what: "detach the peer news", run: () => peerNews.detach() });
-    // A cached list written here (an editor's save): the shared cache holds it, and the region's other nodes read
-    // again what they keep of it in memory (the NPCs they stream, the item sheets, the cutscene triggers).
     const ASSET_CHANGED = "asset-changed";
     const stopTellingWrites = onWrite((key) => void peerNews.tell(ASSET_CHANGED, key === null ? { all: true } : { key }));
     peerNews.on(ASSET_CHANGED, (news: { key?: unknown; all?: unknown }) => {
@@ -502,9 +431,6 @@ export async function startCluster(
     // Phase 7: trade settle marks are shared (Task 20b).
     tradeSettle.attach(store);
     teardown.rest.push({ what: "detach the settle marks", run: () => tradeSettle.detach() });
-    // One node at a time writes a player's rows (Task 5): every batch takes the cluster lock of its players, and a
-    // handoff takes it with no wait (Task 17). A player on this node still gets the work done while Redis is away.
-    // The locks are the characters' (char:<id>), so two characters of one account never wait for each other.
     const locks = new PlayerLocks(store, self);
     const localLockKey = (key: string) => {
       if (key.startsWith("name:")) return playerCache.getByUsername(key.slice(5)) != null;
@@ -527,20 +453,13 @@ export async function startCluster(
       dropForeignFrom: (home) => peerDeath?.dropForeignFrom(home) ?? 0,
       playersLost: (peer, restarted) => playersLost?.(peer, restarted),
       fence,
-      // Only for a notice the store confirms (security review M1): the grants of a run that is not over stay with it.
-      // The fenced check is not needed for safety: adoptFrom throws once mayAct is false, which a fence makes it.
-      // It spares the adoption a read of the store and the error line that throw would log.
       adopt: (nodeId, runStartedAt) => {
         if (fenced) return;
         void grants.adoptFrom(nodeId, runStartedAt)
           .catch((error) => log.error(`The hand-overs of run ${runStartedAt} of node ${nodeId} could not be adopted: ${error}`));
       },
     });
-    // A notice is acted on once the store confirms it: a tombstone (or, for a restart, a later announcement) names the
-    // run. A notice for this run itself fences only then (NodeDeath).
     death.attach(bus);
-    // The coordinator's "block-move { id }" for an order this node is the old owner of (Task 20). A node without
-    // links ignores it, and its order times out at the coordinator.
     const moverHere = mover;
     if (moverHere) bus.on("block-move", (data) => moverHere.onBusMessage(data));
     blocks.attach(bus);
@@ -556,9 +475,6 @@ export async function startCluster(
     // What this node held when it last stopped (or died) is not true any more: no one is on it yet.
     const stale = await directory.sweepNode(self);
     if (stale > 0) log.warn(`Cleared ${stale} directory entries left by this node's last run`);
-    // A login here displaces a session another node still holds: that node closes it.
-    // The directory is kept by character name (names are one character's at a time); a login also displaces the
-    // account's other characters elsewhere, as one account plays one character at a time.
     const stopPresence = trackPresence(directory, (previous, username, value) => {
       const accountId = Number(value?.accountId);
       delivery.runOnPlayerAt(previous.nodeId, previous.playerId, "displaced-login", Number.isSafeInteger(accountId) && accountId > 0 ? { username, accountId } : { username })
@@ -573,8 +489,6 @@ export async function startCluster(
       onClaimed: (value, entry) => (engine ? engine.claimed(value, entry, directory) : Promise.resolve(null)),
     });
     teardown.rest.push({ what: "stop tracking presence", run: () => stopPresence() });
-    // Phase 7: each owned player's place and stats go to Redis, for a login after this node dies (Task 11). Only while
-    // the node may act as owner: a node whose lease lapsed writes none, as its players may be owned elsewhere by now.
     const stopSnapshots = new SnapshotWriter(store, () => (mayAct() && !fenced ? Object.values(playerCache.list()) : []), {
       everyMs: timing.snapshotMs ?? SNAPSHOT_EVERY_MS,
     }).start();
@@ -617,12 +531,7 @@ export async function startCluster(
     teardown.rest.push({ what: "wait for its beat", run: () => Promise.all([node.beating, node.refreshing]) });
     await beat(node);
     await watchPeers(node);
-    // The open orders this node is the old owner of are read before anything spawns here (Task 20): until the read
-    // succeeds the gate stays shut, and the mover's timer tries it again.
     await seedMover(node);
-    // A beat (or re-read) that has not finished (Redis is slow) is not run over by the next one. The
-    // re-read has its own timer, so a slow one cannot hold up the beat that keeps the node alive.
-    // The beat also looks for the coordinator, which ends the grace for unowned blocks (watchCoordinator).
     node.timers.push(node.lag.start());
     node.timers.push(setInterval(() => { node.beating ??= beat(node).finally(() => { node.beating = null; }); }, timing.beatMs ?? BEAT_MS));
     node.timers.push(setInterval(() => { node.refreshing ??= refresh(node).finally(() => { node.refreshing = null; }); }, timing.refreshMs ?? REFRESH_MS));
@@ -677,11 +586,6 @@ interface Undo {
   run: () => unknown;
 }
 
-/**
- * What startCluster attached, in three lists, each undone newest first and the lists in this order: the
- * timers and the block listener; the ghosts and the links (mirrors are dropped before the links go, so
- * nothing sends or relays over a link that is closing); then the rest.
- */
 interface Teardown {
   quiet: Undo[];
   links: Undo[];
@@ -717,10 +621,6 @@ async function tearDown(self: string, teardown: Teardown): Promise<void> {
   }
 }
 
-/**
- * A map made while the cluster runs (the map editor's New map, on this node or another, socket/handlers/editors.ts),
- * once this node has loaded it: it joins the region's maps as those loaded at start did. Nothing outside cluster mode.
- */
 export async function clusterMapAdded(name: string, widthPx: number, heightPx: number): Promise<void> {
   const node = running;
   if (!node) return;
@@ -803,17 +703,9 @@ export function sharePanelActivity(entry: unknown): void {
   running?.census.shareActivity(entry);
 }
 
-/**
- * Whether this node spawns creatures and gathering nodes at (x, y) of the map: yes in
- * its own blocks, no in another node's, and in a block no one owns only once the start
- * grace is over with no coordinator seen. Always yes outside cluster mode.
- */
 export function spawnsHere(map: string, x: number, y: number): boolean {
   const node = running;
   if (!node) return true;
-  // Phase 7: nothing spawns while the node may not act as owner, nor before the mover's seed has run.
-  // A shut gate is noted, so the renewal that opens it again tells the spawners (watchSpawnGate) even when no
-  // beat or re-read saw it shut in between.
   if (!spawnGateOpen(node)) {
     node.gateOpen = false;
     return false;
@@ -875,11 +767,6 @@ async function reviewMover(node: RunningNode): Promise<void> {
   if (mover.givenCount() < before && running === node && !node.stopped) tellBlockChanges(node.maps);
 }
 
-/**
- * Called with the maps whose block table changed (a "blocks-changed" message,
- * the 10 s re-read, a write), at once; and with every map when the start grace
- * ends (no coordinator seen for its length). Returns a function that stops it.
- */
 export function onBlocksChanged(listener: (maps: string[]) => void): () => void {
   blockListeners.add(listener);
   return () => { blockListeners.delete(listener); };
@@ -939,10 +826,6 @@ async function beat(node: RunningNode): Promise<void> {
   await watchCoordinator(node);
 }
 
-// Blocks no one owns wait while a coordinator holds the lock: it gives them out (to this node or another),
-// however long its settle takes. The grace counts down only while none is seen, so this node spawns in them
-// itself only when there is no coordinator. A look that fails (Redis away; the beat has logged it) keeps
-// what was last seen.
 async function watchCoordinator(node: RunningNode): Promise<void> {
   const now = Date.now();
   if (!node.coordinatorSeen) node.graceLeft = Math.max(0, node.graceLeft - (now - node.checkedAt));
@@ -972,9 +855,6 @@ async function refresh(node: RunningNode): Promise<void> {
   await watchPeers(node);
 }
 
-// The live nodes of the region, for the links: a block move runs between its old and its new owner, and the rebalancer
-// gives a node that owns no block one of the most loaded node's, which is no neighbour of it. A read that fails keeps
-// the links as they were.
 async function watchPeers(node: RunningNode): Promise<void> {
   try {
     const live = (await node.registry.live()).filter((info) => info.regionId === regionId()).map((info) => info.nodeId);

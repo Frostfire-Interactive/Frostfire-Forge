@@ -4,11 +4,6 @@ import { getIconUrl } from "../modules/spriteSheetManager";
 import assetCache from "../services/assetCache";
 import { tableCache } from "../services/datacache";
 
-/**
- * A drop chance as a percentage, 0-100. Only a missing or non-numeric value
- * defaults to 100: 0 is a real setting (never drops), not "unset".
- * DECIMAL columns come back from MySQL as strings, hence Number().
- */
 export function normalizeDropChance(value: unknown): number {
   if (value === null || value === undefined || value === "") return 100;
   const chance = Number(value);
@@ -21,8 +16,6 @@ interface LootRow { id: number; item_name: string; min_quantity: number; max_qua
 /** A loot table with its rows, as list() and get() give it. */
 interface LootTable { id: number; name: string; created_at: any; items: LootRow[] }
 
-// Every loot table with its rows. Reads are answered from these, and every
-// change below is written to the database and then to them.
 const rows = tableCache<LootTable>("loot_tables", async () => {
   let tables: any[];
   let items: any[];
@@ -53,20 +46,11 @@ const holding = (itemId: number) => (table: LootTable) => table.items.some(isRow
 const sameName = (a: string, b: string) =>
   (process.env.DATABASE_ENGINE || "mysql") === "mysql" ? String(a).toLowerCase() === String(b).toLowerCase() : a === b;
 
-/**
- * Whether the database stores a row's numbers and quality as they were given:
- * whole numbers in the INT columns, a chance of at most two decimal places in
- * DECIMAL(5,2), a quality that fits VARCHAR(50). Anything else it rounds or
- * clips its own way, and what it holds then cannot be worked out here.
- */
 const storedAsGiven = (row: { min_quantity: number; max_quantity: number; drop_chance: number; quality: string }) =>
   [row.min_quantity, row.max_quantity].every((n) => Number.isInteger(n) && Math.abs(n) <= 2147483647) &&
   Math.round(row.drop_chance * 100) / 100 === row.drop_chance &&
   String(row.quality).length <= 50;
 
-// One change at a time. Each works from the table held and puts back what its
-// write left, so two running side by side would each put a table back without
-// the other's change; and create is a check followed by a write.
 let changing: Promise<unknown> = Promise.resolve();
 function oneAtATime<T>(change: () => Promise<T>): Promise<T> {
   const run = changing.then(change, change);
@@ -74,11 +58,6 @@ function oneAtATime<T>(change: () => Promise<T>): Promise<T> {
   return run;
 }
 
-/**
- * A statement that changes the tables. One that throws may still have been
- * applied (a timeout, say), so what is held is no longer known to be what the
- * database holds: it is forgotten, and the next read loads the tables again.
- */
 async function write(sql: string, values: any[]): Promise<any> {
   try {
     return await query(sql, values);
@@ -129,8 +108,6 @@ const lootTable = {
       // A row for a table that is not there would be in no table at all, where nothing could show or remove it.
       if (!(await rows.find(byId(tableId)))) return { error: `Loot table ${tableId} not found` };
       const result = await write("INSERT INTO loot_table_items (loot_table_id, item_name, min_quantity, max_quantity, drop_chance, quality) VALUES (?, ?, ?, ?, ?, ?)", [tableId, row.item_name, row.min_quantity, row.max_quantity, row.drop_chance, row.quality]);
-      // The new row is what was written and the id the database answered with. An answer without one, or a number
-      // the database stores its own way, leaves the row unknown: the next read loads the tables again.
       const id = Number(result?.lastInsertRowid);
       if (Number.isInteger(id) && id > 0 && storedAsGiven(row)) await change(byId(tableId), (held) => [...held, { id, ...row }]);
       else await rows.drop();

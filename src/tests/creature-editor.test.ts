@@ -3,8 +3,6 @@ import { databaseModule } from "./setup";
 
 mock.module("../controllers/sqldatabase", () => databaseModule({ default: async () => [] }));
 
-// Generated at server start (`bun create-config`) and gitignored, so CI has
-// no copy on disk. Mock the values instead of requiring the file.
 mock.module("../config/settings.json", () => ({
   default: { creatures: {} },
   creatures: {},
@@ -189,8 +187,6 @@ describe("path, pool and link group validation", () => {
 
   test("editor-saves keep their points instead of wiping the path", () => {
     const pts = [{ ...tile(1, 1), wait_ms: 0 }, { ...tile(2, 1), wait_ms: 500 }];
-    // The editor posts points as an array; the database stores points_json.
-    // Both shapes must survive normalization or every save empties the path.
     expect(normalizePatrolPath({ id: 3, map: "main", loop: 1, points: pts }).points).toEqual(pts);
     expect(normalizePatrolPath({ id: 3, map: "main", loop: 1, points_json: JSON.stringify(pts) }).points).toEqual(pts);
   });

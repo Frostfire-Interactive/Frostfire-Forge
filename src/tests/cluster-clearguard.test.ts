@@ -1,8 +1,6 @@
 import { afterEach, expect, mock, test } from "bun:test";
 import { databaseModule } from "./setup";
 
-// The guard the node's start and /shutdown and /restart clear through (cluster/clearguard.ts). It loads the cluster
-// module, which reaches the database: stubbed first.
 mock.module("../controllers/sqldatabase", () => databaseModule({ default: async (_sql: string, _params?: any[]) => [] }));
 const { clearShared } = await import("../cluster/clearguard");
 

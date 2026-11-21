@@ -1,18 +1,3 @@
-/**
- * One-off migration from the legacy entity system to creatures.
- *
- *   bun --env-file=.env.development ./src/utility/migrate_entities_to_creatures.ts [--dry-run] [--drop-legacy]
- *
- * --drop-legacy drops `entities` and `entity_spawn_points` after the migration
- * succeeds. It is ignored with --dry-run and cannot be undone.
- *
- * Every `entities` row becomes a creature template plus a spawn at the
- * entity's own position. Every `entity_spawn_points` row becomes an extra
- * spawn for the template created from its entity. Rows that were already
- * migrated (same name, map and level as an existing template) are skipped, so
- * the script is safe to run more than once. Anything that cannot be carried
- * over exactly is logged.
- */
 import query from "../controllers/sqldatabase";
 import log from "../modules/logger";
 import { YARD_PX, PLAYER_RUN_PX_PER_SEC, WOW_RUN_YD_PER_SEC } from "../systems/creatures/constants";

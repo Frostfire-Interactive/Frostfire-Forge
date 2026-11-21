@@ -2,10 +2,6 @@ import { sharedRedis } from "./redisclient";
 
 type RedisValue = any;
 
-// Who wants to know when a key is written, for what they keep of it in memory (the sheets of the items, say). A write
-// made by another process is heard only when it is told here (changedElsewhere): in a cluster, a node tells the
-// region's others of each write it makes (cluster/index.ts). Anything else on a shared Redis is not heard: a listener
-// that must see those too refreshes on a timer as well.
 const changeListeners = new Map<string, Set<(elsewhere: boolean) => void>>();
 // Who wants to know of every write made through this process's cache, whatever its key.
 const writeListeners = new Set<(key: string | null) => void>();
@@ -47,21 +43,13 @@ export function onWrite(listener: (key: string | null) => void): () => void {
   return () => void writeListeners.delete(listener);
 }
 
-/**
- * `key` was written by another process on the shared cache (null: it was cleared). Its listeners here hear it as a
- * write of their own; onWrite's do not, since it was not made here.
- */
 export function changedElsewhere(key: string | null): void {
   if (key === null) for (const each of changeListeners.keys()) heard(each, true);
   else heard(key, true);
 }
 
-// The key of a Redis value's stamp, written with the value (RedisCacheService.add). Outside the cache's prefix, so
-// listing the cache does not see it, and in the value's hash slot (the braces), so the two are set in one command.
 const stampOf = (fullKey: string) => `{${fullKey}}#stamp`;
 
-// What a stamp holds: made of the text, so writing the same value again (every node writes the lists when it starts)
-// leaves the stamp as it was and no holder of the value reads it again.
 const digestOf = (text: string) => `${text.length}:${Bun.hash(text)}`;
 
 interface CacheService {
@@ -77,11 +65,6 @@ interface CacheService {
   setNested(key: string, nestedKey: string, value: RedisValue): Promise<void>;
   getAll(): Promise<Record<string, RedisValue>>;
   close(): void;
-  /**
-   * Calls `listener` after `key` is written or removed through this cache (clear() counts for every key), or by
-   * another node of the cluster (`elsewhere`, changedElsewhere). A listener that writes the key itself does so only
-   * for a write made here: one for every write would answer each node's write with its own, and back.
-   */
   onChange(key: string, listener: (elsewhere: boolean) => void): void;
 }
 
@@ -254,8 +237,6 @@ export class RedisCacheService implements CacheService {
 
   async add(key: string, value: any) {
     const data = typeof value === "string" ? value : JSON.stringify(value);
-    // The value and its stamp in one command: a process holding a copy of the value learns from the stamp alone
-    // whether it changed (getIfChanged).
     await this.client.send("MSET", [this.prefixed(key), data, stampOf(this.prefixed(key)), digestOf(data)]);
     changed(key);
   }
@@ -272,16 +253,7 @@ export class RedisCacheService implements CacheService {
     }
   }
 
-  /**
-   * Like get, but when the value is the one `digest` was made of, nothing is read, parsed or copied and `same` is
-   * true. Lets a holder of a big list see that it did not change without paying for a copy of it: the digest is the
-   * value's stamp (add) and length, a few bytes, where reading the value (the NPC list is tens of MB) would hold the
-   * event loop for as long as it takes to arrive.
-   */
   async getIfChanged(key: string, digest: string | null): Promise<{ digest: string; same: boolean; value?: any }> {
-    // The stamp is read before the value. A write between the two leaves the newer value under the older stamp, and
-    // the next look reads the value again; a newer stamp is never kept with an older value. The length catches a
-    // write that left the stamp as it was.
     const [stamp, length] = await Promise.all([
       this.client.get(stampOf(this.prefixed(key))),
       this.client.send("STRLEN", [this.prefixed(key)]),

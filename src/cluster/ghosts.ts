@@ -6,21 +6,6 @@ import type { LinkSender } from "./linktransport";
 import { MirrorStore, type MirrorEntry } from "./mirrors";
 import type { BorderBand } from "./strip";
 
-// Mirroring (spec §3). The owner side looks at its entities every 100 ms and
-// tells each neighbour that should hold a copy: GHOST_SPAWN when one comes
-// within reach, GHOST_STATE when what it shows changes, GHOST_DESPAWN when it
-// leaves; positions go every tick as GHOST_MOVE datagrams. The receiving side
-// hands each message to the adapter of that kind. Nothing here knows what a
-// player or a creature is: kinds plug in through GhostKind.
-
-/**
- * How long a mirror that was dropped because its entity arrived here is refused a GHOST_SPAWN. Ghost frames ride the bulk
- * lane of the link, behind a backlog of up to 4 x 4 MB (wtlinks.ts), while the handoff or block move that brought the
- * entity here rides the control lane: a spawn sent before the entity left its old node can land after the entity arrived
- * here, and even after it died or moved on, and would make a mirror nothing ever despawns. A minute is well above what
- * that backlog takes to drain at link speed. An entity that really goes back to that peer clears its tombstone at once
- * (handOver), so a legitimate spawn is not refused.
- */
 export const GHOST_TOMBSTONE_MS = 60_000;
 /** The most tombstones kept; the oldest go first. */
 const GHOST_TOMBSTONE_MAX = 4096;
@@ -46,11 +31,6 @@ export interface GhostMotion {
 
 export interface GhostKind {
   name: GhostKindName;
-  /**
-   * Owner side: every entity of this kind this node owns (the publisher picks those near a border). Given the
-   * border band, a kind may leave out the entities outside it: one that is not listed is not visited, and the
-   * scan releases any mirror it had.
-   */
   candidates(band?: BorderBand): Iterable<GhostCandidate>;
   /** Owner side: the full record a neighbour needs to show it (JSON-safe). */
   snapshot(id: string | number): unknown | null;
@@ -58,17 +38,7 @@ export interface GhostKind {
   state?(id: string | number): Record<string, unknown> | null;
   /** Owner side: position for GHOST_MOVE. Kinds that never move leave it out. */
   motion?(id: string | number): GhostMotion | null;
-  /**
-   * The kind calls `Ghosts.touch(kind, id)` whenever an entity's position, direction or movement flags change. The
-   * tick then reads `motion` only for touched entities, a fresh spawn, and entities whose keyframe is due. A write
-   * the kind misses is shown at the next keyframe at the latest. Touched entities go before the due keyframes, so a crowd
-   * that fills the budget every tick delays the keyframes of unmoved entities. A kind that leaves this out is read every tick.
-   */
   dirtyMarks?: boolean;
-  /**
-   * Receiving side: a new mirror, or a known one sent again (update it in place). Return false to refuse it
-   * (its id is a local entity here, say): nothing is recorded, so no move, update or despawn follows for it.
-   */
   spawn(record: any, from: string): boolean | void;
   move?(id: string | number, x: number, y: number, dir: number, flags: number): void;
   /** Receiving side: only the fields that changed. A null value is a field the owner dropped (or set to null): clear it. */
@@ -168,10 +138,6 @@ export class Ghosts {
   private kinds = new Map<GhostKindName, GhostKind>();
   /** Entities with at least one peer, by kind, then by id as the kind gives it. */
   private tracked = new Map<GhostKindName, Map<string | number, Tracked>>();
-  /**
-   * The same entities in a list, least recently sent a move first (flushTick's order). A list, not a Set: an entity
-   * that moves goes to the back every tick, and a Set that loses and gains a member each time churns its table.
-   */
   private plain = new TrackedList();
   /** The entities of kinds that mark their moves: flushTick reads only the dirty ones and those whose keyframe is due. */
   private aware = new TrackedList();
@@ -214,8 +180,6 @@ export class Ghosts {
   /** With a `band`, the scan visits only entities near a block of another node (see BorderBand). Without one, all. */
   attach(links: LinkSender, targets: MirrorTargetsFn, band?: BorderBand): void {
     if (this.links) this.detach();
-    // A LinkSender cannot take a handler back: each one checks that its links are still the attached ones,
-    // so nothing reaches a kind after detach (or from an earlier attach).
     const live = () => this.links === links;
     // Handlers first: if the links refuse one (NodeLinks throws on a second handler), nothing is attached.
     links.on("GHOST_SPAWN", (data, from) => { if (live()) this.onSpawn(data, from); });
@@ -223,8 +187,6 @@ export class Ghosts {
     links.on("GHOST_DESPAWN", (data, from) => { if (live()) this.onDespawn(data, from); });
     links.on("GHOST_HANDOVER", (data, from) => { if (live()) this.onHandover(data, from); });
     links.onDatagram((data, from) => { if (live()) this.onMoves(data, from); });
-    // An up may be a link replaced by a new HELLO with no down before it (the peer may have restarted, or
-    // dropped us first): start over with that peer either way. On a first up there is nothing to forget.
     links.onPeerUp((peer) => { if (live()) this.forgetPeer(peer); });
     links.onPeerDown((peer) => { if (live()) this.forgetPeer(peer); });
     this.links = links;
@@ -282,14 +244,10 @@ export class Ghosts {
     for (const kind of this.kinds.values()) {
       let byId = this.tracked.get(kind.name);
       if (!byId) this.tracked.set(kind.name, (byId = new Map()));
-      // A kind with a crowd tracked has its state compared a slice per scan: the rest of the work (who is seen, who
-      // holds a mirror, the release below) is every scan, so only a field change can take up to `slices` scans to go out.
       const slices = byId.size > this.spreadAbove ? this.stateSlices : 1;
       try {
         if (looking) for (const candidate of kind.candidates(band ?? undefined)) {
           if (!(candidate.num >= 0)) continue;
-          // The band check is inside the try with the rest: one bad candidate (a map that is no string) must not
-          // end the list, or the release below would not run for the kind.
           try {
             // Not seen, so released below if it was mirrored (it is out of reach of every peer now).
             if (band && !band.near(candidate.map, candidate.x, candidate.y)) continue;
@@ -306,9 +264,6 @@ export class Ghosts {
         log.error(`Mirrors: ${kind.name} candidates failed: ${error}`);
         continue;
       }
-      // Every mirrored entity not visited this scan is released: it was removed, or it is outside the band (or
-      // its map has no border) now, where no peer can hold a mirror. This is the only way a mirror goes when
-      // the scan skips an entity, so it covers all of `byId`, not just what the kinds listed.
       for (const tracked of byId.values()) {
         if (tracked.scanGen === gen) continue;
         this.despawnEverywhere(tracked, "gone");
@@ -360,9 +315,6 @@ export class Ghosts {
     const fresh: string[] = [];
     for (const peer of wanted) if (!tracked.peers.has(peer)) fresh.push(peer);
 
-    // Peers that already hold it get only the fields that changed; new peers get them in the snapshot below.
-    // Read when it is this entity's slice, when a peer is about to get the snapshot (so what was last sent is what
-    // the snapshot shows), and the first time (the snapshot is the base the changes are measured from).
     if (kind.state && (slices <= 1 || (gen + tracked.slot) % slices === 0 || fresh.length > 0 || !tracked.state)) {
       const state = kind.state(candidate.id) ?? null;
       const changes = state ? this.stateChanges(tracked, state) : null;
@@ -384,11 +336,6 @@ export class Ghosts {
     if (tracked.peers.size === 0) this.untrack(tracked);
   }
 
-  /**
-   * The fields of `state` that differ from what was last sent, as GHOST_STATE changes (null when none), and what was
-   * last sent brought up to date. A primitive equal to the last one sent is unchanged without any JSON; any other
-   * field is compared as JSON, as before. Nothing is recorded if a field cannot be turned into JSON.
-   */
   private stateChanges(tracked: Tracked, state: Record<string, unknown>): Record<string, unknown> | null {
     const last = tracked.state;
     const prim = tracked.prim;
@@ -471,10 +418,6 @@ export class Ghosts {
     this.dirtyList.push(tracked);
   }
 
-  /**
-   * An entity of a kind with `dirtyMarks` moved (position, direction or movement flags). Does nothing while the
-   * ghosts are not attached (nothing is tracked), for an entity that is not tracked, and for one already marked.
-   */
   touch(kind: GhostKindName, id: string | number): void {
     if (!this.links) return;
     // Players are filed under their id as a string; the callers hold it as it is in the cache.
@@ -489,18 +432,12 @@ export class Ghosts {
     const budget = this.datagramsPerTick * GHOST_MOVES_PER_DATAGRAM;
     const perPeer = new Map<string, GhostMoveEntry[]>();
     const gen = ++this.flushGen;
-    // Least recently sent first, and each one sent goes to the back: past the budget, the ones left over lead
-    // the next tick, so a crowd that moves every tick cannot starve the rest. Moved entries are visited again
-    // at the back of the list, so stop after the entries there were at the start.
     let left = this.plain.size;
     for (let tracked = this.plain.head, next: Tracked | null; tracked && left-- > 0; tracked = next) {
       // The next one first: a moved entity goes to the back below.
       next = tracked.next;
       this.sendMotion(tracked, now, budget, perPeer, gen);
     }
-    // Kinds that mark their moves: the touched entities first (the ones past the budget stay marked and lead the
-    // next tick), then the entries whose keyframe is due. The list is in the order of the last send, so the first
-    // entry not yet due ends the walk. An entity read above is not read again (flushGen).
     const dirty = this.dirtyList;
     if (dirty.length > 0) {
       this.dirtyList = [];
@@ -552,8 +489,6 @@ export class Ghosts {
       list.push(entry);
     }
     tracked.motion = motion;
-    // The first move after a spawn puts its keyframe at a random point of the interval: entities spawned in
-    // one scan would otherwise all keyframe on the same tick.
     tracked.motionAt = last ? now : now - Math.random() * this.keyframeMs;
     const list = tracked.aware ? this.aware : this.plain;
     if (tracked !== list.tail) {
@@ -573,11 +508,6 @@ export class Ghosts {
     for (const peer of tracked.peers) links.send(peer, "GHOST_STATE", message);
   }
 
-  /**
-   * This node handed `id` over to `to` (spec §5). The peers that mirror it keep their mirrors and file them
-   * under `to`; this node stops tracking it with no despawn. The caller removes the entity from the local
-   * registry in the same synchronous step, so no scan sees it in between.
-   */
   handOver(kind: GhostKindName, id: string | number, to: string): void {
     const tracked = this.tracked.get(kind)?.get(id);
     // The entity goes (back) to `to`: its spawn from there is legitimate again.
@@ -603,10 +533,6 @@ export class Ghosts {
     return true;
   }
 
-  /**
-   * Drop this node's mirror of `id` with no despawn sent anywhere. Called once the entity is local here (it
-   * arrived by a handoff): the kind sees it local and drops the mirror as shadowed, so viewers keep it.
-   */
   dropMirror(kind: GhostKindName, id: string | number): void {
     const num = idNumber(id);
     const entry = this.mirrors.get(num);
@@ -635,10 +561,6 @@ export class Ghosts {
     return stone.from === null || stone.from === from;
   }
 
-  /**
-   * A peer that died (bus "node-dead"): no tracked entity counts it as a holder any more, and its mirrors here
-   * despawn now rather than when their expiry runs out. How many mirrors went.
-   */
   dropPeer(peer: string): number {
     this.dropHolder(peer);
     let dropped = 0;
@@ -775,8 +697,6 @@ export class Ghosts {
   private forgetPeer(peer: string): void {
     // Everything is sent again when the link is up: the next scan finds the peer missing from `peers`.
     this.dropHolder(peer);
-    // The mirrors held now expire unless the peer sends them again first. A resend stores a new entry,
-    // so the entries themselves mark "not confirmed since": a clock can tie inside one ms.
     const stale = new Set<MirrorEntry>(this.mirrors.fromPeer(peer));
     if (stale.size === 0) return;
     const timer = setTimeout(() => {

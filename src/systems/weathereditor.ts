@@ -1,11 +1,3 @@
-/**
- * Weather editor: what the admin weather editor window (/we) asks for. A world
- * refers to its weather by name, and the client picks what it draws by that
- * name too, so a weather's name is fixed once it exists. Each change is
- * checked, carried out through systems/weather (the table, then the list
- * held), shown at once to the players of every world that shows that weather,
- * and answered with whether it was done and every weather as it then stands.
- */
 import log from "../modules/logger";
 import assetCache from "../services/assetCache";
 import permissions from "./permissions";
@@ -21,21 +13,12 @@ export const DENIED = "You don't have permission to use the weather editor.";
 export const NAME_MAX = 45;
 /** The values of weather.wind_direction. */
 export const DIRECTIONS = ["none", "left", "right", "up", "down"];
-/**
- * /weather's own words, and what a world or a particle with no weather is
- * given: never the name of a weather. "weather_api" is the real weather
- * (systems/weatherapi.ts), which has no row.
- */
 export const RESERVED = ["random", "none", WEATHER_API];
 /** What a world with no weather shows, and what a world falls back to when its weather is deleted. */
 export const FALLBACK = "clear";
 /** Weathers that cannot be deleted: the server falls back to it by name. */
 export const PROTECTED = [FALLBACK];
 
-/**
- * Lower case letters, digits, underscores and hyphens: /weather reads the
- * name as one word and in lower case, so no other name could be given to a world.
- */
 const NAME_PATTERN = /^[a-z0-9][a-z0-9_-]*$/;
 
 /** Limits of a numeric column, as the editor is sent and held to them. */
@@ -64,11 +47,6 @@ function listed(names: string[]): string {
 
 // -------------------------------------------------------------- permission
 
-/**
- * Admins, and anyone holding the tool's permission: the rule of the spell
- * editor. The permissions are the stored ones, asked for on every packet, not
- * the copy made at login.
- */
 export async function canUseEditor(admin: any): Promise<boolean> {
   if (!admin?.username || admin.isGuest) return false;
   if (admin.isAdmin) return true;
@@ -76,10 +54,6 @@ export async function canUseEditor(admin: any): Promise<boolean> {
   return held.some((p) => EDITOR_PERMISSIONS.includes(p));
 }
 
-/**
- * Whether a player could have the editor open, from the permissions copied at
- * login. Only used to pick who is told to reload after a change.
- */
 export function mayHaveEditorOpen(player: any): boolean {
   if (player?.isAdmin) return true;
   const held: string[] = Array.isArray(player?.permissions) ? player.permissions : [];
@@ -100,10 +74,6 @@ export interface WeatherEditorBridge {
   worlds(): Promise<WorldWeather[]>;
   /** Sets a world's weather, as /weather does. Nobody is told. */
   setWorldWeather(world: string, weather: string): Promise<void>;
-  /**
-   * `weather` is what the world shows from now on: a "random" world has
-   * settled on it, and every player there is sent CHANGE_WEATHER.
-   */
   show(world: string, weather: string, weatherData: WeatherData | null): void;
 }
 
@@ -180,10 +150,6 @@ export interface FieldError {
   message: string;
 }
 
-/**
- * What is wrong with a weather sent by the editor, by field. The name is only
- * checked for a new one: an existing weather keeps the name it has.
- */
 export function validateWeather(data: any, ctx: { existingNames: Set<string>; originalName: string | null }): FieldError[] {
   const errors: FieldError[] = [];
   const add = (field: string, message: string) => {
@@ -277,11 +243,6 @@ async function saveWeather(admin: any, data: any): Promise<Outcome> {
   };
 }
 
-/**
- * Delete a weather. A world set to it is set to "clear" first, a "random"
- * world that settled on it shows "clear" until it next changes, and the
- * players of both are shown that.
- */
 async function deleteWeather(admin: any, data: any): Promise<Outcome> {
   const name = typeof data?.name === "string" ? data.name : "";
   if (!name) return refuse("Nothing selected.");
@@ -329,11 +290,6 @@ async function deleteWeather(admin: any, data: any): Promise<Outcome> {
   return { errors: [], name, changed: true, notes };
 }
 
-/**
- * Changes run one at a time. Each is a check followed by a write, and the
- * database layer has no transactions: two saves of one name, or the same
- * request arriving twice, must not both pass the check before either writes.
- */
 let changes: Promise<unknown> = Promise.resolve();
 
 function oneAtATime<T>(work: () => Promise<T>): Promise<T> {

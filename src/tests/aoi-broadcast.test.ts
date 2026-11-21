@@ -1,9 +1,6 @@
 import { expect, test, mock, beforeEach } from "bun:test";
 import { databaseModule } from "./setup";
 
-// Sends from a point or from a player's viewers reach only the players near
-// them, on the same layer. Uses the real grid / layer / reverse-index modules
-// (only the database is stubbed); each test builds its own little world.
 mock.module("../controllers/sqldatabase", () => databaseModule({
   default: async (_sql: string, _params?: any[]) => [],
 }));
@@ -47,8 +44,6 @@ beforeEach(() => {
   map = `bcast_${++mapSeq}`;
 });
 
-// Fills layer_1 of the map's block at (x, y) with players that exist only in the
-// layer manager, so the next player to arrive lands on layer_2.
 function fillFirstLayer(mapName: string, x: number, y: number): void {
   const block = blockOf(x, y);
   for (let i = 0; layerManager.countInBlock(`${mapName}:layer_1`, block) < MAX_PLAYERS_PER_LAYER; i++) {
@@ -56,9 +51,6 @@ function fillFirstLayer(mapName: string, x: number, y: number): void {
   }
 }
 
-// A player on `map` (or `onMap`), filed in the grid and in a layer, as a
-// logged-in player is. `secondLayer` puts them on layer_2 of the map instead of
-// layer_1.
 function addPlayer(id: string, x: number, y: number, opts: { onMap?: string; secondLayer?: boolean } = {}): any {
   const mapName = opts.onMap ?? map;
   if (opts.secondLayer) fillFirstLayer(mapName, x, y);

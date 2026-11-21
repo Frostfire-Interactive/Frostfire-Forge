@@ -23,8 +23,6 @@ import {
   type ReceiverInfo,
 } from "../socket/movement_batch";
 
-// A fake clock for the game loop: each tick lands a hundredth of a ms late by default, or `gaps` apart (ms between
-// ticks, in turn) for a timer that fires early and late.
 function fakeLoop(tickRate: number, gaps?: number[]) {
   let clock = 1_000, tick = 0;
   const loop = new GameLoop({ tickRate, now: () => clock, random: () => 0 });
@@ -237,10 +235,6 @@ test("the warp scan's cadence (8 ticks at 30 Hz) fires at the same wall-clock ti
 const receiver: ReceiverInfo = { x: 0, y: 0, isAdmin: false, username: "r" };
 const farMover = (id: number): MoverSnapshot => ({ id: String(id), x: 5000, y: 0, direction: "down", stealth: false, vanished: false, party: [] });
 
-/**
- * Over `seconds` at `rate` with a back-off of `backoffMs`: how many movement flushes go out, and how often each far
- * mover is sent, with the far interval each flush works out (as receiver.ts does).
- */
 function flushRun(rate: number, backoffMs: number, seconds: number, ids: number[] = [1, 2, 7]) {
   const tickMs = 1000 / rate;
   const pacer: FlushPacer = { nextAt: null };
@@ -276,12 +270,6 @@ test("a far mover is sent as often a second at 30 and 60 Hz, with or without a b
   }
 });
 
-/**
- * Runs the movement volume (as receiver.ts does) at 60 Hz for `seconds`, with `receivers` each watching one far mover:
- * the floor, when engaged, backs the flushes off to 50 ms, and the far interval follows. Each simulated receiver stands
- * for `weight` real ones. Per second: whether the floor is engaged after the sample, and the datagrams really sent,
- * per flush x 30 (what the volume counted before far movers were counted at the unthrottled interval).
- */
 function volumeRun(volume: MovementVolume, state: { clock: number; flushes: number; pacer: FlushPacer }, receivers: number, seconds: number, weight = 100) {
   const rate = 60, tickMs = 1000 / rate;
   const samples: Array<{ high: boolean; sentRate: number }> = [];
@@ -315,8 +303,6 @@ test("the volume floor lets go when the load falls to half the engage level, tho
   expect(busy.at(-1)!.high).toBe(true);
   expect(volume.rate).toBeGreaterThan(HIGH_VOLUME_RATE);
 
-  // Half that (5000). Under the floor a far mover goes on every 2nd flush, not every 6th: the datagrams really sent
-  // read 15000, above the release level, which kept the floor engaged for good.
   const quiet = volumeRun(volume, state, 10, 6);
   expect(quiet[0]!.sentRate).toBeGreaterThan(HIGH_VOLUME_RELEASE);
   const released = quiet.findIndex((second) => !second.high);

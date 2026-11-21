@@ -1,30 +1,3 @@
-/**
- * Viewer pose changes by datagram.
- *
- * A player's walk/idle/cast change used to be one reliable stream frame per viewer, and a native stream write costs
- * 150-190 us of main-thread time against about 11 us for a datagram (stall2500 report): at 800 players a node
- * made 3.3-3.8k such writes a second, 81-87% of them poses, and stalled. The per-viewer pose now goes as a datagram
- * (socket/pose_codec.ts) carrying the player's pose revision. The rest stays reliable: the full sheets, the pose a
- * viewer is sent on spawn, on entering the view and at a landing, the player's own copy and the mirror relay.
- *
- * A datagram can be lost, arrive late or out of order, so:
- *  - Repeat. A pose is state, not an event. After each change the current pose goes again, by datagram, to the same
- *    viewers at POSE_REPEAT_MS after the change (100, 400 and 1500 ms), and a newer change of the player stops the
- *    repeats of the older one. A repeat carries the pose and revision of the player's latest change, never an older
- *    pose. A viewer reaches the current pose within the last repeat (1.5 s plus the trip) if one datagram of the
- *    four gets through and the client knows the player by then; if all four are lost it keeps the pose it had until the
- *    player's next change, the viewer's next entry into the view (reliable), or the next repeat of a later change.
- *  - Revision. Each change of a player takes the next number of that player's pose revision (`poseRev` on the
- *    player). The client applies a datagram pose only when its revision is newer than the one it shows for that
- *    player, so a late or repeated datagram changes nothing. The revision travels with a handed-off player in the
- *    handoff state (`poseRev`), and the new node counts on from it: it never sends a lower one. The stream copies of
- *    a viewer's pose and sheet (the full sheet of a viewer that does not hold the look, the stream pose of a
- *    connection without datagrams) carry the same revision (`poseRev`, built per change by `withRevision`), so a
- *    client that already shows a newer pose keeps it when such a copy arrives late (posepacket.ts). A client
- *    forgets the revision only when it builds the player anew (spawn, entering the view, a landing), and takes a
- *    sheet or pose with no revision (the spawn path, the relay, an older engine) as a baseline, so a revision that
- *    restarted (a login after a crash) is not shut out.
- */
 import log from "../modules/logger";
 import playerCache from "../services/playermanager";
 import * as aoiReverse from "../services/aoiReverseIndex";
@@ -113,10 +86,6 @@ export class PoseRepeater {
     return this.pending.size;
   }
 
-  /**
-   * A change of `source`'s pose, sent now to `viewers` (ids). Their copies are sent again after each delay; the repeats
-   * of an older change of this player stop. A change older than the one pending is ignored (a pose never goes back).
-   */
   schedule(source: any, revision: number, record: Uint8Array, viewers: string[]): void {
     const id = String(source.id);
     const old = this.pending.get(id);

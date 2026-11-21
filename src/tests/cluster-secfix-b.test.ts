@@ -4,10 +4,6 @@ import { linkPair } from "./cluster-fakelink";
 import { receiverSource as readReceiverSource } from "./receiver-source";
 import { databaseModule } from "./setup";
 
-// Security review phase 7, fix group B: bounded and durable item writes (H1 grant bounds, M2, M4, L7).
-//
-// The database stand-in keeps the grant_writes rows: a second insert of the same id changes nothing, which the
-// transaction stand-in (setup.ts databaseModule) turns into a GuardError on that statement, as the real one does.
 const grantRows = new Set<string>();
 const statements: string[] = [];
 const pruneValues: any[][] = [];
@@ -101,10 +97,6 @@ afterEach(async () => {
   linkCalls.detach();
 });
 
-/**
- * The item table this node loads, for one test. Each test starts with none loaded (names then not checked): other
- * test files put the asset cache module in place of the real one for the whole run, with tables of their own.
- */
 let loadedItems: Array<{ name: string }> | null = null;
 async function itemTable(names: string[]) {
   loadedItems = names.map((name) => ({ name }));
@@ -508,8 +500,6 @@ test("a gathered hand-over written before is not written again, and not parked a
   expect(informed.some((line) => line.includes("b:51") && line.includes("written before"))).toBe(true);
 });
 
-// socket/receiver.ts cannot be imported by a test (it imports the server, which starts it), so, as the other
-// receiver tests do, the code is read from its source and run with the names it uses handed in.
 const receiverSource = readReceiverSource();
 const receiverTranspiler = new Bun.Transpiler({ loader: "ts" });
 function sliceOf(from: string, to: string): string {
@@ -657,9 +647,6 @@ test("a re-park under the same id on this node replaces its check: one chain of 
   const loaded = setKnownTemplates(new Map());
   restores.push(() => { setKnownTemplates(loaded); });
   let start = 0;
-  // The player is on this node. The first check's recover action takes the grant here while the templates are not
-  // loaded: the write is not ready, so it is parked again under its id while that first check is still running. The
-  // later recover actions reach a player that does not take it, so the grant is written from here at the last step.
   const node: any = new Grants({
     runOnPlayer: async (_name: string, _action: string, args: unknown) => {
       sentAt.push(Date.now() - start);
@@ -677,8 +664,6 @@ test("a re-park under the same id on this node replaces its check: one chain of 
   start = Date.now();
   const id = await node.park({ username: "ann", items: [{ itemName: "Bone", quantity: 1 }], copper: 5, call: "LOOT_TAKE" });
   await wait(200);
-  // Guard: current() in grants.ts. The re-park's chain sends at 30 + 30 and 30 + 100 ms. The first check, replaced
-  // by it, sends nothing more; going on, it would send again at 30 + 70 ms (two chains for one id).
   expect(sentAt.length).toBe(3);
   expect(node.pending.size).toBe(1);
   expect(await store.members("cells:grants:b|111")).toEqual([id]);

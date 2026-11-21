@@ -1,18 +1,6 @@
 import { expect, test, describe } from "bun:test";
 import { receiverSource } from "./receiver-source";
 
-// Tab-targeting (TARGETCLOSEST in src/socket/receiver.ts) picks a target within
-// TARGETING_RANGE using a facing cone. TARGETING_RANGE was a hardcoded 500; it is
-// now the AOI radius (aoi.json DEFAULT_RADIUS) so you can target anyone you can
-// see even if no spell reaches them - the cast path enforces spell range on its
-// own.
-//
-// The real cone code lives on the `player` object in systems/player.ts, which
-// pulls in the DB worker pool and generated config at import time (and CI runs
-// `bun test` before any config is generated), so it can't be imported here. This
-// test uses mock fixtures for everything: a stand-in cone predicate that mirrors
-// player.findPlayersInFacingCone, driven by hand-built positions.
-
 // ---- fixtures (mock data, not read from real config) ----
 const OLD_TARGETING_RANGE = 500;
 const NEW_TARGETING_RANGE = 1000; // AOI DEFAULT_RADIUS
@@ -67,8 +55,6 @@ describe("tab-targeting cone + range", () => {
 });
 
 describe("TARGETCLOSEST handler wiring", () => {
-  // Guards against the constant regressing to a hardcoded value. Source scan
-  // only - no module import, no config dependency.
   const src = receiverSource();
   const handler = src.slice(src.indexOf('case "TARGETCLOSEST"'));
   const block = handler.slice(0, handler.indexOf("break;"));

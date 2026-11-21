@@ -1,9 +1,5 @@
 import { BLOCK_SIZE_PX, blockKey, type BlockOwner } from "./blocks";
 
-// Which nodes hold a mirror of an entity (spec §3): every node owning a block
-// within 1250 px of it (the AOI exit radius, 1.25 x 1000). A block is 4096 px,
-// so only the blocks next to the entity's own can qualify.
-
 export const MIRROR_RADIUS_PX = 1250;
 /** A mirror already there is kept to this distance, so an entity on the line does not flap. */
 export const MIRROR_KEEP_PX = MIRROR_RADIUS_PX + 64;
@@ -33,20 +29,9 @@ interface MapBand {
   wide: boolean;
 }
 
-/**
- * The border band (spec §3): the part of each map where an entity can have a mirror target. A mirror is made and
- * kept only within MIRROR_KEEP_PX of a block another node owns, and a block is 4096 px, so only the blocks next
- * to (or being) one of those can hold such an entity. Everything outside the band is not worth a look: with
- * every block this node's, nothing on the map is. A table is re-read by `refresh` (a changed table is a new
- * object), which the scan calls first, so a band never outlives the table it was made from by more than a scan.
- */
 export class BorderBand {
   private maps = new Map<string, MapBand>();
 
-  /**
-   * `ownersOf` is the block table (a map not loaded has no owners, so no band); `knownMaps` lists the maps it
-   * holds, for `anyBorder`.
-   */
   constructor(
     private readonly ownersOf: (map: string) => Owners,
     private readonly self: string,
@@ -61,10 +46,6 @@ export class BorderBand {
     }
   }
 
-  /**
-   * An object that stays the same for as long as `map`'s band does and is a new one each time the band is rebuilt
-   * (its table changed): a caller that keeps something worked out from the band compares it to know when to redo it.
-   */
   token(map: string): object {
     return this.of(map);
   }
@@ -182,14 +163,6 @@ interface TargetCell {
   edge: boolean;
 }
 
-/**
- * mirrorTargets per map and square of 64 px. A node is within reach of the whole square when it is within the
- * radius less the square's reach of its centre, and of none of it when it is not within the radius plus that: only
- * a square the radius cuts through is worked out position by position, so what comes back is what mirrorTargets
- * gives for the position, not for the square's centre. A map's squares are dropped when its table is replaced
- * (BlockTable.keep puts a new owners object on every change), which is checked on every call, so no target outlives
- * the owner it was made from. The sets returned are read only and may be shared.
- */
 export class TargetCache {
   private maps = new Map<string, { owners: Owners; cells: Map<number, TargetCell> }>();
   private cells = 0;
@@ -261,13 +234,6 @@ export function neighbourNodes(tables: Iterable<Owners>, self: string): Set<stri
   return nodes;
 }
 
-/**
- * The nodes `self` links with: its neighbours, and the live nodes that own no block when it owns some, or every live
- * node when it owns none. A node that owns no block (one that joined a running cluster, or restarted after a takeover
- * gave its blocks away) borders no one, yet the rebalancer gives it a block of the most loaded node, and that move runs
- * as a call over a link between the two. Without this rule no link is ever wanted to it and every such order ends
- * "not run (down)".
- */
 export function linkPartners(tables: Iterable<Owners>, self: string, live: Iterable<string>): Set<string> {
   const all = [...tables];
   const partners = neighbourNodes(all, self);

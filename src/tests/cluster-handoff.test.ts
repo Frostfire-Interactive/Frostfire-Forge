@@ -550,8 +550,6 @@ test("a handoff to this node itself, or with no ticket, is refused", async () =>
     expect(await a.handoff.handOff(player, "b")).toBe("refused");
     expect(a.handoff.coolingDown("ann")).toBe(true);
     expect(a.players.get("7")).toBe(player);
-    // Never drained: the refusal came before the player was stopped.
-    // Never drained, so the flag was never set (not even to false).
     expect(player.handoff).toBeUndefined();
     expect(a.log).not.toContain("drain");
   } finally {
@@ -762,8 +760,6 @@ test("a commit that cannot be sent still sends the client on, without resume", a
 });
 
 test("a handoff still running after a stop keeps to its own tables, and idle waits for it", async () => {
-  // The HANDOFF call is the first thing a run waits for here: each run's turn is let in by the test. The second run
-  // is answered with a yes of its own, so it ends at the "player still here" check.
   const turns: Array<() => void> = [];
   const { a, stop } = pair();
   const original = a.calls.call.bind(a.calls);
@@ -867,8 +863,6 @@ test("a drained player kept here gets their movement back; one switched or gone 
   const undrain = (p: any) => { undrained.push({ id: String(p.id), handoff: p.handoff }); };
   const boom = () => { throw new Error("boom"); };
   const cases: Array<[string, Partial<HandoffDeps>, Partial<HandoffDeps>, string, number]> = [
-    // Guard M1: a refusal after the drain restores the movement.
-    // The target's refusal and a missing address come before the drain: the player never stopped, so nothing is restored.
     ["refused by the target", { undrain }, { ownerAt: () => "c" }, "refused", 0],
     ["no node address", { undrain, node: () => null }, {}, "refused", 0],
     ["a trade begun during the answer", { undrain, recheck: () => "trading" }, {}, "refused", 1],

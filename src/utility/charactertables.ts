@@ -1,7 +1,3 @@
-/**
- * Tables whose rows belong to one character (characters.id), not to the account.
- * Account tables keep `username`: accounts, permissions, mutes, whitelist, subscription_*.
- */
 export const CHARACTER_TABLES: readonly string[] = [
   "inventory",
   "stats",

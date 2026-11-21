@@ -1,9 +1,3 @@
-// Run by sqlite-belongings.test.ts in a process of its own, against a SQLite file made for it: the
-// real systems that keep a character's rows (inventory, currency, home, stats, client settings,
-// collectables, spells, bags, equipment, quests, cutscene views, achievements) over the real database
-// layer, with the tables as src/utility/database_setup_sqlite.ts makes them. Their rows are a
-// character's, kept by its id.
-
 import query from "../controllers/sqldatabase";
 import assetCache from "../services/assetCache";
 import { atomically } from "../services/batch";
@@ -85,10 +79,6 @@ out.read = {
 };
 out.tables = { held: await held(), purses: await purses() };
 
-// ---------------------------------------------------------------- two characters of one account
-// "rider" is made as a new player is (player.register: the account, its character, and the character's first rows);
-// "rider_alt" is a second character of the same account, given the rows register gives. Each system writes for one
-// and then the other, and each character reads back only its own.
 const madeRider = await player.register("rider", "hash", "rider@example.com", { ip: "127.0.0.1", headers: {} }, false);
 const [riderAccount] = (await query("SELECT id, active_character_id FROM accounts WHERE username = 'rider'")) as any[];
 await query("INSERT INTO characters (account_id, name, name_key, created_at) VALUES (?, 'rider_alt', 'rider_alt', 1)", [riderAccount.id]);

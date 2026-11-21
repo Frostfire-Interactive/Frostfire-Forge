@@ -1,17 +1,3 @@
-/**
- * Creature load test.
- *
- * Seeds a map with spawns, then samples the running game server's creature
- * tick timings so the 100ms AI tick can be checked under load. It does not
- * connect clients - run `bun benchmark` alongside it for player load.
- *
- *   bun creature-loadtest seed --count 2000 --map main
- *   bun creature-loadtest watch --seconds 120
- *   bun creature-loadtest clean
- *
- * Seeded rows are named with a fixed prefix so `clean` can remove exactly what
- * this tool created and nothing else.
- */
 import log from "../modules/logger";
 import assetCache from "../services/assetCache";
 import repository from "../systems/creatures/repository";
@@ -19,8 +5,6 @@ import { decodeCollisionRLE, NavGrid, FOOT_H } from "../systems/creatures/navgri
 import { serverFetch } from "../modules/https_servers.ts";
 
 const PREFIX = "[loadtest]";
-// The game server's internal HTTP API runs over TLS with the same (often
-// self-signed) certificate as the game port, so this goes through serverFetch.
 const STATS_URL = `https://127.0.0.1:${process.env.WEBSRV_INTERNAL_PORT || "3002"}/creature-stats`;
 
 interface Options {
@@ -145,10 +129,6 @@ async function walkablePoints(map: string, count: number): Promise<Array<{ x: nu
   return points;
 }
 
-/**
- * Maps and collision live in the asset cache, which only the game server fills.
- * This script runs on its own, so load the assets the same way the server does.
- */
 async function loadAssets(): Promise<void> {
   const cached = ((await assetCache.get("mapProperties")) || []) as any[];
   if (cached.length > 0) return;

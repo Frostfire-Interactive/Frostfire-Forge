@@ -1,8 +1,3 @@
-// Achievement data. The definitions (the achievements table, edited with /achievements) are held in a table cache;
-// each player's progress (player_achievements) in a per-player row cache, read at login and let go at logout.
-// Progress changes in the cache at once and is written on the save tick (onSave, 60 s) and when the player leaves:
-// a crash can lose up to a minute of it. A completion is written at once, in the batch that gives the reward
-// (service.ts), so it is never lost. Client requests read only the caches.
 import query, { transaction, type TransactionStatement } from "../../controllers/sqldatabase";
 import log from "../../modules/logger";
 import { rowCache, tableCache, turns } from "../../services/datacache";
@@ -71,11 +66,6 @@ let ready = false;
 /** The tables are there: achievements are counted, and the editor can save. */
 export const isReady = (): boolean => ready;
 
-/**
- * Start-time safety step: makes the tables on a database whose setup ran before they were added, and lists the
- * editor's permission. Safe on every start, and never throws: without the tables nothing is counted, the editor
- * refuses changes, and this says so once.
- */
 export async function ensureAchievementSchema(): Promise<boolean> {
   ready = false;
   staleIndex();
@@ -117,10 +107,6 @@ const defs = tableCache<DefRow>("achievements", async () => {
   return ready ? (((await query(`SELECT ${DEF_COLUMNS} FROM achievements`)) as DefRow[]) || []) : [];
 });
 
-// The enabled definitions by type, for the counting: every deed asks it, so it is not the table copied and sorted
-// each time. Kept in step with every change made in this process (saveDefinition, deleteDefinition) and built again
-// on the next read after the table is read again or dropped. With CACHE=redis another server may change the table
-// held in the shared cache, which this process is not told of: there it is built again on every read.
 const shared = process.env.CACHE?.toLowerCase() === "redis";
 let index: Map<CriterionType, AchievementDef[]> | null = null;
 /** Raised whenever the table held may differ from the index; the index is current while `indexAt` equals it. */
@@ -213,11 +199,6 @@ function forgetWaiting(id: number): void {
   }
 }
 
-/**
- * Writes a definition (a new one when `id` is null) to the table, then to the cache the counting reads. A change to
- * what counts (its type or its target) starts every player's progress toward it again, in the same transaction:
- * `reset` says so. Who earned it keeps it.
- */
 export async function saveDefinition(id: number | null, input: AchievementInput): Promise<{ ok: true; def: AchievementDef; reset: boolean } | { ok: false; message: string }> {
   if (!ready) return { ok: false, message: "Achievements cannot be saved: the achievement tables are missing." };
   const values = [input.name, input.description, input.icon, input.type, input.target, input.count, input.reward_item, input.reward_quantity, input.reward_mount, input.enabled ? 1 : 0];
@@ -365,19 +346,10 @@ export function resetChanges(): void {
   staleIndex();
 }
 
-// Never lowers progress: a relog during a flush can read the table before the write lands, and a later flush would
-// otherwise write the lower value it counted from.
 const PROGRESS_SQL = "INSERT INTO player_achievements (character_id, achievement_id, progress) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE progress = CASE WHEN completed_at IS NULL AND ? > progress THEN ? ELSE progress END";
-// A completion is two statements (see completionStatements): the row made if it is not there, then the update that
-// dates it, which changes nothing, and so refuses the batch, when the row is completed already.
 const ROW_SQL = "INSERT IGNORE INTO player_achievements (character_id, achievement_id, progress, completed_at) VALUES (?, ?, 0, NULL)";
 const COMPLETED_SQL = "UPDATE player_achievements SET progress = ?, completed_at = ? WHERE character_id = ? AND achievement_id = ? AND completed_at IS NULL";
 
-/**
- * Writes the player's changed progress, in their turn, as one transaction. One that fails is kept for the next save
- * and logged. A player who is not online any more is let go of afterwards (counted while away: a friend added by an
- * admin, say).
- */
 export async function flush(username: string): Promise<void> {
   const name = lower(username);
   if (!name || !ready) return;
@@ -406,11 +378,6 @@ export async function flushAll(): Promise<void> {
   for (const name of [...changed.keys()]) await flush(name);
 }
 
-/**
- * The statements that mark an achievement earned, for the batch that gives its reward. The date is ISO text (UTC).
- * The second must change a row: one already completed makes the whole batch refuse, so a completion that was
- * written but reported as failed (a timeout after the commit) is never given a second time.
- */
 export async function completionStatements(username: string, id: number, progress: number, at: number): Promise<TransactionStatement[]> {
   const characterId = await needCharacterId(lower(username));
   return [

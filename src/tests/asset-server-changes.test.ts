@@ -6,11 +6,6 @@ import path from "path";
 import { calculateFileChecksum } from "../modules/checksums";
 import { receiverSource } from "./receiver-source";
 
-// A map or world changed on the asset server while the game server runs (a restart of the asset server with new
-// files, the Tiled extension, another server's save) is taken in without a restart: the local copy is brought up to
-// date, the map read again with its particle and placed NPCs, and the players on it load it again where they stand.
-// modules/assetloader.ts and the socket handlers cannot be imported: these read their source.
-
 const receiver = receiverSource();
 const loader = fs.readFileSync(new URL("../modules/assetloader.ts", import.meta.url), "utf8");
 const gatewayClient = fs.readFileSync(new URL("../modules/gateway-client.ts", import.meta.url), "utf8");
@@ -226,8 +221,6 @@ describe("maps changed on the asset server", () => {
   });
 });
 
-// The poll asks the asset server only for the maps changed since the last answer, and takes in only those: with
-// thousands of maps, comparing every one at every poll held the event loop for seconds.
 describe("the poll for maps changed on the asset server", () => {
   const code = `${takeInCode}\n${fnOf(loader, "export async function pollMapChanges(").replace("export ", "")}`;
   const NAMES = ["process", "serverFetch", "checkMapChanges", "checksums", "assetCache", "reloadMap", "addCreatedMap", "log", "path", "mapChangeListeners", "takenInMaps", "checkingMaps", "mapSync", "leaveToSave"];
@@ -428,9 +421,6 @@ test("the map editor's save leaves this node's copy of the map the asset server'
   expect(save.indexOf("await reloadMap(saveData.mapName)")).toBeGreaterThan(synced);
 });
 
-// The asset server tells every game server of a save as soon as it has written it, this one and the other nodes of the
-// region too, before the save here has finished: the save is marked first, here and on the other nodes (told before
-// anything is written), so that word is left to it. The mark ends however the save ends, with whether it saved.
 test("a save here is marked before the other nodes are told it is under way, and they hear how it ended", async () => {
   const calls: any[] = [];
   const given = {

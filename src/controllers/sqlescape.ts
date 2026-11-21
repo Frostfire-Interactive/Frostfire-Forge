@@ -1,18 +1,5 @@
 // Builds the SQL text the database worker sends. Kept apart from the worker so it can be tested without a connection.
 
-/**
- * The statements are written for MySQL. Two of its forms SQLite does not read, and both are how a
- * system says "insert this row, unless one is in the way":
- *
- *   INSERT IGNORE INTO ...               SQLite: INSERT OR IGNORE INTO ...
- *   ... ON DUPLICATE KEY UPDATE a = ?    SQLite: ... ON CONFLICT DO UPDATE SET a = ?
- *
- * and in that update, VALUES(a) (the value the insert carried) is excluded.a. The upsert names no
- * key, as MySQL's does not: it is whichever unique key the row broke.
- *
- * Only the statement's own words are rewritten, before any value is put in: a value, or a quoted
- * part of the statement, that holds the same words is text and is left as it is.
- */
 function forSqlite(query: string): string {
   if (!/\b(IGNORE|DUPLICATE)\b/i.test(query)) return query;
 
@@ -78,16 +65,6 @@ export function escapeValue(param: any, engine: DatabaseEngine): string {
   }
 }
 
-/**
- * MySQL reads a backslash inside a string literal as an escape character, so an unescaped one
- * changes the next character and, at the end of a value, escapes the closing quote. SQLite and
- * Postgres (with its default standard_conforming_strings) read a backslash as itself: doubling it
- * there would store two.
- *
- * On MySQL only the backslash and NUL are escaped. The quote stays doubled rather than written as
- * \', and line breaks and the like stay raw, so the literal still ends where it should on a server
- * running with NO_BACKSLASH_ESCAPES (which would store the doubled backslash as two).
- */
 function escapeString(value: string, engine: DatabaseEngine): string {
   if (engine === "mysql") {
     value = value.replaceAll("\\", "\\\\").replaceAll("\0", "\\0");

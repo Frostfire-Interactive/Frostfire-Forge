@@ -3,13 +3,6 @@ import { linkPair, settle } from "./cluster-fakelink";
 import { databaseModule, mockQuery } from "./setup";
 import { receiverSource as readReceiverSource } from "./receiver-source";
 
-// Phase 5 final fix wave, part A: the shared-cache guard (I1), the owner-derived admin flag of an inspect (S5), the
-// one-call-at-a-time rule and the limits on what a client can fan out (S6), and the validation of a take (S8).
-// socket/receiver.ts cannot be imported by a test (it imports the server, which starts it), so, as the other
-// receiver tests do, the code is read from its source and run with the names it uses handed in.
-
-// The real database layer must never load (its workers connect to a database), so the stand-in goes in before anything
-// that imports it, however this file is run; the modules below are loaded after it.
 mock.module("../controllers/sqldatabase", () => databaseModule({ default: mockQuery, drainQueries: async () => {} }));
 const { requireSharedCache, startCluster, stopCluster } = await import("../cluster");
 const { LinkCalls } = await import("../cluster/linkcalls");
@@ -206,7 +199,7 @@ test("the partner's trade ending is the one place that drops the copies, and the
 
 const inspecting = compile(
   "isOnline, player, log, deliverToPlayer, packetManager, inspectPlayerData, registerPlayerAction",
-  sliceOf("async function inspectAskerAdmin(", "// Cluster mode: a player of a neighbouring node acts on a corpse"),
+  sliceOf("async function inspectAskerAdmin(", 'serveItems("LOOT_OPEN"'),
   "undefined",
 );
 
@@ -279,7 +272,7 @@ test("an account that cannot be read is no admin", async () => {
 });
 
 test("the owner no longer reads the admin flag from the body", () => {
-  const action = sliceOf('registerPlayerAction("cells-inspect"', "// Cluster mode: a player of a neighbouring node acts on a corpse");
+  const action = sliceOf('registerPlayerAction("cells-inspect"', 'serveItems("LOOT_OPEN"');
   expect(action).not.toContain("args.admin");
   expect(action).not.toMatch(/\{\s*asker,\s*admin\s*\}/);
 });

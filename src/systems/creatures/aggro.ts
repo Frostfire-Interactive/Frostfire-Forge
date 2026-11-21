@@ -34,10 +34,6 @@ export interface AggroCandidate {
   stealthed: boolean;
 }
 
-/**
- * Whether a creature may proximity-aggro this player at `distanceYd`
- * (line of sight is checked separately by the caller).
- */
 export function canProximityAggro(
   creatureLevel: number,
   aggroOverride: number | null,

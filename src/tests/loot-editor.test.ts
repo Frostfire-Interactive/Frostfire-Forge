@@ -1,12 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { databaseModule } from "./setup";
 
-// ------------------------------------------------------------ fake database
-// The statements lootTable sends, run against in-memory tables, with a pause
-// in each one so that two requests sent together really do interleave. The
-// only reads it knows are the two that load every table: a check that asked
-// the database instead of the tables held would fail the test that made it.
-
 type Row = Record<string, any>;
 let db: { loot_tables: Row[]; loot_table_items: Row[] };
 let nextId: number;

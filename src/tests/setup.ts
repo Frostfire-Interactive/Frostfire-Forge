@@ -2,17 +2,6 @@ import { afterAll, mock } from "bun:test";
 import { leaveSaves, type LeaveSaveDeps, type LeaveSaves } from "../socket/leavesavecore";
 import { GuardError, type TransactionStatement } from "../controllers/sqltransaction";
 
-/**
- * Puts `standIn` in place of one of the engine's own modules while the calling test file runs, and
- * the module itself back once that file is done. `path` is as the test file would import it.
- *
- * A stand-in is not undone when a file ends: left in place, it is what every file run after this
- * one is given instead of the module. Which files those are is not the same everywhere (they run
- * by name on Windows, and in the filesystem's own order on a Linux runner), so a file that leaves
- * one behind breaks other files on some machines and not on others.
- *
- * Await it before importing what is under test.
- */
 export async function standInFor(path: string, standIn: () => Record<string, any>): Promise<void> {
   const real = { ...(await import(path)) };
   mock.module(path, standIn);
@@ -25,13 +14,6 @@ export const mockQuery = async (_sql: string, _params?: any[]) => {
   return [];
 };
 
-/**
- * What a test puts in place of the database layer, with the layer's other exports added. A
- * transaction is its statements handed one after another to the stand-in's own query (`default`),
- * so a test sees them as it sees any other statement. Nothing is undone when one of them throws:
- * that all are kept or none is the real layer's to show (sqltransaction.test.ts). A statement
- * marked `mustChange` is refused only when the stand-in's answer says it changed no rows.
- */
 export function databaseModule<T extends { default: (sql: string, values?: any) => any }>(standIn: T) {
   return {
     GuardError,
@@ -48,8 +30,6 @@ export function databaseModule<T extends { default: (sql: string, values?: any) 
   };
 }
 
-// Ids the stand-ins below give characters and accounts, each for one name. Far above what a test gives an account
-// of its own, so a value that is one of them is not something else.
 const characterIds = new Map<string, number>();
 const characterNames = new Map<number, string>();
 const accountIds = new Map<string, number>();
@@ -80,18 +60,8 @@ export function testAccountId(name: string): number {
 
 const nameOfCharacter = (value: unknown) => (typeof value === "number" && characterNames.has(value) ? characterNames.get(value)! : value);
 
-/**
- * A stand-in for the database that keeps a character's rows by its name (as the engine did before characters had
- * ids), made to answer the engine's statements by character id: each character name is given an id (testCharacterId),
- * and a statement by `character_id` is handed to the stand-in by `username`, the id put back to the name. The
- * character's own columns (map, position, stealth and the rest) are the stand-in's accounts row, as they were. This
- * shows what a system writes and reads for a character; that the rows are kept by id is for the tests on a real
- * database (sqlite-belongings.test.ts, characters-schema.test.ts).
- */
 export function characterKeyedByName<T extends { default: (sql: string, values?: any) => any }>(standIn: T): T {
   type Asked = { sql: string; values: any[]; then?: (result: any) => any };
-  // A statement by character id as the stand-in is asked it, and what is done to its answer; or what is answered in
-  // its place (a statement the stand-in needs asked first, or none at all).
   const byName = (sql: string, values: any[] = []): Asked => {
     const text = sql.replace(/\s+/g, " ").trim();
     let match = /^UPDATE characters SET (.+) WHERE id = \? AND account_id IN \(SELECT id FROM accounts WHERE session_id = \?\)$/i.exec(text);
@@ -221,11 +191,6 @@ export function characterDatabaseModule<T extends { default: (sql: string, value
   return databaseModule(characterKeyedByName(standIn));
 }
 
-/**
- * For a test that runs server.ts's leave code from its source with the names it uses handed in: `given` with
- * saveLeavingEffects and saveLeavingState, the real ones (socket/leavesavecore.ts) written through the stand-ins it
- * already holds (effectManager, dots, getStunsForPlayer, getSlowsForPlayer, saveSicknessOnDisconnect, player).
- */
 export function withLeaveSaves<T extends Record<string, any>>(given: T): T & LeaveSaves {
   return { ...given, ...leaveSaves(given as unknown as LeaveSaveDeps) };
 }

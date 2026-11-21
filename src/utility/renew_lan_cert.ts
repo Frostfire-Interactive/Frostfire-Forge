@@ -67,12 +67,6 @@ if (!Number.isInteger(validityDays) || validityDays < 1 || validityDays > 13) {
   process.exit(1);
 }
 
-// Same hostname set the server expects at startup: everything a browser
-// might dial must be in the SAN, even when pinned. Names on the certificate
-// being replaced are kept too: bare `bun renew-lan-cert` loads
-// .env.development, whose PUBLIC_HOST/SERVER_HOST lack the LAN address a
-// server started with .env.production advertises, and dropping it breaks
-// /wt-cert-hash and the WebTransport handshake for every LAN client.
 const previousHostnames = fs.existsSync(certPath)
   ? certificateSanHostnames(fs.readFileSync(certPath, "utf8"))
   : [];
@@ -94,8 +88,6 @@ if (caStatus.expired) {
 
 const forge = await loadForge();
 
-// The mkcert development CA is RSA; node:crypto signs the TBS directly so
-// any RSA key encoding (PKCS#1/PKCS#8) works without forge key wrangling.
 let caKey: ReturnType<typeof createPrivateKey>;
 try {
   caKey = createPrivateKey(fs.readFileSync(caKeyPath, "utf8"));

@@ -1,35 +1,3 @@
-/**
- * USER REQUEST 2026-10-17 ("Can we add a tornado system as well that spawn 1 or 2 on the map at most during a
- * thunderstorm with a rare chance or '/weather tornado' is set? Tornadoes when close to players should pull them in and
- * do 5% damage every second"): tornadoes, kept here, moved here, and shown to the players of their map.
- *
- * - When: a world that shows a thunderstorm (its own, a random one, or the real weather's) has a rare chance of one:
- *   STORM_CHANCE every SPAWN_EVERY ms, about one every quarter of an hour of storm. A world on "tornado" always has one
- *   and often two. Never more than MAX_PER_MAP on a map, and only on a map someone is on. When the storm passes, its
- *   tornadoes die away; each lives a while anyway (LIFE).
- * - Where (USER REQUEST 2026-10-17: "tornadoes should also spawn anywhere on the map and not follow the player or be
- *   forced near the player. They are their own thing"): anywhere on the map, set off in any direction.
- * - How it moves: SPEED px a second, its heading wandering at random, whoever is about; it turns back from the map's
- *   edge. It goes over anything.
- * - Pull: a player within PULL_RADIUS px is drawn in, harder the nearer (PULL_EDGE to PULL_CORE px a second, always
- *   less than a walk, 180: a player who runs gets away), and carried round it a little (SWIRL of the pull, across).
- *   Never into a wall: a step that would end in one is not taken.
- * - Harm: a player within HURT_RADIUS px loses HURT_SHARE (5%) of their maximum health at once, then again every
- *   second they stay. Dead players, ghosts, guests and admins in stealth are left alone.
- * - Shown: every SHOW_EVERY ms the players of a map with tornadoes are told where each is (TORNADOES), and once more
- *   with none when the last has gone. Each player is told only of the tornadoes near them (showNearby).
- *
- * The engine is reached through a bridge (setTornadoBridge, set by receiver.ts): which weather each world shows, its
- * players, its size and walls, and moving, hurting and telling players. tick() is called every 100 ms (forming, dying,
- * harm, telling); pull() on every tick of the movement loop (TICK_RATE, 60 Hz by default), before its steps.
- *
- * USER REPORT 2026-10-17 ("when the tornado moves the player, it's extremely jittery"): the pull was a step every
- * 100 ms. The client draws movement a little in the past between the 30-a-second steps of a walk, so it stopped at
- * each pull step until the next came (stop, go), and a player walking took every third step longer. The tornadoes now
- * move, and pull, on the movement loop's own tick, before its steps: a step every tick, the same as a walk's, and a
- * walking player's step goes on from where the pull left them. Positions are whole px; the part of a px each step
- * leaves over is kept (`exact`), so a slow pull is not uneven steps of 1 and 2 px.
- */
 import log from "../modules/logger";
 import { logNoIds, nextEntityId } from "../cluster/entityids";
 import { TICK_MS } from "../services/tickrate";
@@ -101,11 +69,6 @@ export interface ShowViewers {
 /** Each map's players whose last list held tornadoes, to be sent one empty list when it holds none. */
 const shownTo = new Map<string, Set<string>>();
 
-/**
- * Tells each player of a map only the tornadoes within their sight radius plus SHOW_MARGIN, not every tornado on a map
- * that can be huge. The client replaces its list wholesale with each one, so a player whose list has become empty is
- * sent one empty list (once, not at every show) and then left alone.
- */
 export function showNearby(map: string, tornadoes: Array<{ id: string; x: number; y: number }>, viewers: ShowViewers): void {
   const lists = new Map<string, { viewer: any; list: Array<{ id: string; x: number; y: number }> }>();
   for (const tornado of tornadoes) {
@@ -161,8 +124,6 @@ export function tornadoMaps(): string[] {
   return [...byMap.keys()];
 }
 
-// Cluster mode: tornadoes another node owns near the border. Shown with this map's own, never moved,
-// pulled or hurt with here.
 const remoteTornadoes = new Map<string, { id: string; map: string; x: number; y: number }>();
 
 /** A mirror of another node's tornado, or its new place. False when the id is one of this node's own. */
@@ -196,10 +157,6 @@ export function takeOwnTornado(id: string): Tornado | null {
   return null;
 }
 
-/**
- * Cluster mode: a tornado of a block that moved here (or back) is this node's own, to move, pull with and show.
- * MAX_PER_MAP limits only the forming of new ones. As loot.adoptOwn: "mirror", "new", or null when this node has that id.
- */
 export function adoptTornado(tornado: Tornado): "mirror" | "new" | null {
   for (const list of byMap.values()) if (list.some((own) => own.id === tornado.id)) return null;
   const known = remoteTornadoes.delete(tornado.id);
@@ -262,10 +219,6 @@ export function steer(tornado: Tornado, dt: number, size: { width: number; heigh
   }
 }
 
-/**
- * Where a player at (x, y) is drawn to over `dt` seconds by a tornado at (cx, cy), or null when it is out of reach:
- * in toward it (never past its middle), and round it a little; `inX`, `inY` the same step without the swirl.
- */
 export function pullStep(cx: number, cy: number, x: number, y: number, dt: number): { x: number; y: number; inX: number; inY: number } | null {
   const dx = cx - x, dy = cy - y, d = Math.hypot(dx, dy);
   if (d >= PULL_RADIUS || d < 1) return null;
@@ -362,8 +315,6 @@ export async function tick(now: number = Date.now()): Promise<void> {
     }
 
     for (const [map, list] of byMap) {
-      // The dead go from the map's own list, not a copy: a tornado a block move takes (takeOwnTornado) while the
-      // harm below awaits is then neither hurt with nor shown again here.
       for (let i = list.length - 1; i >= 0; i--) if (!(list[i]!.diesAt > now)) list.splice(i, 1);
       const alive = list;
       // Another node's tornadoes hurt the players here too (each node hurts only its own players).

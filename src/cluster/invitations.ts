@@ -1,12 +1,6 @@
 import playerCache from "../services/playermanager";
 import type { ClusterStore } from "./store";
 
-// Party, guild and friend invitations, kept until they are answered. Without a
-// cluster they live in this process, as they lived on the inviter's cached
-// player, and go when the inviter leaves this node's cache. In a cluster they
-// are in the store, so the player who answers can be on another node than the
-// one who asked. Trade requests are not kept here: both traders are on one node.
-
 export interface Invitation {
   action: string;
   /** The inviter's player id (what the client answers with). */

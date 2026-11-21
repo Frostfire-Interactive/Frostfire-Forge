@@ -1,14 +1,3 @@
-// Copies of database rows that reads go to instead of the database.
-//
-// A cache reads the database in one place only, its `load`, to fill itself:
-// a table cache at startup, a row cache the first time a key is asked for.
-// Whatever writes those rows writes the database first and then tells the
-// cache, so the two stay the same.
-//
-// With CACHE=redis the copies are kept in the shared cache the asset data
-// uses, so servers on one database see each other's writes. Otherwise they
-// are kept in this process.
-
 import log from "../modules/logger";
 
 /** How long "there is no such row" is believed before the database is asked again. */
@@ -64,11 +53,6 @@ function sharedStore(): Store {
   };
 }
 
-/**
- * Whether the row copies are kept in the shared cache (CACHE=redis) and not in this process. A cluster node needs
- * them shared: a node that writes another node's player (a trade across a border) must change the copy that
- * node reads, or its next write puts the old rows back.
- */
 export function usesSharedCache(env: Record<string, string | undefined> = process.env): boolean {
   return env.CACHE?.toLowerCase() === "redis";
 }
@@ -80,12 +64,6 @@ export interface RowCache<T> {
   get(key: string | number): Promise<T | null>;
   /** After writing the database: what is now held under `key` (null: no row). */
   set(key: string | number, value: T | null): Promise<void>;
-  /**
-   * After writing some columns of the row under `key`: the same columns on
-   * the row held. `columns` are the values written, never a change to what
-   * was there ("xp = 40", not "xp + 5"): they may be put on a row that
-   * already has them. A row that is not held is left to the next get.
-   */
   patch(key: string | number, columns: Partial<T>): Promise<void>;
   /** Forget `key`, so the next get loads it again. For rows something else may have written. */
   drop(key: string | number): Promise<void>;
@@ -106,17 +84,9 @@ export interface TableCache<T> {
   remove(match: (row: T) => boolean): Promise<void>;
   /** Read the whole table again. If that fails, the rows held are forgotten and the next read tries again. */
   reload(): Promise<void>;
-  /**
-   * Forget every row, so the next read loads the table again. For a write
-   * that threw: it may still have been applied, and a database that just
-   * failed a write may fail a reload too.
-   */
   drop(): Promise<void>;
 }
 
-// The login workers import the same systems on their own threads, where no
-// write would ever reach a copy: there every read goes to the database, which
-// is what a login is for.
 const caching = Bun.isMainThread;
 
 const names: string[] = [];
@@ -134,16 +104,6 @@ export interface Turns {
   readonly busy: number;
 }
 
-/**
- * Queues of work, one per key: what is asked of one key runs one piece at a
- * time, in the order it was asked, while other keys go ahead. For a change
- * that works from the rows held and puts back the result (two side by side
- * would each put back rows without the other's change), and for writes whose
- * order matters: statements sent side by side reach the database in no set
- * order. A piece of work that fails does not stop the ones behind it, and
- * nothing is kept for a key once its queue is empty. A key is a username in
- * any case, as a per-player cache's is.
- */
 export function turns(): Turns {
   const last = new Map<string, Promise<unknown>>();
   const take = <T>(key: string | number, work: () => Promise<T>): Promise<T> => {
@@ -157,15 +117,6 @@ export function turns(): Turns {
   return Object.defineProperty(take, "busy", { get: () => last.size }) as Turns;
 }
 
-/**
- * Rows read by key. `perPlayer`: the key is a username (any case), and the
- * rows are loaded again when that player logs in and forgotten when they
- * leave (refreshPlayer, forgetPlayer).
- *
- * `load` answers null when there is no such thing (an unknown account), which
- * is believed for a minute. Where no rows is an ordinary answer (an empty
- * inventory), answer the empty value instead, which is kept like any other.
- */
 export function rowCache<T>(name: string, load: (key: string) => Promise<T | null | undefined>, options: { perPlayer?: boolean } = {}): RowCache<T> {
   const hash = `rows:${name}`;
   const loading = new Map<string, Promise<T | null>>();
@@ -224,8 +175,6 @@ export function rowCache<T>(name: string, load: (key: string) => Promise<T | nul
         await store.setRow(hash, k, held({ ...entry.v, ...copy(columns) }));
         if (mark(k) === mine) return;
       }
-      // Held as "no such row", or written again while this looked at it: what
-      // the row is now is not known here, so the next get reads it.
       touch(k);
       await store.dropRow(hash, k);
     },
@@ -328,19 +277,10 @@ export function tableCache<T>(name: string, load: () => Promise<T[]>): TableCach
   return cache;
 }
 
-/**
- * For a writer that does not own the cache `name` (the guest clean-up, say,
- * which deletes from many tables): forget what it holds under `key`, so the
- * next read loads it again. Nothing happens if no such cache exists.
- */
 export async function dropRows(name: string, key: string | number): Promise<void> {
   await rowCaches.get(name)?.drop(key);
 }
 
-/**
- * The same for a write that does not say which rows it changed (every guest's
- * rows, say): the cache `name` forgets all it holds.
- */
 export async function dropAllRows(name: string): Promise<void> {
   await rowCaches.get(name)?.clear();
 }
@@ -350,11 +290,6 @@ export async function reloadTable(name: string): Promise<void> {
   await tableCaches.get(name)?.reload();
 }
 
-/**
- * Startup: read every cached table. One that cannot be read is said and left
- * unread, to be read by whatever asks for it first: the others are not held
- * up, and the server still starts.
- */
 export async function loadTables(): Promise<void> {
   const read = await Promise.allSettled(tables.map((table) => table.reload()));
   for (const result of read) {
@@ -362,11 +297,6 @@ export async function loadTables(): Promise<void> {
   }
 }
 
-/**
- * Asked before a login reads a player's rows again (refreshPlayer). The cluster's trade marks use it
- * (cluster/tradesettle.ts): a player marked on another node is marked here before their rows are read.
- * Undefined when there is nothing to wait for, so a login then awaits nothing more than it did.
- */
 export type LoginGate = (username: string) => Promise<unknown> | undefined;
 let loginGate: LoginGate | null = null;
 
@@ -377,12 +307,6 @@ export function setLoginGate(gate: LoginGate | null): LoginGate | null {
   return previous;
 }
 
-/**
- * Login: read this player's rows again, so what was written while they were
- * away (by the gateway, say) is what is held. The old rows are always let go;
- * rows that cannot be read now are said and read by whatever asks first, so
- * one failed read does not refuse the login.
- */
 export async function refreshPlayer(username: string): Promise<void> {
   if (!username) return;
   // Guard (test "a login reads the player's mark before it reads their rows").

@@ -4,8 +4,6 @@ import { TRADE_SETTLING, TradeLink, type TradeAnswer, type TradeHandlers, type T
 import { TradeSettle } from "../cluster/tradesettle";
 import { linkPair, settle } from "./cluster-fakelink";
 
-// The marks peerDown makes (cluster/tradesettle.ts) go to a fence of these tests, not the node's: a mark there would
-// hold up the writes of a player of the same name in another test file.
 const fence = new TradeSettle({ ms: 200 });
 afterEach(() => fence.reset({ ms: 200 }));
 

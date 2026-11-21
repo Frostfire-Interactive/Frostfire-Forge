@@ -2,11 +2,6 @@ import { describe, expect, test } from "bun:test";
 import { WEATHER_CYCLE_MS, settledPick } from "../systems/weathercycle";
 import { receiverSource } from "./receiver-source";
 
-// Cluster mode: a world split between nodes shows one weather on both sides of a border. A "random" world settles on
-// the same weather on every node (systems/weathercycle.ts), at the same moment; a weather set by /weather or the weather
-// editor on one node is told to the others (peer news "weather"), which show it to their players of that world.
-// receiver.ts cannot be imported: these read its source.
-
 const receiver = receiverSource();
 const transpiler = new Bun.Transpiler({ loader: "ts" });
 

@@ -1,10 +1,3 @@
-/**
- * Player editor: the admin window that changes another player's state.
- * Every change goes through the system that owns that state, so an offline
- * player is edited in the database and an online one also has their live copy
- * and their client brought up to date. Each packet is permission-checked and
- * validated here before anything is touched.
- */
 import assetCache from "../services/assetCache";
 import playerCache from "../services/playermanager";
 import { turns } from "../services/datacache";
@@ -58,11 +51,6 @@ const DEAD = "The player is dead: revive them before changing this.";
 const OWNER_LOAD_MS = 8_000;
 const OWNER_ACTION_MS = 45_000;
 
-/**
- * What only the socket layer can do for an online player (area-of-interest
- * broadcasts, sprites, map changes), registered by receiver.ts so this module
- * does not import it.
- */
 export interface PlayerEditorBridge {
   /** Rebuild the live inventory from the database, bag slots worked out, and send it. */
   syncInventory(target: any): Promise<void>;
@@ -112,11 +100,6 @@ async function cached<T>(key: string): Promise<T[]> {
   return Array.isArray(value) ? (value as T[]) : [];
 }
 
-/**
- * The live copy of a player, or null while they are offline. It is edited in
- * place and never stored back: a player who has just disconnected must not be
- * put back in the cache by a change that was still in flight.
- */
 export function findOnline(username: string): any | null {
   const target = lower(username);
   for (const p of Object.values(playerCache.list() as Record<string, any>)) {
@@ -132,11 +115,6 @@ async function heldPermissions(username: string): Promise<string[]> {
   return String(held || "").split(",").map((p) => p.trim()).filter(Boolean);
 }
 
-/**
- * Asked of the permissions system on every packet (the row its cache holds,
- * which every change to a player's permissions is written to), not trusted
- * from the copy made at login.
- */
 export async function canUseEditor(admin: any): Promise<boolean> {
   if (!admin?.username || admin.isGuest) return false;
   const held = await heldPermissions(admin.username);
@@ -150,11 +128,6 @@ export interface EditorTarget {
   userid: number;
 }
 
-/**
- * Who `/player edit <id>` and the editor's packets mean. A number is a
- * connection id first (what the other admin commands take), then an account
- * id; anything else is a username. Offline players resolve from their account.
- */
 export async function resolveTarget(identifier: unknown): Promise<EditorTarget | null> {
   if (typeof identifier !== "string" && typeof identifier !== "number") return null;
   const id = String(identifier).trim();
@@ -258,12 +231,6 @@ async function questsOf(username: string): Promise<{ active: Array<{ quest_id: n
   return { active, completed };
 }
 
-/**
- * Everything the editor shows, from what the systems hold of the player:
- * nothing here asks the database. An online player's vitals and position
- * come from their live copy instead: those are only written down on the
- * periodic save.
- */
 export async function buildSnapshot(username: string): Promise<PlayerEditorSnapshot | null> {
   const account = await player.getAccount(username);
   // An account with no character has no one to show: its login username is never shown in the character's place.
@@ -398,10 +365,6 @@ export type EditorSearch =
   | { kind: "players"; query: string; players: Array<{ username: string; userid: number; online: boolean }>; truncated: number }
   | { kind: "items"; query: string; slot: string | null; items: Array<Pick<Item, "name" | "quality" | "type" | "icon" | "equipment_slot" | "level_requirement">>; truncated: number };
 
-/**
- * Player search lists who is online until something is typed, then matches
- * every account. Item search matches names, or with `slot` what fits that slot.
- */
 export async function search(data: any): Promise<EditorSearch> {
   const query = String(data?.query ?? "").trim().toLowerCase().slice(0, 64);
 
@@ -457,10 +420,6 @@ export async function search(data: any): Promise<EditorSearch> {
 
 // ------------------------------------------------------------------- stats
 
-/**
- * [label, min, max] of each stat that can be set. max_xp is not one: it
- * follows the level, whose own maximum is maxLevel().
- */
 const STAT_FIELDS: Record<string, [string, number, number]> = {
   level: ["Level", 1, INT_MAX],
   xp: ["XP", 0, INT_MAX],
@@ -618,10 +577,6 @@ async function inUse(username: string, itemName: string): Promise<number> {
   return count;
 }
 
-/**
- * Bring a stack to the size `target` returns for what is held now (a string
- * is an error), through the inventory system's own add and remove.
- */
 async function adjustInventory(username: string, rawName: unknown, target: (held: number) => number | string): Promise<string[]> {
   const rows = (await inventory.get(username)) as any[];
   const wanted = lower(rawName).trim();
@@ -1061,11 +1016,6 @@ const forgetQuest = (ctx: ActionContext) =>
 
 // ------------------------------------------------------------------ access
 
-/**
- * The /permission command's rules, so the editor is no way round them: never
- * your own, adding and removing each need their own permission, and you can
- * only hand out what you hold.
- */
 async function setPermissions({ admin, username, data }: ActionContext): Promise<string[]> {
   if (lower(admin.username) === username) return ["You cannot modify your own permissions."];
   if (!Array.isArray(data?.permissions)) return ["No permissions were given."];
@@ -1203,10 +1153,6 @@ export type EditorResult =
 /** Actions that write a number the admin read from a snapshot (a balance, a stack), not a change to what is held. */
 const SET_AFTER_SNAPSHOT: ReadonlySet<string> = new Set(["currency.set", "inventory.set"]);
 
-/**
- * Dispatch for every PLAYER_EDITOR_* packet. Permission is checked here, on
- * every packet, so no caller can reach a change without it.
- */
 export async function handleEditorPacket(admin: any, type: string, data: any): Promise<EditorResult> {
   const action = type === "PLAYER_EDITOR_ACTION" ? String(data?.action ?? "") : type === "PLAYER_EDITOR_SEARCH" ? "search" : "load";
   const fail = (errors: string[], snapshot: PlayerEditorSnapshot | null = null): EditorResult =>
@@ -1257,9 +1203,6 @@ export async function handleEditorPacket(admin: any, type: string, data: any): P
     if (!handler) return fail([`Unknown player editor action: ${action}`]);
 
     return await oneAtATime<EditorResult>(target.username, async () => {
-      // Bags and coins a lost trade may still change are not edited until it settles (cluster/tradesettle.ts): the
-      // handlers read before they write, and would count from rows the swap replaces. The admin is told while it waits.
-      // Guard (test "the player editor waits for the target's mark before it runs an action").
       if (settleStoreAttached()) {
         let waited = false;
         const refused = await settleForAdmin(target.username, (leftMs) => {
@@ -1270,9 +1213,6 @@ export async function handleEditorPacket(admin: any, type: string, data: any): P
           else void deliverToPlayer(admin.username, notice);
         });
         if (refused) return { kind: "result", ok: false, errors: [refused], action, snapshot: await snapshotAfter(target.username) };
-        // A balance or a stack set to a number was chosen from the snapshot the admin was shown, which may predate the
-        // swap: written now it would put back what the swap moved. Refused with the bags and coins as they are now.
-        // Guard (test "after a wait the player editor refuses a balance or stack set from the old snapshot").
         if (waited && SET_AFTER_SNAPSHOT.has(action)) {
           return { kind: "result", ok: false, errors: [STALE_AFTER_SETTLE], action, snapshot: await snapshotAfter(target.username) };
         }
@@ -1294,17 +1234,11 @@ export async function handleEditorPacket(admin: any, type: string, data: any): P
       return { kind: "result", ok: errors.length === 0, errors, action, snapshot: await snapshotAfter(target.username) };
     });
   } catch (error) {
-    // Everything that writes answers for itself above, so nothing has changed by here. Never a denial: a permission
-    // that could not be read is not one the admin lacks, and a denial closes the editor.
     log.error(`[PLAYER_EDITOR] ${action} by ${admin?.username} failed: ${error}`);
     return fail([NOT_READ]);
   }
 }
 
-/**
- * The state to send with an answer, or null. A read that fails or runs late takes nothing from the answer: the admin
- * is waiting on it (their tool gives up after 15 s), and the tool keeps what it shows until it reads again.
- */
 export function freshOrNull<T>(read: () => Promise<T>, what: string): Promise<T | null> {
   return Promise.race([
     read().catch((error) => {
@@ -1325,22 +1259,10 @@ function askOwnerNode(admin: any, type: string, username: string, data: any): Pr
     type === "PLAYER_EDITOR_LOAD" ? OWNER_LOAD_MS : OWNER_ACTION_MS);
 }
 
-/**
- * Runs as the action "cells-editor": a packet of the player editor for a player on this node, from the node of the
- * admin who sent it. The admin is checked again here, by their account. A load gives the snapshot alone, for the
- * asking node to add the options to.
- */
 export async function ownerNodeEdit(args: any): Promise<EditorResult | PlayerEditorSnapshot | null> {
   const admin = { username: typeof args?.admin?.username === "string" ? args.admin.username : "", id: args?.admin?.id };
   if (args?.type !== "PLAYER_EDITOR_LOAD") return handleEditorPacket(admin, "PLAYER_EDITOR_ACTION", args?.data);
   return (await canUseEditor(admin)) ? buildSnapshot(lower(args?.data?.target)) : null;
 }
 
-/**
- * Changes to one player run one after the other. The handlers check, then write ("already has that mount?", then the
- * insert; "is admin?", then the toggle), and two packets for the same player used to run side by side: both passed
- * the check before either wrote, so a doubled request gave the player the mount or spell twice (those tables have no
- * unique key) and flipped the admin role on and straight back off. Two admins editing one player are ordered too.
- * The control panel orders its own changes through here as well, so the two windows cannot cross on one player.
- */
 export const oneAtATime = turns();

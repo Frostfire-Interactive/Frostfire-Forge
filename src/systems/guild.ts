@@ -23,14 +23,6 @@ export type GuildPacket = {
     my_rank: number | null;
 };
 
-// Every guild, rank and member. Reads are answered from these rows; every
-// change below is written to the database and then to them. A write the
-// database does not answer has all three read again (see `writing`).
-//
-// Who is in a guild is who guild_members names: characters, by id, shown by
-// the names they go by (characters.name). characters.guild_id says the same
-// after each change here, and is what a login reads. A guild's leader is
-// guilds.leader_id, with the name in guilds.leader as it was written.
 const guildRows = tableCache<GuildRow>("guilds", async () => {
     const result = await query("SELECT g.id, g.name, g.leader, g.motd, c.name AS leader_name FROM guilds g LEFT JOIN characters c ON c.id = g.leader_id", []) as any[];
     return (result || []).map((row: any) => ({ id: Number(row.id), name: row.name, leader: row.leader_name ?? row.leader, motd: row.motd ?? "" }));
@@ -68,12 +60,6 @@ async function membersOf(guildId: number): Promise<MemberRow[]> {
     return (await memberRows.filter(inGuild(guildId))).sort(ranked);
 }
 
-/**
- * Runs one write. `accounts` are the usernames whose guild_id it sets: the
- * player system caches accounts, and is told to read those again whether or
- * not the write was answered. When it is not answered the guild tables are
- * read again too, and the failure is still thrown.
- */
 async function writing<T>(accounts: Array<string | null | undefined>, write: () => Promise<T>): Promise<T> {
     try {
         return await write();
@@ -125,11 +111,6 @@ async function setRank(row: MemberRow, rank: number): Promise<GuildResult> {
 
 type Outcome = GuildResult & { members?: string[] };
 
-/**
- * Runs `work` in the actor's guild's turn, with the actor and target read
- * again inside it: what a change checks and writes back is what the turn
- * before it left. Not in the same guild any more is refused.
- */
 async function inPair(actor: string, target: string, work: (pair: Extract<Pair, { ok: true }>) => Promise<Outcome>): Promise<Outcome> {
     const seen = await memberRows.find(named(actor));
     if (!seen) return refuse("not_in_guild");
@@ -519,11 +500,6 @@ const guilds = {
     async packetFor(guildId: number, viewer: string): Promise<GuildPacket> {
         return (await this.packetsFor(guildId, [viewer])).get(viewer)!;
     },
-    /**
-     * The guild as each viewer's rank may see it, keyed by the name as given.
-     * The guild is read and built once; per viewer only the officer notes
-     * and their own rank differ. The packets share the parts they have in common.
-     */
     async packetsFor(guildId: number, viewers: string[]): Promise<Map<string, GuildPacket>> {
         const ranks = await this.getRanks(guildId);
         const members = await membersOf(guildId);

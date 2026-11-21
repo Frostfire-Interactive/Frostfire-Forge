@@ -19,14 +19,8 @@ const rows = rowCache<any>("equipment", async (username) => {
     return response[0] ?? null;
 }, { perPlayer: true });
 
-// One change to a player's row at a time: statements sent side by side reach the database in no set order, so two
-// for one slot could leave the row held with one item and the database with the other.
 const oneAtATime = turns();
 
-/**
- * Write one slot of a player's row with `write`, then make the same change to the row held. When the write fails,
- * the row held is forgotten and the next read loads it: a write that threw may still have been made.
- */
 function setSlot(username: string, slot: string, item: string | null, write: () => Promise<unknown>) {
     return oneAtATime(username, async () => {
         try {

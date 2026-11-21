@@ -30,8 +30,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         );
         currentPlayer.stats.health = 0;
         currentPlayer.stats.stamina = 0;
-        // Belt and braces: ghosts move at mounted speed with no lingering
-        // combat modifiers (death already resets these, keep them clean here).
         currentPlayer.slowPercent = 0;
         currentPlayer.slowMultiplier = 1;
         currentPlayer.stunnedUntil = 0;
@@ -40,9 +38,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         currentPlayer.reviveOffered = false;
         currentPlayer.ghostTeleportPending = true;
         await forceStopPlayerMovement(currentPlayer);
-        // Server state moves now so SAVE/logout/disconnect all agree on the
-        // graveyard (relog lands there). Only the moveXY broadcast waits for
-        // the client's mid-black moment below.
         currentPlayer.location.position = { x: spawn.x, y: spawn.y, direction: "down" };
         playerCache.set(currentPlayer.id, currentPlayer);
         try {
@@ -51,10 +46,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           log.error(`Failed to persist ghost state for ${currentPlayer.username}: ${e?.message || e}`);
         }
 
-        // Announce ghost form immediately: it starts the client's ~5s release
-        // cinematic and carries the destination so graveyard chunks preload.
-        // pendingTeleport keeps observers from rendering the ghost at the
-        // corpse; the confirm at teleport time is their spawn signal.
         bumpStateRevision();
         const releaseMap = currentPlayer.location.map;
         const releaseId = currentPlayer.id;
@@ -92,8 +83,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
 
       case "CONFIRM_REVIVE": {
         if (!currentPlayer) return;
-        // Rejecting a confirm revokes the offer client-side so a stale popup
-        // can never linger: it only hides on this verdict or on REVIVE.
         const denyRevive = () => {
           currentPlayer.reviveOffered = false;
           if (currentPlayer.wt) {
@@ -146,9 +135,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
 
       case "CONFIRM_GRAVEYARD_REVIVE": {
         if (!currentPlayer) return;
-        // Only a ghost may resurrect at the graveyard. No distance check:
-        // skipping the corpse run is the point, Resurrection Sickness is
-        // the price (15 min: -20% health, -10% all other stats).
         if (!currentPlayer.isGhost || currentPlayer.isDead) return;
 
         resurrection.applySickness(currentPlayer);

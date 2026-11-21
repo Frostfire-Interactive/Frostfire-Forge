@@ -1,10 +1,5 @@
 import crypto from "crypto";
 
-// The cluster's own secret (CLUSTER_LINK_SECRET), held by the nodes and the coordinator only. The client tickets
-// keep GATEWAY_GAME_SERVER_SECRET, which the webserver and the gateway hold too: a process that can sign a ticket
-// must not be able to pose as a node. Three keys are derived from it with HKDF-SHA256, one per use, so a signature
-// made for a link hello can never pass on the bus or as a store record, nor any other way round.
-
 /** The shortest CLUSTER_LINK_SECRET a node or coordinator starts with. */
 export const CLUSTER_SECRET_MIN_LENGTH = 32;
 export const LINK_KEY_LABEL = "cells-link-v1";
@@ -26,10 +21,6 @@ export function deriveClusterKeys(secret: string): ClusterKeys {
   return { link: derive(LINK_KEY_LABEL), bus: derive(BUS_KEY_LABEL), store: derive(STORE_KEY_LABEL) };
 }
 
-/**
- * The keys of CLUSTER_LINK_SECRET. Throws when it is unset or shorter than CLUSTER_SECRET_MIN_LENGTH: a cluster
- * process does not start without it. Names the variable and never its value.
- */
 export function requireClusterKeys(env: Record<string, string | undefined> = process.env): ClusterKeys {
   const secret = env.CLUSTER_LINK_SECRET ?? "";
   if (secret.length < CLUSTER_SECRET_MIN_LENGTH) {

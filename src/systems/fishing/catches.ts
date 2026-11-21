@@ -1,18 +1,3 @@
-/**
- * Fishing (USER REQUEST 2026-10-20: "Fishing editor choose type of fish (multiple choice with % chance editable)
- * rewarded on what tile (similar to tileset sound editor) (item listed as material)").
- *
- * The map editor's Fishing tab gives tiles of a tileset what can be caught from them: a list of material items, each
- * with a chance. A tile is fishable when it has such a list, on every map that draws it, as the editor's footstep
- * sounds are kept (systems/tilesounds.ts): by tileset picture (the image's file name without its extension, in lower
- * case: "environment") and tile id in that tileset. This file holds what needs no server: reading an editor save,
- * applying it, rolling a catch, and finding the fishable tile at a point of a map.
- *
- * Each fishable tile also names the items that fish it (USER REQUEST 2026-10-21: "require a list of set items that can
- * be used for fishing selected in the fishing section inside the tile editor"): weapons, one of which the player must
- * have equipped to cast there. A tile that names none cannot be fished.
- */
-
 /** One thing a tile can give: an item and its chance, in percent. */
 export interface Catch { item: string; chance: number }
 /** tileset key -> tile id (as text) -> what can be caught there */
@@ -42,11 +27,6 @@ export function tilesetKey(tileset: any): string {
 /** A chance as kept: rounded to hundredths of a percent. */
 const roundChance = (n: number) => Math.round(n * 100) / 100;
 
-/**
- * A save as the editor sent it, made tidy (tileset names in lower case, each tile once, in order, item names as the
- * item list spells them), or what is wrong with it in words. `itemName` gives the item's own name for a name of a
- * material item in any case, and null for anything else; `toolName` the same for an item that can fish (a weapon).
- */
 export function readFishingChanges(
   raw: unknown,
   itemName: (name: string) => string | null,
@@ -106,10 +86,6 @@ export function applyFishingTools(base: FishingTools, changes: FishingChange[]):
   return out;
 }
 
-/**
- * The item a player fishes a spot with: their equipped weapon (`weapon`, its name), when the spot names it. Null when
- * it does not, or the spot names nothing.
- */
 export function fishingTool(spot: FishingSpot, weapon: unknown): string | null {
   const held = String(weapon ?? "").trim().toLowerCase();
   if (!held || held === "null") return null;
@@ -137,10 +113,6 @@ export function applyFishingChanges(base: FishingTiles, changes: FishingChange[]
   return out;
 }
 
-/**
- * One catch out of a tile's list, picked by chance (`r`: a number from 0 up to 1). The chances are weights: when they
- * do not add up to 100 %, each counts for its share of their sum, so a list always gives something.
- */
 export function rollCatch(catches: Catch[], r: number): string | null {
   const total = catches.reduce((sum, entry) => sum + Math.max(0, entry.chance), 0);
   if (!(total > 0)) return null;
@@ -183,11 +155,6 @@ function tileLayers(layers: any[] | undefined, out: any[] = []): any[] {
   return out;
 }
 
-/**
- * The fishable tile at a world point (px) of a Tiled map held whole (the "maps" cache): of the tiles drawn there,
- * every layer but collision and no-pvp, the topmost that is fishable. A tile that is not, a lily pad on the water for
- * one, is passed over.
- */
 export function fishingSpotInMap(map: any, x: number, y: number, tiles: FishingTiles, tools: FishingTools = {}): FishingSpot | null {
   const tw = Number(map?.tilewidth) || 16, th = Number(map?.tileheight) || 16;
   const tx = Math.floor(x / tw), ty = Math.floor(y / th);
@@ -202,10 +169,6 @@ export function fishingSpotInMap(map: any, x: number, y: number, tiles: FishingT
   return best;
 }
 
-/**
- * The same for a chunk of a world as the asset server sends it (/map-chunk: layers with zIndex and data), at the
- * tile (lx, ly) inside the chunk. Ties of zIndex go to the layer listed later.
- */
 export function fishingSpotInChunk(chunk: any, lx: number, ly: number, tilesets: any[], tiles: FishingTiles, tools: FishingTools = {}): FishingSpot | null {
   const w = Number(chunk?.width) || 0, h = Number(chunk?.height) || 0;
   if (!(lx >= 0 && ly >= 0 && lx < w && ly < h)) return null;

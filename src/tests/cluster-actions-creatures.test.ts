@@ -11,10 +11,6 @@ const { NavGrid } = await import("../systems/creatures/navgrid");
 const { normalizeTemplate, normalizeSpawn } = await import("../systems/creatures/repository");
 const { createAuras } = await import("../systems/creatures/auras");
 
-// Hits on a mirrored creature go to its owner; the owner applies them. One engine
-// plays both nodes: a mirror (remote) records what it forwards, and a local
-// creature takes what the owner would be handed.
-
 function makeCreature(id: number, x: number, y: number, over: any = {}) {
   return {
     id, templateId: 1, spawnId: 1, poolId: null, map: "main", layerId: null, x, y, dir: "down",
@@ -323,10 +319,6 @@ test("creature_threat is refused for a player not mirrored from the asker, and c
 
 // ------------------------------------------------------------------ a creature's attack on a mirrored player: the target's node
 
-/**
- * A player of this node and the engine bridge that records what is done to it; both are put back. Creature 60 is a
- * mirror of the asking node's creature here, of template 1, whose one ability is spell 1 (Frost Bolt).
- */
 async function atTarget(fn: (ctx: { player: any; calls: any[]; call: (body: any) => Promise<any> }) => Promise<void>): Promise<void> {
   const calls: any[] = [];
   const savedSpells = await assetCache.get("spells");

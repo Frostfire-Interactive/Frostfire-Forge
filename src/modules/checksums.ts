@@ -15,8 +15,6 @@ function getValidMapPath(mapName: string): string {
   return resolved;
 }
 
-// Each file's last checksum, by its size and time: the maps are compared with the asset server's at registration
-// and after it restarts (modules/assetloader.ts checkMapChanges), and a file not written since is not read and hashed again.
 const known = new Map<string, { mtimeMs: number; size: number; checksum: string }>();
 
 export function calculateFileChecksum(filePath: string): string {
@@ -67,8 +65,6 @@ export function mapChecksumNow(mapName: string): string {
   }
 }
 
-// The worker that works the checksums out (checksums.worker.ts), started on first use. It keeps the checksums it has
-// worked out, so a file not written since is not read again. It does not keep the process alive.
 let worker: Worker | null = null;
 let nextId = 0;
 const waiting = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>();
@@ -114,10 +110,6 @@ function inWorker<T>(message: { map?: string }): Promise<T> {
   });
 }
 
-/**
- * Every map file's checksum, by file name, worked out in a worker: a first pass reads, parses and hashes every map
- * (some 1,800 files), which held the event loop for over a second. Should the worker fail, it is done here instead.
- */
 export async function calculateAllMapChecksums(): Promise<Record<string, string>> {
   try {
     return await inWorker<Record<string, string>>({});
@@ -133,22 +125,6 @@ export async function calculateMapChecksum(mapName: string): Promise<string> {
     return await inWorker<string>({ map: mapName });
   } catch {
     return mapChecksumNow(mapName);
-  }
-}
-
-export function getMapContent(mapName: string): any | null {
-  try {
-    const filePath = getValidMapPath(mapName);
-
-    if (!fs.existsSync(filePath)) {
-      console.warn(`Map file not found: ${filePath}`);
-      return null;
-    }
-
-    return JSON.parse(fs.readFileSync(filePath, "utf-8"));
-  } catch (error) {
-    console.error(`Failed to read map ${mapName}:`, error);
-    return null;
   }
 }
 

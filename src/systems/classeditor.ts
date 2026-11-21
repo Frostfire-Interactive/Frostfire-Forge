@@ -1,12 +1,3 @@
-/**
- * Class editor: what the admin class editor window (/cle) asks for. USER REQUEST 2026-10-14 ("create a class editor
- * that can define certain base stats and learn certain spells at certain levels"). A class (systems/classes.ts) is
- * a name, a description, the stats a new character of it starts with, the spells it learns, each at a level, and the
- * items it starts with (USER REQUEST 2026-10-21).
- * Each change is checked, written to the table and then to the list held, and answered with whether it was done and
- * every class as it then stands. Like the weather editor, it reads only what the server holds (the classes and the
- * spells), never the database.
- */
 import log from "../modules/logger";
 import assetCache from "../services/assetCache";
 import { getIconUrl, getSpriteUrl } from "../modules/spriteSheetManager";
@@ -217,10 +208,6 @@ async function saveClass(admin: any, data: any): Promise<Outcome> {
   };
 }
 
-/**
- * Delete a class. Characters already made of it keep their stats and spells and go on playing: they learn no more
- * class spells, and are not asked to make a new character.
- */
 async function deleteClass(admin: any, data: any): Promise<Outcome> {
   const id = Number(data?.id);
   const row = Number.isInteger(id) ? await classes.get(id) : null;

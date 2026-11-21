@@ -2,9 +2,6 @@ import { describe, test, expect, spyOn, afterEach } from "bun:test";
 import log from "../modules/logger";
 import { deferredStep } from "../services/deferredstep";
 
-// A Redis call that fails in a timer callback must be logged, not left as a rejection nobody handles (an unhandled
-// rejection ended a game-server node during a short Redis outage).
-
 const timeout = () => Object.assign(new Error("Connection timeout reached after 5000ms"), { code: "ERR_REDIS_CONNECTION_TIMEOUT" });
 
 const escaped: unknown[] = [];

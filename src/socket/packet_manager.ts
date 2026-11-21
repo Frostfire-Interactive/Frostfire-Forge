@@ -29,8 +29,6 @@ export const packetManager = {
     ] as any[];
   },
   ping: (data: any) => {
-    // PONG only. This previously also pushed an unsolicited TIME_SYNC frame,
-    // which the client never consumed - time of day comes from SERVER_TIME.
     return [
       packet.encode(JSON.stringify({ type: "PONG", data: data })),
     ] as any[];
@@ -236,19 +234,11 @@ export const packetManager = {
       packet.encode(JSON.stringify({ type: "QUEST_MARKERS", data })),
     ] as any[];
   },
-  /**
-   * `vendor`: the NPC also sells things, which the player can ask to see (VENDOR_OPEN).
-   * `innkeeper`: it keeps an inn, which the player can make their home (SET_HOME).
-   */
   npcGossip: (data: { npcId: number; name: string | null; gossipText: string | null; quests: QuestOffer[]; vendor?: boolean; innkeeper?: boolean }) => {
     return [
       packet.encode(JSON.stringify({ type: "NPC_GOSSIP", data })),
     ] as any[];
   },
-  /**
-   * A cooldown on the player's items, in milliseconds: the one every consumable shares, or the
-   * home item's own. Sent when it starts, and what is left of it when they log in.
-   */
   itemCooldown: (data: { kind: "consumable" | "home"; remaining: number; total: number }) => {
     return [
       packet.encode(JSON.stringify({ type: "ITEM_COOLDOWN", data })),
@@ -309,8 +299,6 @@ export const packetManager = {
     ] as any[];
   },
   clientConfig: (data: any) => {
-    // Auto loot as the client reads it, true or false: the row a player's settings are held in has it as 1 or 0, and
-    // equipping from a bag sends that row again (handlers/items.ts).
     const config = Array.isArray(data)
       ? data.map((entry) => entry && typeof entry === "object" && "auto_loot" in entry
         ? { ...entry, auto_loot: entry.auto_loot === true || Number(entry.auto_loot) === 1 }
@@ -447,10 +435,6 @@ export const packetManager = {
       )
     ] as any[];
   },
-  // Composes a LOAD_PLAYERS frame from PRE-serialized player JSON strings.
-  // The spawn fan-out broadcasts the same player snapshots to hundreds of
-  // receivers; stringifying the deep sprite-laden objects once per player per
-  // flush instead of once per receiver is what keeps login waves cheap.
   loadPlayersJson: (playersJson: string[], snapshotRevision: number | null) => {
     return [
       packet.encode(
@@ -471,8 +455,6 @@ export const packetManager = {
     const direction = DIRECTION_MAP[data.d?.dr as string] ?? 1;
     const stealth = data.s === 1 ? 1 : 0;
 
-    // Layout: [u8 header][u32 id][i32 x][i32 y][u8 dir|stealth][u8 pad][u32 s][u16 ms].
-    // Positions are 32-bit: 16-bit wrapped past 32767 px (maps over 2047 tiles).
     const packetData = new Uint8Array(21);
     const view = new DataView(packetData.buffer);
 
@@ -482,8 +464,6 @@ export const packetManager = {
     view.setInt32(9, y, true);
     packetData[13] = direction | (stealth << 4);
 
-    // Trailing one-way latency probe: [u32 seconds][u16 ms] (ignored by clients
-    // that parse exactly 15 bytes). Date.now() overflows a single u32.
     const serverSendTime = Date.now();
     view.setUint32(15, Math.floor(serverSendTime / 1000), true);
     view.setUint16(19, serverSendTime % 1000, true);
@@ -671,11 +651,6 @@ export const packetManager = {
       packet.encode(JSON.stringify({ type: "TILE_SOUNDS", data })),
     ] as any[];
   },
-  /**
-   * A player's fishing, for everyone on the map (systems/fishing): "cast" (the bobber lands at x, y), "bite", "reel"
-   * (the player began reeling the fish in), "escape" (the fish got away: the bobber comes up again), "catch" (the fish
-   * is pulled out: its item, icon and quality) and "end" (the line is taken in).
-   */
   fishing: (data: { id: string; state: "cast" | "bite" | "reel" | "escape" | "catch" | "end"; x?: number; y?: number; item?: string; icon?: string | null; quality?: string }) => {
     return [
       packet.encode(JSON.stringify({ type: "FISHING", data })),
@@ -729,9 +704,6 @@ export const packetManager = {
       packet.encode(JSON.stringify({ type: "SPRITE_SHEET_ANIMATION", data })),
     ] as any[];
   },
-  // A pose change alone (see socket/looks.ts): the client switches the player's animation on the sheets it holds.
-  // `poseRev` (optional) is the pose revision of the stream copy of a datagram pose (socket/posedgram.ts): the client
-  // keeps a newer pose it already shows. Absent, the client applies the pose as it always did.
   spriteSheetPose: (data: { id: string; animationState: string; poseRev?: number }) => {
     return [
       packet.encode(JSON.stringify({ type: "SPRITE_SHEET_POSE", data })),
@@ -742,8 +714,6 @@ export const packetManager = {
       packet.encode(JSON.stringify({ type: "BATCH_SPRITE_SHEET_ANIMATION", data: animations })),
     ] as any[];
   },
-  // Like batchSpriteSheetAnimation but takes pre-serialized animation JSON
-  // strings (see loadPlayersJson for the rationale).
   batchSpriteSheetAnimationJson: (animationsJson: string[]) => {
     return [
       packet.encode(`{"type":"BATCH_SPRITE_SHEET_ANIMATION","data":[${animationsJson.join(",")}]}`),
@@ -806,9 +776,6 @@ export const packetManager = {
       packet.encode(JSON.stringify({ type: "CONSOLE_MESSAGE", data })),
     ] as any[];
   },
-  // `utcOffset`: the shift from UTC, in seconds, of the place whose time of day
-  // the game keeps (systems/weatherapi.ts). Left out when there is none, and
-  // the client reads the time on its own clock.
   serverTime: (utcOffset?: number | null) => {
     return [
       packet.encode(JSON.stringify({ type: "SERVER_TIME", data: Date.now(), ...(utcOffset != null ? { utcOffset } : {}) })),
@@ -829,8 +796,6 @@ export const packetManager = {
       packet.encode(JSON.stringify({ type: "LIGHTNING", data })),
     ] as any[];
   },
-  // The tornadoes on a map now (systems/tornadoes.ts): sent to its players about five times a second while there are
-  // any, and once with none when the last has gone.
   tornadoes: (data: { map: string; tornadoes: Array<{ id: string; x: number; y: number }> }) => {
     return [
       packet.encode(JSON.stringify({ type: "TORNADOES", data })),
@@ -1215,8 +1180,6 @@ export const packetManager = {
       packet.encode(JSON.stringify({ type: "CREATURE_MOVE", data: { c: entries } })),
     ] as any[];
   },
-  // Like creatureMove but takes each entry already serialized (see CreatureSync.flushMoves): the same bytes, with
-  // the nested JSON.stringify per viewer replaced by a join.
   creatureMoveJson: (entriesJson: string[]) => {
     return [
       packet.encode(`{"type":"CREATURE_MOVE","data":{"c":[${entriesJson.join(",")}]}}`),
@@ -1442,19 +1405,12 @@ export const packetManager = {
       packet.encode(JSON.stringify({ type: "CHARACTER_REQUIRED", data: null })),
     ] as any[];
   },
-  // Cluster mode: this login belongs on another node. The client connects there with the ticket (signed for that node).
-  // A handoff (cells phase 6) sets `handoff`: the client reconnects at once without counting it as a switch loop,
-  // and with `resume` keeps its world (no map load) until HANDOFF_DONE. `report`: the client sends what it did in the gap
-  // with its AUTH on the new node (session.ts), which walks it there before HANDOFF_DONE. `gapUpdates`: and each change of
-  // key after AUTH as a HANDOFF_GAP (movement.ts), which the new node walks even after HANDOFF_DONE (applyLateGap).
   switchNode: (node: { nodeId: string; publicHost: string; port: number; wtPort: number; useSSL: boolean }, ticket: NodeTicket, handoff?: { resume: boolean }) => {
     const { nodeId, publicHost, port, wtPort, useSSL } = node;
     return [
       packet.encode(JSON.stringify({ type: "SWITCH", data: { nodeId, publicHost, port, wtPort, useSSL, ticket, ...(handoff ? { handoff: true, resume: handoff.resume, report: true, gapUpdates: true } : {}) } })),
     ] as any[];
   },
-  // Cluster mode: the player walks toward a border; the node they will be sent to is named so the client can open a
-  // session there first. The address only: no ticket (the SWITCH brings it) and nothing of the player.
   handoffPrepare: (node: { nodeId: string; publicHost: string; port: number; wtPort: number; useSSL: boolean }) => {
     const { nodeId, publicHost, port, wtPort, useSSL } = node;
     return [packet.encode(JSON.stringify({ type: "HANDOFF_PREPARE", data: { nodeId, publicHost, port, wtPort, useSSL } }))] as any[];
@@ -1463,11 +1419,6 @@ export const packetManager = {
   handoffAbort: () => {
     return [packet.encode(JSON.stringify({ type: "HANDOFF_ABORT", data: null }))] as any[];
   },
-  // The node stops stepping the player for a handoff: the client walks them on by itself until HANDOFF_DONE or HANDOFF_STAY.
-  // `report`: the client reports the gap with its AUTH (as the SWITCH's `report`), so it walks a key let go or turned as it is.
-  // `gapUpdates`: and each change of key after it (as the SWITCH's `gapUpdates`).
-  // `at`: where the node stopped stepping the player (rounded; null: not known). The movement datagram of the last step
-  // can come after this frame or not at all, so the client walks the gap on from here.
   handoffBegin: (at: { x: number; y: number } | null) => {
     return [packet.encode(JSON.stringify({ type: "HANDOFF_BEGIN", data: { report: true, gapUpdates: true, ...(at ?? {}) } }))] as any[];
   },
@@ -1475,10 +1426,6 @@ export const packetManager = {
   handoffStay: (at: { x: number; y: number } | null) => {
     return [packet.encode(JSON.stringify({ type: "HANDOFF_STAY", data: at }))] as any[];
   },
-  // A handoff arrival that kept its world: the client takes its position and lets the player move again. `walk` is the
-  // direction the node walks the player in as it sends this (the direction a MOVEXY names), or null when it does not.
-  // `catchUpMs` is the walk its first MOVEXY makes up on top of the first step (arrival.ts, resumeCatchUpMs). `gapSeq` is
-  // the number of the newest gap report walked (-1 for none).
   handoffDone: (data: { map: string; x: number; y: number; direction: string; walk?: string | null; catchUpMs?: number; gapSeq?: number }) => {
     return [packet.encode(JSON.stringify({ type: "HANDOFF_DONE", data }))] as any[];
   },
@@ -1562,12 +1509,6 @@ export const packetManager = {
     ] as any[];
   },
 };
-/**
- * The stats an observer (not the player, not a party member) is sent on the regen tick. The client merges a partial
- * stats object into what it holds and reads health and stamina, the two totals (it sets max health and max stamina
- * from them), and, while its inspect window is open on the player, the level and the five stat_ values. Everything
- * else (xp, the base maxima, stat_health, stat_stamina) it never reads for another player. absorbtion stays: the nameplate and target frame draw the shield from it.
- */
 export function observerStats(stats: any): Record<string, number> {
   const out: Record<string, number> = {
     health: stats.health,
@@ -1581,10 +1522,6 @@ export function observerStats(stats: any): Record<string, number> {
   return out;
 }
 
-/**
- * The regen tick's UPDATESTATS for one player: the player and their party members get the full stats, anyone else
- * who sees them the trimmed ones (observerStats). Each frame is encoded once, the trimmed one only if someone needs it.
- */
 export function regenStatsFrames(player: { id: string; username?: string }, stats: any): { full: Uint8Array; frameFor: (viewer: { party?: string[] }) => Uint8Array } {
   const full = packetManager.updateStats({ id: player.id, target: player.id, stats })[0];
   let trimmed: Uint8Array | null = null;

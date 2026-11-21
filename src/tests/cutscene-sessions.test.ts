@@ -1182,10 +1182,6 @@ describe("the events", () => {
 });
 
 describe("/cutscene in a cluster", () => {
-  // Each node of a region plays scenes to its own players. `play <name> map` is told to the other nodes (peer news
-  // "cutscene-map") and each plays it to its own players on that map. A player named who is on another node is played
-  // to or stopped there (the player action "cells-cutscene"), and that node tells the admin how it went. A reset is
-  // told to every node (peer news "cutscene-views-reset"), so none goes on taking the scene for seen.
   const admin = () => enter(makePlayer({ isAdmin: true, permissions: [] }));
   const BUS_KEY = "cutscene-test-key";
   async function region() {

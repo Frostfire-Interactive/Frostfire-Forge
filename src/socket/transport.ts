@@ -37,26 +37,14 @@ const BATCH_ENTRY_BYTES = 13; // [u32 id][i32 x][i32 y][u8 dir|stealth]
 export const CLOSE_NORMAL = 0;
 export const CLOSE_ABNORMAL = 1;
 
-// Below the library's hard 64MB per-session queue limit: once a connection's
-// queue passes this, sendFrame stops writing instead of letting the transport
-// destroy the stream with E_QUEUE_FULL.
 const MAX_SAFE_QUEUE_BYTES = 48 * 1024 * 1024;
 
-// The most one stream write holds when a turn's frames are coalesced. The client's
-// frame decoder slices its buffer once per frame, so decoding one read costs about
-// the square of its size (0.7 ms at 16 KB, 50 ms at 256 KB): small writes keep it cheap.
 const MAX_FLUSH_BYTES = 16 * 1024;
 
-// sendThenClose: the longest it waits for its frames to be written, then for the peer to close the session itself
-// (it has read them), and the grace it gives a session that cannot say when the peer closed.
 export const SEND_THEN_CLOSE_WRITE_MS = 1000;
 const SEND_THEN_CLOSE_PEER_MS = 3000;
 const SEND_THEN_CLOSE_GRACE_MS = 100;
 
-// A stream frame whose payload is empty, or one 0x00 byte, carries nothing the client reads (it parses it as JSON and
-// ignores the failure). Such frames were seen, five to a connection, from a node under overload, with no log line naming
-// the sender. They are dropped here and logged once per caller per minute, with the top of the stack, so the next run
-// names the code that queues them.
 const EMPTY_FRAME_LOG_MS = 60_000;
 const EMPTY_FRAME_SOURCES_MAX = 64;
 const emptyFrameLoggedAt = new Map<string, number>();
@@ -107,8 +95,6 @@ export interface TransportServerOptions {
   idleTimeoutMs: number;
   maxSessions: number;
   rateLimits?: any;
-  // Cluster mode: ids unique across the world (cluster/ids.ts) in place of random ones.
-  /** The id for a new connection, given its ticket's token (a handoff arrival keeps its old id). Null: none left. */
   allocateId?: (token: string) => string | null;
   handlers: TransportHandlers;
 }
@@ -192,9 +178,6 @@ export class TransportConnection {
   get bufferedAmount(): number {
     if (this.readyState !== 1) return 0;
 
-    // metricsSnapshot() is a native call - the flush samples this for every
-    // receiver on every flush (thousands of times per second at scale), so
-    // cache the snapshot briefly. Backpressure checks tolerate 250ms staleness.
     const now = Date.now();
     if (now - this.lastMetricsAt < 250) {
       return this.lastQueuedBytes + this.pendingWriteBytes;
@@ -203,18 +186,11 @@ export class TransportConnection {
     return this.getFreshQueuedBytes() + this.pendingWriteBytes;
   }
 
-  /**
-   * Bypasses the bufferedAmount cache. Use before writing large bursts (spawn
-   * batches) where a stale reading could push the session queue past its limit.
-   */
   getFreshQueuedBytes(): number {
     if (this.readyState !== 1) return 0;
 
     let queuedBytes = 0;
     try {
-      // A cheap synchronous read of the session's send backlog, replacing the
-      // previous library's metricsSnapshot(). Still sampled rather than read
-      // per frame: see getSampledQueuedBytes.
       queuedBytes = Number(this.session?.queuedBytes ?? 0n);
     } catch {
       queuedBytes = 0;
@@ -226,14 +202,6 @@ export class TransportConnection {
     return queuedBytes;
   }
 
-  /**
-   * Sampled queue reading for the per-frame write path. metricsSnapshot() is
-   * a native call; sampling it on EVERY reliable frame (spawns, chat, topic
-   * broadcasts - tens of thousands per second at 1000+ players) was a
-   * measurable cost. Refresh at most once per maxAgeMs; between samples the
-   * estimate is kept conservative by pendingWriteBytes accounting. The 48MB
-   * tripwire sits 16MB below the hard 64MB limit, which absorbs the staleness.
-   */
   private getSampledQueuedBytes(maxAgeMs: number = 100): number {
     const now = Date.now();
     if (now - this.lastMetricsAt >= maxAgeMs) {
@@ -268,14 +236,6 @@ export class TransportConnection {
     return this.sendFrame(payload) !== null;
   }
 
-  /**
-   * send for one payload going to many connections: `shared` holds the length-prefixed frame (encodeFrame), built
-   * by the first connection that really queues it, so a broadcast frames its bytes once and every viewer's queue
-   * holds the same frame instead of its own copy. The frame is only ever read (copied into a coalesced write or
-   * written as it is), so sharing it is safe. Every guard of send applies, and a connection that drops the payload
-   * never builds the frame; a payload that is not a stream frame (a movement header) goes the ordinary way.
-   * Both return false when the payload was dropped, true when it was queued (or sent).
-   */
   sendFramed(payload: Uint8Array, shared: { frame?: Uint8Array }): boolean {
     if (this.readyState !== 1 || !payload || this.dropEmpty(payload)) return false;
 
@@ -287,11 +247,6 @@ export class TransportConnection {
     return this.sendFrame(payload, shared) !== null;
   }
 
-  /**
-   * Send a message as an unreliable datagram (fire-and-forget, no queueing).
-   * Use for periodic, loss-tolerant messages (SERVER_TIME, stats updates)
-   * that would otherwise contend for the reliable stream's ordering queue.
-   */
   sendBestEffort(payload: Uint8Array): void {
     if (this.readyState !== 1 || !payload || this.dropEmpty(payload)) return;
     if (payload.length > this.maxDatagramSize) {
@@ -302,11 +257,6 @@ export class TransportConnection {
     this.sendDatagram(payload);
   }
 
-  /**
-   * A binary CREATURE_MOVE past the datagram size goes as several datagrams of whole records, each with its own
-   * header and count. False when not even one record fits a datagram (or the payload is not a whole number of
-   * records): the caller then sends it on the stream, where the client decodes it alike.
-   */
   private sendSplitCreatureMoves(payload: Uint8Array): boolean {
     const perDatagram = Math.floor((this.maxDatagramSize - CREATURE_MOVE_HEADER_BYTES) / CREATURE_MOVE_ENTRY_BYTES);
     const body = payload.length - CREATURE_MOVE_HEADER_BYTES;
@@ -366,13 +316,6 @@ export class TransportConnection {
   }
 
   private sendDatagram(payload: Uint8Array): void {
-    // Prefer the synchronous native path: datagrams are lossy and the enqueue
-    // does not block, so the Promise + tokio task hop of the async sendDatagram
-    // is pure overhead - and at high player counts the server pushes tens of
-    // thousands of movement datagrams per second through here.
-    // sendSync skips the writer and promise a spec datagram write allocates.
-    // Datagrams are unreliable and the enqueue never blocks, so there is
-    // nothing to await, and this path carries tens of thousands per second.
     try {
       this.session.datagrams.sendSync(payload);
     } catch (error) {
@@ -382,11 +325,6 @@ export class TransportConnection {
     }
   }
 
-  /**
-   * Send several movement datagrams in a single native call. Each element must
-   * already be datagram-sized (the movement encoder guarantees this). Falls
-   * one crossing into the transport.
-   */
   sendMovementBatch(payloads: Uint8Array[]): void {
     if (this.readyState !== 1 || payloads.length === 0) return;
     try {
@@ -398,12 +336,6 @@ export class TransportConnection {
     }
   }
 
-  /**
-   * Pose records (socket/pose_codec.ts) as datagrams: packed into datagrams of whole records no longer than the
-   * datagram size the movement datagrams respect, and sent in one native call (sendSync for one datagram, sendSyncBatch
-   * for more). Fire-and-forget like any datagram. False when nothing was sent (the connection is not open, or no
-   * records), so the caller sends the pose on the stream.
-   */
   sendPoseRecords(records: Uint8Array[]): boolean {
     if (this.readyState !== 1 || records.length === 0) return false;
     const datagrams = packPoseRecords(records, this.maxDatagramSize);
@@ -431,12 +363,6 @@ export class TransportConnection {
     const writer = this.writer;
     if (!writer || this.writeFailed) return null;
 
-    // Last-resort tripwire: if the session's outbound queue is already near the
-    // hard limit (64MB), the client is hopelessly behind - skip the write
-    // instead of letting the transport reject it with E_QUEUE_FULL. The client
-    // either recovers or its own watchdog reconnects.
-    // Uses the sampled reading (see getSampledQueuedBytes) - a native snapshot
-    // per frame is far too expensive at scale.
     const queuedBytes = this.getSampledQueuedBytes(100) + this.pendingWriteBytes;
     if (queuedBytes > MAX_SAFE_QUEUE_BYTES) {
       const now = Date.now();
@@ -455,10 +381,6 @@ export class TransportConnection {
     this.pendingFrames.push(frame);
     this.pendingFrameBytes += frame.length;
 
-    // One flush per connection per turn: every frame queued until the current
-    // synchronous work ends goes into the outbox together. A microtask runs as
-    // soon as that work returns, in the same event-loop turn, so a frame never
-    // waits behind timers or I/O the way it would with setImmediate.
     if (!this.pendingFlush) {
       let resolve!: () => void;
       const promise = new Promise<void>((r) => { resolve = r; });
@@ -468,11 +390,6 @@ export class TransportConnection {
     return this.pendingFlush.promise;
   }
 
-  /**
-   * Moves the turn's queued frames to the outbox and starts the write pump. A
-   * connection that is no longer open (or whose stream failed) drops what is
-   * queued instead of writing.
-   */
   private flushFrames(): void {
     const batch = this.pendingFlush;
     if (!batch) return;
@@ -496,14 +413,6 @@ export class TransportConnection {
     this.pumpWrites();
   }
 
-  /**
-   * At most one stream write is in flight per connection. Idle, the first write
-   * leaves at once; while one is in flight the frames pile up in the outbox, and
-   * when it settles everything queued goes out together, split into writes of
-   * whole frames of at most MAX_FLUSH_BYTES (a single larger frame is written
-   * alone), in queue order. Without this each flush became its own queued write
-   * on the stream, and long ticks made those queues longer.
-   */
   private pumpWrites(): void {
     if (this.writing) return;
     const frames = this.outFrames;
@@ -574,17 +483,11 @@ export class TransportConnection {
     }
     if (error) {
       this.writeFailed = true;
-      // There is no queue-full error here: a write that outruns the peer
-      // waits on QUIC flow control, and the queuedBytes tripwire above sheds
-      // frames before a client gets that far behind.
       const sessionClosed = isSessionClosedError(error);
       if (this.readyState !== 3 && !sessionClosed) {
         log.debug(`Frame write failed: ${String(error?.message || error)}`);
       }
       this.dropOutbox();
-      // The stream is dead but the session may not be: without a close the player stays connected and gets nothing,
-      // for good. Closing runs the normal disconnect path (save, cleanup). A session that is already closed needs none,
-      // and close() ignores a connection that is closing, so this happens once; it must not throw out of the write path.
       if (!sessionClosed) {
         try {
           this.close(1011, "stream write failed");
@@ -630,14 +533,6 @@ export class TransportConnection {
     }
   }
 
-  /**
-   * Sends the last frames on the stream and closes once the peer has them: a
-   * close straight after a send can lose them (the session's close drops what
-   * the stream has not delivered yet). For a frame the peer answers by closing
-   * the session itself (SWITCH), the peer's close is the sign it was read; the
-   * session is closed from here only when that does not come within peerMs.
-   * A write that does not finish within writeMs does not hold the close.
-   */
   async sendThenClose(payloads: Uint8Array[], code: number, reason: string, { writeMs = SEND_THEN_CLOSE_WRITE_MS, peerMs = SEND_THEN_CLOSE_PEER_MS } = {}): Promise<void> {
     if (this.readyState !== 1) return;
     const writes = payloads.map((payload) => this.sendFrame(payload)).filter((write) => write !== null);
@@ -653,12 +548,6 @@ export class TransportConnection {
     this.close(code, reason, { drain: true, inFlight: false });
   }
 
-  /**
-   * drain: a graceful send (the restart notice, the "logged in from another location" notice) - the write in flight
-   * (the frames this very turn queued start one at once on an idle connection) and the frames still queued behind it are
-   * written before the session closes, for writeMs at most. Any other close ends the session at once and drops them.
-   * inFlight: whether the drain also waits for the write in flight (default: with drain); sendThenClose has waited already.
-   */
   close(code: number = 1000, reason: string = "", { drain = false, inFlight = drain }: { drain?: boolean; inFlight?: boolean } = {}): void {
     if (this.closedFlag) return;
     this.closedFlag = true;
@@ -700,12 +589,6 @@ export class TransportConnection {
   }
 }
 
-/**
- * How long a cluster node lets a session sit without its AUTH_CONNECT. A client opens its session to the next node
- * while the player is still walking toward the border (HANDOFF_PREPARE) and holds it, unauthenticated and with no
- * player, until the SWITCH brings the ticket; it gives the session up after 10 s itself, so the node waits longer than
- * that. Bounded, and the same for every session of a cluster node; a single node keeps its configured timeout.
- */
 export const PREOPEN_AUTH_TIMEOUT_MS = 15_000;
 
 /** The time a session may stay without its AUTH_CONNECT on this server. */
@@ -724,15 +607,6 @@ export function startAuthTimer(connection: TransportConnection, ms: number): Ret
 }
 
 export function startWebTransportServer(options: TransportServerOptions): Promise<any> {
-  // This library takes no rate limits of its own, so the configured ones are
-  // applied here: new sessions against handshakesPerSec / handshakesBurst
-  // (server-wide: the library does not say which address a session is from,
-  // so handshakesBurstPerPrefix cannot be applied), datagrams against
-  // datagramsPerSec / datagramsBurst server-wide and
-  // datagramsPerSecPerConnection / datagramsBurstPerConnection (default 240
-  // and 480: a client moves at 30 a second) for each connection, and streams by
-  // maxConcurrentStreams (a client uses one). Queues are still shed via the
-  // queuedBytes tripwire in sendFrame(). See the notes on MAX_SAFE_QUEUE_BYTES.
   const limits = options.rateLimits || {};
   const handshakes = new RateBucket(Number(limits.handshakesPerSec), Number(limits.handshakesBurst));
   serverDatagrams = new RateBucket(Number(limits.datagramsPerSec), Number(limits.datagramsBurst));
@@ -841,15 +715,8 @@ async function startStreamLoop(
           continue;
         }
 
-        // A handler closed this connection (LOGOUT, a kick) while frames the
-        // client sent after it were still in this chunk. Handlers can't act on
-        // a closed connection, and running them anyway (e.g. a trailing
-        // movement packet re-registering a mover) would undo the close
-        // cleanup - stop reading instead.
         if (!connection.isOpen()) return;
 
-        // Stamp the actual read time so handlers can measure event-loop
-        // queueing between frame arrival and dispatch.
         connection.lastFrameReadAt = readWallTime;
 
         const message = textDecoder.decode(frame);
@@ -864,8 +731,6 @@ async function startStreamLoop(
 function startDatagramLoop(session: any, connection: TransportConnection, options: TransportServerOptions): void {
   (async () => {
     try {
-      // Datagrams arrive as a WHATWG ReadableStream rather than the async
-      // iterator the previous library exposed.
       const reader = session.datagrams.readable.getReader();
       for (;;) {
         const { value: datagram, done } = await reader.read();
@@ -962,9 +827,6 @@ function tryAuthenticate(
   connection.attachStream(writable);
   options.handlers.onOpen(connection);
 
-  // A connection that holds a ticket but never logs anyone in is closed after
-  // idleTimeoutMs, so it cannot sit on a session slot. A logged-in player may
-  // idle (QUIC's own idle timeout closes a dead peer).
   if (options.idleTimeoutMs > 0) {
     const idle = setTimeout(() => {
       if (!connection.loggedIn && connection.isOpen()) connection.close(1008, "No login");

@@ -3,8 +3,6 @@ import { databaseModule } from "./setup";
 
 mock.module("../controllers/sqldatabase", () => databaseModule({ default: async () => [] }));
 
-// Generated at server start (`bun create-config`) and gitignored, so CI has
-// no copy on disk. Mock the values instead of requiring the file.
 mock.module("../config/settings.json", () => ({
   default: { creatures: {} },
   creatures: {},
@@ -274,8 +272,6 @@ function setup(templateOver: any = {}, gridOverride?: any, extraTemplates: Recor
     spell: (id) => spells.get(id),
     abilities: (templateId) => abilities.get(templateId) ?? [],
     applySpellEffectsToPlayer: (_c, playerId, spell) => events.playerEffects.push({ playerId, spell: spell.name }),
-    // Projectile flight: record the delay, then land the hit immediately so the
-    // combat assertions stay synchronous.
     later: (ms: number, fn: () => void) => {
       events.pendingImpacts.push({ ms });
       fn();

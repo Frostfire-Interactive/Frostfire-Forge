@@ -3,9 +3,6 @@ import { characterDatabaseModule } from "./setup";
 
 // USER REQUEST 2026-10-14: character classes (systems/classes.ts) and the class editor (systems/classeditor.ts).
 
-// ------------------------------------------------------------ fake database
-// The statements the two systems send, run against in-memory tables. Anything else is an error.
-
 type Row = Record<string, any>;
 let tables: { classes: Row[]; permissions: Row[]; learned_spells: Row[] };
 let nextId: number;

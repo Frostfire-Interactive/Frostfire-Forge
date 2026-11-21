@@ -11,17 +11,11 @@ import * as settings from "../config/settings.json";
 
 const defaultMap: string = (settings as { default_map?: string }).default_map?.replace(".json", "") || "main";
 
-// Block owners reach the Gateway (POST /blocks) when a table changes: changes of one burst go out together, this long
-// after the first of them, with the state of the moment.
 const BLOCKS_COALESCE_MS = 250;
 // A report that failed is tried again this many times, this far apart; the next registration sends every map anyway.
 const BLOCKS_RETRY_MS = 2000;
 const BLOCKS_RETRIES = 3;
 
-// Evaluate the TLS state at registration time rather than at import time:
-// the local certificate provisioning (ensureLocalCertificate) runs after
-// module imports, so an import-time check would report useSSL=false even
-// though the listeners are serving TLS.
 export function resolveUseSSL(): boolean {
   const _cert = process.env.TLS_CERT_PATH;
   const _key = process.env.TLS_KEY_PATH;
@@ -45,23 +39,17 @@ class GatewayClient {
   private mapSyncPromise: Promise<void> | null = null;
   private mapSyncResolver: (() => void) | null = null;
   private previousRtt: number | null = null;
-  // Cluster mode: the block table the Gateway is told of, the maps changed since the last report, and the queue the
-  // reports go through (one at a time, so an older state never lands after a newer one).
   private blocksSource: BlockReportSource | null = null;
   private stopBlocksWatch: (() => void) | null = null;
   private blocksPending = new Set<string>();
   private blocksTimer?: Timer;
   private blocksQueue: Promise<void> = Promise.resolve();
-  // Maps whose last report did not get through (until one does), the ones already warned of, and what is under way:
-  // reports in the queue and retries waiting on their timer. A good heartbeat sends the dirty maps again.
   private blocksDirty = new Set<string>();
   private blocksWarned = new Set<string>();
   // Maps already warned of as not encodable: its own flag, so the warning for failed sends is not used up by this one.
   private blocksUnencodableWarned = new Set<string>();
   private blocksInFlight = 0;
   private blocksRetrying = 0;
-  // Maps the gateway refused for good (a 400: it has no room for them, or does not take the report), each with the table
-  // it refused. Such a map is not sent again until its table changes, or the node registers again.
   private blocksRefused = new Map<string, string>();
   /** How long changes of one burst are held to go out together (settable for tests). */
   blocksCoalesceMs = BLOCKS_COALESCE_MS;
@@ -326,11 +314,6 @@ class GatewayClient {
     }
   }
 
-  /**
-   * Cluster mode: tells the Gateway which node owns which block (POST /blocks), so a login can be sent to the owner
-   * of the saved point. Every map goes out when the node registers (also when it registers again), and a map goes
-   * out again when its table changes. Not with the heartbeat. Without a node id (cluster off) nothing is ever sent.
-   */
   reportBlocksFrom(source: BlockReportSource): void {
     if (!this.config.nodeId) return;
     this.stopBlocksWatch?.();
@@ -362,8 +345,6 @@ class GatewayClient {
     this.queueBlocks(source.maps());
   }
 
-  // A report that used up its retries stays dirty. The gateway is told of it again at the next good heartbeat (once,
-  // with the table as it is then): a gateway that was away for a while must not keep an older epoch for long.
   private resendDirtyBlocks(): void {
     if (this.blocksDirty.size === 0 || !this.blocksSource || !this.registered) return;
     if (this.blocksInFlight > 0 || this.blocksRetrying > 0) return;
@@ -420,8 +401,6 @@ class GatewayClient {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ id: this.registrationId, authKey: process.env.GATEWAY_AUTH_KEY, ...report })
         });
-        // A gateway that does not know the node (it restarted: the next heartbeat registers again, which sends every
-        // map) or that has no such route (an older one) is not asked again.
         if (response.status === 404) {
           this.blocksDirty.delete(map);
           this.blocksWarned.delete(map);
@@ -475,8 +454,6 @@ class GatewayClient {
       }
 
       try {
-        // The maps that differ from the asset server's are written here and read again, and their players load them
-        // again (as the changes the asset server pushes are)
         const { checkMapChanges } = await import("./assetloader.ts");
         const changes = await checkMapChanges(assetServerUrl);
         if (changes.length > 0) log.success(`Updated ${changes.length} map(s) from the asset server: ${changes.map((c) => c.name).join(", ")}`);

@@ -10,28 +10,16 @@ export const IGNORE_LIMIT = 100;
 /** What became of asking to ignore someone. "staff": the one asking is an admin. "admin": the one named is. */
 export type IgnoreResult = "added" | "already" | "self" | "unknown" | "full" | "staff" | "admin";
 
-// The names each character ignores, in the order they were added. The rows are the character's (ignores.character_id)
-// and name the ignored character by its id as well (ignored_id), so another character of either account is not on
-// them. A line of chat asks this of everyone it would go to, and is answered from these rows: a change below is
-// written to the database and then to them.
 const rows = rowCache<string[]>("ignores", async (username) => {
   const id = await characterIdOf(username);
   if (id === null) return [];
   return ((await query("SELECT ignored FROM ignores WHERE character_id = ? ORDER BY created_at", [id])) as { ignored: string }[] || []).map((row) => lower(row.ignored));
 }, { perPlayer: true });
 
-// One change to a player's list at a time: each works from the list held and
-// puts back what its statement left, so two side by side would each put back
-// a list without the other's name.
 const oneAtATime = turns();
 
 const lower = (username: string) => String(username ?? "").toLowerCase();
 
-/**
- * A change to a player's list, in its turn. When its statement fails the list
- * held is forgotten and the next read asks the database: a statement that
- * timed out may still have been written.
- */
 function change<T>(username: string, work: (held: string[]) => Promise<T>): Promise<T> {
   return oneAtATime(username, async () => {
     try {
@@ -53,11 +41,6 @@ const ignores = {
   async isIgnoring(username: string, other: string): Promise<boolean> {
     return (await ignores.list(username)).includes(lower(other));
   },
-  /**
-   * Whether what `sender` sends is held back from `recipient`: the recipient ignores them, and
-   * neither is an admin. An admin is always heard and hears everyone, also where a list from
-   * before they were one says otherwise.
-   */
   async blocks(recipient: string, sender: string): Promise<boolean> {
     if (!(await ignores.isIgnoring(recipient, sender))) return false;
     return !(await player.isAdmin(sender)) && !(await player.isAdmin(recipient));

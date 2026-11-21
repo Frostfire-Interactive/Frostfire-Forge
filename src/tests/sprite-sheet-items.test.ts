@@ -1,14 +1,8 @@
 import { afterAll, expect, setSystemTime, test } from "bun:test";
 import { standInFor } from "./setup";
 
-// The limit fix wave, fix 3(b): the item sheets the sprite data is built with are kept in memory, not read from the
-// cache (Redis on a cluster node) on every miss; a write to the items through the cache drops them at once, and
-// otherwise they are read again after a few seconds (a node's edit is not heard on another node).
-
 // ---- the cache tells who is listening when a key is written
 
-// A fresh copy of the real module, loaded here, before this file puts its stand-in in place of the shared one below:
-// the stand-in also answers for the copy once it is in place (it does on Linux), so the copy cannot be made later.
 const saved = process.env.CACHE;
 process.env.CACHE = "memory";
 const fresh = "../services/assetCache.ts?onchange";

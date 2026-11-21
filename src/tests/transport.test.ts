@@ -59,16 +59,11 @@ test("FrameDecoder survives a large chunk arriving behind a buffered partial fra
   const bigPayload = new Uint8Array(7000);
   const bigFrame = encodeFrame(bigPayload);
 
-  // One complete small frame, then the header + first 4996 bytes of a 7000-byte
-  // frame: leaves readOffset > 0 with a partial frame at the buffer head.
   const push1 = new Uint8Array(encodeFrame(first).length + 5000);
   push1.set(encodeFrame(first), 0);
   push1.set(bigFrame.slice(0, 5000), encodeFrame(first).length);
   expect(decoder.push(push1).length).toBe(1);
 
-  // 2004 bytes finish the big frame, then a header declaring a 1000-byte
-  // payload with only 492 bytes present (stays partial). The old capacity
-  // check (compacted size) passed while set() wrote past the buffer end.
   const push2 = new Uint8Array(2500);
   new DataView(push2.buffer).setUint32(2004, 1000, true);
   const frames = decoder.push(push2);

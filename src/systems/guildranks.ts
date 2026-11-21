@@ -15,7 +15,6 @@ export const GuildPermission = {
     VIEW_OFFICER_NOTE: 1 << 10,
     EDIT_OFFICER_NOTE: 1 << 11,
 } as const;
-export type GuildPermissionName = keyof typeof GuildPermission;
 
 export const ALL_PERMISSIONS = (1 << 12) - 1;
 export const GUILD_CHAT = GuildPermission.GUILD_CHAT_LISTEN | GuildPermission.GUILD_CHAT_SPEAK;

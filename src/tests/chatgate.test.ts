@@ -1,15 +1,10 @@
 import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
 import { characterDatabaseModule as databaseModule } from "./setup";
 
-// Generated at server start (`bun create-config`) and gitignored, so CI has
-// no copy on disk. Mock the values instead of requiring the file.
 mock.module("../config/settings.json", () => ({
   default: { creatures: {} },
   creatures: {},
 }));
-
-// The gate decides who a line of chat really goes to. The mute and ignore
-// systems behind it are the real ones, reading these two tables.
 
 let muted: Array<{ username: string; muted_by: string; reason: null; created_at: number; expires_at: number | null }>;
 let ignored: Array<{ username: string; ignored: string }>;

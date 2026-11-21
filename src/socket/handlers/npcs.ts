@@ -65,18 +65,11 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         } catch {
           // Talk credit is best-effort.
         }
-        // A cutscene tied to this NPC plays instead of the talk. One that plays once has been seen the next time:
-        // the talk goes on as it always did.
         if (await cutscenePlayer.onNpcInteract(currentPlayer, npcId)) break;
         const offers = await questLogApi.offersFor(currentPlayer.username, npcId);
-        // Locked quests (level-gated, prerequisite-locked) are hidden from
-        // the player, so they must not count toward the skip-the-menu
-        // decision: one visible quest opens its frame directly.
         const visibleOffers = offers.filter(
           (o) => !(o.marker === "available_future" && (o.reason === "level_too_low" || o.reason === "missing_prerequisite"))
         );
-        // An NPC with something in stock is a vendor. With no quest to talk about, talking to it opens
-        // its goods; with quests, they are listed and the goods are one more line under them.
         const sells = vendors.isVendor(npc);
         // An innkeeper's inn can be made the player's home: a line of its own, so talking to one always lists what it offers.
         const keepsInn = isInnkeeper(npc);
@@ -260,8 +253,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
       }
 
       case "QUEST_DECLINE": {
-        // Closes the frame client-side. No state change; exists so packet
-        // interceptors and plugins can observe it.
         break;
       }
 
@@ -349,10 +340,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           // Best-effort.
         }
         try {
-          // Merge the fresh XP first: synchronizeStats rebuilds from the
-          // in-memory copy and would otherwise wipe the just-granted
-          // xp/level back to their pre-turn-in values (same pattern as the
-          // creature-kill XP path).
           const levelBefore = Number(currentPlayer.stats?.level) || 1;
           const xpResult = result.xpResult;
           if (xpResult) {
@@ -373,8 +360,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
             if (syncedStats) currentPlayer.stats = syncedStats;
           }
           playerCache.set(currentPlayer.id, currentPlayer);
-          // XP bar: UPDATESTATS handlers only merge health/mana, so push the
-          // dedicated XP packet too.
           if (xpResult) {
             sendPacket(
               wt,
@@ -507,9 +492,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
               }
               await questDefinitions.reload();
             } catch {
-              // Quest links are best-effort on NPC create. Some may have been
-              // written: the links held are read again, so they are what the
-              // database has.
               await questDefinitions.reload().catch(() => {});
             }
           }
@@ -546,8 +528,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
             return;
           }
 
-          // What the NPC stocks is checked against the items there are. An editor that sends no
-          // stock at all (one from before vendors) leaves what the NPC has.
           npcData.vendor_items = npcData.vendor_items === undefined
             ? (((await assetCache.get("npcs")) || []) as Npc[]).find((held) => Number(held.id) === Number(npcData.id))?.vendor_items ?? []
             : await vendorStockFrom(wt, npcData.vendor_items);
@@ -588,9 +568,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
               await questDefinitions.reload();
             }
           } catch {
-            // Quest links are best-effort on NPC save. Some may have been
-            // written: the links held are read again, so they are what the
-            // database has.
             await questDefinitions.reload().catch(() => {});
           }
 

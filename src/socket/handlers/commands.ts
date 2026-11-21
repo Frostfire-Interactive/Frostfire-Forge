@@ -87,11 +87,7 @@ function serverOrderDeps(): ServerOrderDeps {
     share: (order) => void sendServerOrder(order),
     finish: async (reason) => {
       await clearShared(() => player.clear());
-      // Each disconnect saves its player after leaving the cache:
-      // let the database answer those writes before the process ends.
       await drainQueries();
-      // The process ends here. Starting it again after a restart is its
-      // supervisor's job (the Docker restart policy).
       await gracefulShutdown(reason);
     },
   };
@@ -132,8 +128,6 @@ async function respawnPlayer(targetPlayer: any, tell: (message: string) => void)
       y: Math.round(centerY),
       direction: "down",
     };
-    // Admin respawn releases any death state: corpse/ghost cleared,
-    // full health, position is the respawn point.
     targetPlayer.isDead = false;
     targetPlayer.isGhost = false;
     targetPlayer.corpse = null;
@@ -213,10 +207,6 @@ async function killRefusal(target: any, self: boolean): Promise<string | null> {
 
 /** The GIVE command's body: the item goes to the account, and to the live player when `id` is theirs on this node. */
 async function giveItem(targetName: string, id: string, itemDef: Item, quantity: number, tell: (message: string) => void): Promise<void> {
-  // A trade lost on another node may still be settling for this player (cluster/tradesettle.ts): the item
-  // is added once their mark has run out, so the count starts from what the swap left. The admin is told
-  // while it waits, so the command is not sent again. Guard (test "/give waits for the target's mark
-  // before it adds the item").
   if (settleStoreAttached()) {
     const refused = await settleForAdmin(targetName, (leftMs) => tell(settlingNotice(targetName, leftMs)));
     if (refused) {
@@ -271,8 +261,6 @@ async function giveItem(targetName: string, id: string, itemDef: Item, quantity:
   tell(`Gave ${quantity}x ${itemDef.name} to ${targetName}`);
 }
 
-// An admin's command for a player on this node, sent from the admin's node: as the actions in socket/receiver.ts, counted
-// in flight, never on a player whose handoff is under way, with the answer going back by name.
 function adminAction(name: string, run: (target: any, by: string, tell: (message: string) => void, args: any) => Promise<void>): void {
   registerPlayerAction(name, guardedAction(name, (target, args) => trackPacket(String(target.id), async () => {
     const by = remoteAdminOf(args);
@@ -318,8 +306,6 @@ function notSent(reached: PlayerReach | false, offline = ""): string {
   return reached === "unreached" ? "That player could not be reached, so nothing was done. They may be online on another server node." : offline;
 }
 
-// What the database already holds for a player of this node, changed by a command on another node. A player who is
-// changing node gets it on the node they reach: the snapshot has the old value, and the admin has been told it is done.
 const CHANGE_RETRY_MS = 1_000;
 
 function changeOnArrival(target: any, name: string, args?: unknown): boolean {
@@ -350,10 +336,6 @@ registerPlayerAction("cells-permissions", guardedAction("cells-permissions", asy
 // Whether a whisper may reach a player on this node: a stealthed one is offline to a player (stealthoffline.ts).
 registerWhisperReach({ registerAction: registerPlayerAction });
 
-/**
- * Reads a plain map again from this node's copy of its file, and has this node's players on it load it again. False
- * when this node does not hold the map, or it could not be read.
- */
 async function reloadMapHere(mapName: string): Promise<boolean> {
   const map = (maps as any[]).find((m) => m.name === `${mapName}.json`);
   if (!map) return false;
@@ -407,8 +389,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           };
           sendPacket(player.wt, packetManager.stealth(stealthData));
         });
-        // Cluster mode: the viewers of this player's mirrors hear of it too. The despawn or spawn below goes
-        // map-wide here; the mirror's node does that part itself when the stealth flag reaches the mirror.
         ghosts.relay("player", String(currentPlayer.id), packetManager.stealth(stealthData), false);
         if (isStealth) {
           // When stealthing, despawn from other players (admins can still see stealthed players)
@@ -420,8 +400,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           });
         } else if (!isStealth) {
           bumpStateRevision();
-          // Spawn the admin to all other players using the same spawn packet format
-          // First fetch sprite data asynchronously
           const animationName = getAnimationNameForDirection(
             currentPlayer.location.position?.direction || "down",
             !!currentPlayer.moving,
@@ -561,8 +539,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         });
         relayToMirrorViewers(targetPlayer, dragStopPacket, false);
 
-        // Save where they were put down. Once, here: the updates while they
-        // are carried arrive twenty a second.
         try {
           await player.setLocation(targetPlayer.id, targetPlayer.location.map, targetPlayer.location.position);
         } catch (e) {
@@ -594,10 +570,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         targetPlayer.location.position.x = newX;
         targetPlayer.location.position.y = newY;
 
-        // Update AOI boundaries for the dragged player to handle visibility changes.
-        // The queues are what deliver the spawns: without them a player dragged
-        // out of someone's range and back was marked visible but never re-sent,
-        // so they stayed invisible (to the dragging admin included).
         await updatePlayerAOI(targetPlayer, spawnBatchQueue, despawnBatchQueue);
 
         // Broadcast position update to all players in AOI
@@ -619,9 +591,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
 
       case "COMMAND": {
         if (!currentPlayer) return;
-        // Corpses keep party/whisper/guild chat; the allowlist is enforced
-        // after parsing below. Ghosts keep all commands; only proximity say
-        // (/s, the CHAT packet) is barred for them.
         if (currentPlayer.isGuest) {
           sendPacket(
             wt,
@@ -635,9 +604,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         const command = _data?.command;
         const mode = _data?.mode;
 
-        // A command line is text, or in decrypt mode one RSA block; capped before
-        // it is split. Decrypting costs a private-key operation, so it is held to
-        // the chat rate limit.
         if (mode === "decrypt" ? !isCiphertext(command) : typeof command !== "string") return;
         if (typeof command === "string" && command.length > MAX_COMMAND_LENGTH) {
           sendPacket(wt, packetManager.notify({ message: `Command too long (max ${MAX_COMMAND_LENGTH} characters).` }));
@@ -665,13 +631,9 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         }
 
         const commandParts = decryptedMessage.match(/[^\s"]+|"([^"]*)"/g) || [];
-        // A command run for the control panel arrives already split: its
-        // arguments are values, not chat text to parse.
         const panelCommand = panelCommands.get(parsedMessage);
         const commandName = panelCommand?.name ?? commandParts[0]?.toUpperCase();
 
-        // Corpses may use chat channels only: no admin, tool, or other
-        // commands while awaiting release.
         if (
           currentPlayer.isDead &&
           !["P", "PARTY", "W", "WHISPER", "G", "GUILD", "O", "OFFICER"].includes(commandName || "")
@@ -762,8 +724,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
               (p) => p.username.toLowerCase() === username.toLowerCase()
             );
 
-            // In a cluster the target may be online on another node: their name is all there is of them here. A
-            // stealthed target is offline to a player (stealthoffline.ts), so the target's node is asked.
             const reach = await whisperReach(delivery, currentPlayer, targetPlayer?.username ?? username);
             if (reach !== "reachable") {
               const notifyData = {
@@ -776,8 +736,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
 
             if (!channelLineOk(wt, args.slice(1).join(" "))) break;
 
-            // The whisper is shown as sent either way: a muted player, or one
-            // the target ignores, is not told that it went nowhere.
             const whispered = await chatAudience(currentPlayer.username, "whisper", args.slice(1).join(" "), [targetName]);
             const whisperLine = await chatLinksOf(args.slice(1).join(" "));
             const whisperLinks = whisperLine.links.length > 0 ? { links: whisperLine.links } : {};
@@ -1157,9 +1115,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
             }
 
             if (!targetPlayer) {
-              // A player on another node is summoned by that node (cells-summon, socket/receiver.ts): it checks
-              // the admin rule, tells the player, and moves them, by a handoff when this point is not its own.
-              // Only a name is asked for: an id is local to the node that gave it.
               const reached = isNaN(Number(identifier)) && (await tryOnPlayer(identifier, "cells-summon", {
                 by: currentPlayer.username,
                 map: currentPlayer.location.map,
@@ -1371,8 +1326,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
 
               sendPacket(wt, packetManager.moveXY(targetMovementData));
 
-              // Everyone who now sees the summoned player (above the visibility
-              // cap that is not the same as everyone the admin sees).
               for (const otherPlayer of findPlayersWithTargetInAOI(targetPlayer.id)) {
                 if (!otherPlayer.wt || otherPlayer.id === targetPlayer.id || otherPlayer.id === currentPlayer.id) continue;
 
@@ -1441,13 +1394,8 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
             }
 
             if (!targetPlayer) {
-              // A player on another node: that node sends back its player's point, and this admin is moved by the
-              // admin's own node (cells-teleport-to, then cells-summon; Deviation 21). Only a name is asked for:
-              // an id is local to the node that gave it.
               const reached = isNaN(Number(identifier)) && (await tryOnPlayer(identifier, "cells-teleport-to", {
                 by: currentPlayer.username,
-                // The admin's own held permission, as /summon reads it: the target's node passes it on to the
-                // cells-summon it sends back, and never makes one up.
                 admins: currentPlayer.permissions.some((p: string) => p === "admin.summonadmins" || p === "admin.*"),
               }));
               if (reached !== "sent") {
@@ -1933,8 +1881,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
               break;
             }
 
-            // Asked of the account, not the target found: one found in the
-            // database (offline) carries no isAdmin.
             if (await player.isAdmin(targetPlayer.username)) {
               const notifyData = {
                 message: "You cannot ban other admins",
@@ -1954,8 +1900,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
             }
 
             await player.ban(targetPlayer.username, targetPlayer.wt);
-            // The account is banned, and with it each of its characters: one online here was logged out by the ban,
-            // and a session on another node is ended where it is.
             for (const name of await player.charactersOf(targetPlayer.username)) {
               const here = name.toLowerCase() === targetPlayer.username.toLowerCase() ? heldHere : !!playerCache.getByUsername(name);
               if (!here) await runOnPlayer(name, "admin-kick");
@@ -2076,8 +2020,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
               break;
             }
 
-            // Demoting clears what the target holds, so it is held to the
-            // rule of changing it: a lower admin cannot demote a higher one.
             if (!outranks(currentPlayer.permissions, await permissions.held(targetPlayer.username))) {
               const notifyData = {
                 message: "You cannot change the admin status of someone who holds permissions you cannot grant",
@@ -2125,9 +2067,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
             const whitelistMode = args[0]?.toLowerCase() || null;
             const whitelistUsername = args[1] || null;
 
-            // Switch it while the server runs. Turning it on loads the
-            // usernames and puts this admin on the list; players already
-            // online stay, only new logins are checked.
             if (whitelistMode === "on" || whitelistMode === "off") {
               const result = await setWhitelistEnabled(whitelistMode === "on", currentPlayer.username);
               const notifyData = {
@@ -2259,8 +2198,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
               sendPacket(wt, packetManager.notify(notifyData));
               break;
             }
-            // Two admins asking at once would each warn, disconnect and
-            // spawn: the second is told the first is under way.
             if (restartState.shutdownStarted) {
               sendPacket(wt, packetManager.notify({ message: "The server is already shutting down" }));
               break;
@@ -2586,8 +2523,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
 
             const onlineTarget = reviveTarget ? playerCache.get(reviveTarget.id) : null;
             if (!onlineTarget) {
-              // A player on another node is revived there (cells-revive, socket/receiver.ts; Deviation 20).
-              // Only a name is asked for: an id is local to the node that gave it.
               const reached = !!reviveIdentifier && isNaN(Number(reviveIdentifier))
                 && (await tryOnPlayer(reviveIdentifier, "cells-revive", { by: currentPlayer.username }));
               if (reached !== "sent") {
@@ -2605,8 +2540,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
             }
 
             const shownTarget = onlineTarget.username.charAt(0).toUpperCase() + onlineTarget.username.slice(1);
-            // Revive in place at full health: one body with the cells-revive action (src/socket/revive.ts).
-            // The admin's note goes out before PLAYER_REVIVED, as it always did.
             const reviveResult = await revivePlayer(onlineTarget, reviveDeps(), () => {
               sendPacket(wt, packetManager.notify({ message: `Revived ${shownTarget}` }));
             });
@@ -2616,9 +2549,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
             break;
           }
 
-          // Ends every cooldown an online player is waiting on: spells, the lockout after an
-          // interrupt, the one consumables share and the home item's hour. Themselves, when no
-          // player is named.
           case "COOLDOWNS":
           case "RESETCOOLDOWNS": {
             if (
@@ -2656,9 +2586,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
             break;
           }
 
-          // Sets the admin's own total walk speed, as a multiple of the base walk speed, in place of what a mount,
-          // ghost form or a slow makes it. "/speed reset" (or no number) gives back the normal speed. Kept until the
-          // admin logs out.
           case "SPEED": {
             if (
               !currentPlayer.permissions.some(
@@ -2734,8 +2661,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
 
             if (heldInScene(wt, onlineTarget, currentPlayer)) break;
 
-            // Force the standard death flow: skeleton, corpse persistence,
-            // Release Spirit popup, full server-side locks.
             await handlePlayerDeath(onlineTarget, currentPlayer, {
               damage: onlineTarget.stats?.health || 0,
               isCrit: false,
@@ -2846,8 +2771,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
               break;
             }
 
-            // SECURITY: Always prevent self-modification regardless of permission level.
-            // By name: a target found in the database has no session id.
             if (targetPlayer.username.toLowerCase() === currentPlayer.username.toLowerCase() && mode !== "LIST") {
               const notifyData = {
                 message: "You cannot modify your own permissions",
@@ -2856,11 +2779,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
               break;
             }
 
-            // Whether the target is an admin is asked of the account the player
-            // system holds (which every change of role is written to), not of
-            // the copy made at login, and so holds for a target who is offline.
-            // Only granting is held to this: what a former admin still holds
-            // has to stay listable and removable.
             if((mode === "ADD" || mode === "SET") && !(await player.isAdmin(targetPlayer.username))) {
               const notifyData = {
                 message: "You can only grant permissions to admin players",
@@ -2869,8 +2787,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
               break;
             }
 
-            // SECURITY: Only someone who could have given the target all they
-            // hold may change it, so a lower admin cannot strip a higher one.
             if (mode !== "LIST" && !outranks(currentPlayer.permissions, await permissions.held(targetPlayer.username))) {
               const notifyData = {
                 message: "You cannot change the permissions of someone who holds permissions you cannot grant",
@@ -3173,8 +3089,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
               break;
             }
 
-            // /warp moves only the admin who typed it: /summon is the command
-            // that moves another player.
             sendPacket(
               wt,
               packetManager.notify({ message: "Warping another player is not supported. Usage: /warp <map>" })

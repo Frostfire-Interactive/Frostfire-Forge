@@ -11,11 +11,6 @@ async function held(): Promise<Item[]> {
   return ((await assetCache.get("items")) || []) as Item[];
 }
 
-/**
- * A statement that changes the items table. One that throws may still have
- * been applied (a timeout, say), so the table is read again: what is held is
- * then what the database holds, not what it held before.
- */
 async function write(sql: string, values: any[]): Promise<any> {
   try {
     return await query(sql, values);
@@ -29,12 +24,6 @@ async function write(sql: string, values: any[]): Promise<any> {
   }
 }
 
-/**
- * Start-time safety step: the setup scripts add items.soulbound, but a database that is already
- * live may not have had its setup run before this version starts, and the item editor writes the
- * column. Added here if it is missing. It never throws: when it cannot be added, one warning is
- * logged and no item reads as soulbound.
- */
 export async function ensureSoulboundColumn(): Promise<boolean> {
   try {
     await ensureItemColumn("soulbound");
@@ -45,10 +34,6 @@ export async function ensureSoulboundColumn(): Promise<boolean> {
   }
 }
 
-/**
- * The same for items.sprite_sheet, the sprite sheet an equipped item is drawn with. When it cannot be
- * added, one warning is logged and every item is drawn with the sheet named after it, as before.
- */
 export async function ensureSpriteSheetColumn(): Promise<boolean> {
   try {
     await ensureItemColumn("sprite_sheet", { mysql: "VARCHAR(255) DEFAULT NULL", sqlite: "TEXT DEFAULT NULL" });
@@ -62,12 +47,6 @@ export async function ensureSpriteSheetColumn(): Promise<boolean> {
 /** What a newly priced item costs at a vendor, as a multiple of what vendors pay for it: as the NPC editor priced a newly stocked item. */
 export const BUY_PRICE_MARKUP = 4;
 
-/**
- * The same for items.buy_price, what a vendor charges for an item where the NPC sets no price of
- * its own. Added after vendors were: when it is added here, each item's is set at BUY_PRICE_MARKUP
- * times what vendors pay for it. The prices NPCs already had stay theirs, so nothing a player pays
- * changes. When it cannot be added, one warning is logged and vendors charge what their NPC says.
- */
 export async function ensureBuyPriceColumn(): Promise<boolean> {
   try {
     if (await ensureItemColumn("buy_price")) {
@@ -84,11 +63,6 @@ export async function ensureBuyPriceColumn(): Promise<boolean> {
 /** The icon (on the asset server, icons/home_stone.png) the home item is drawn with when it has none of its own. */
 export const HOME_ITEM_ICON = "home_stone";
 
-/**
- * Start-time step: the home item made by the setup scripts had no icon before they set one, so a home item with no
- * icon is given HOME_ITEM_ICON. An icon chosen in the item editor is never replaced. USER REQUEST 2026-10-17: "make
- * sure the home_stone has the icon home_stone.png". Never throws: when it cannot be set, one warning is logged.
- */
 export async function ensureHomeItemIcon(): Promise<void> {
   try {
     await query("UPDATE items SET icon = ? WHERE teleports_home = 1 AND (icon IS NULL OR icon = '')", [HOME_ITEM_ICON]);

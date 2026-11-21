@@ -1,9 +1,5 @@
 // src/cluster/handoffwatch.ts
 
-// When a player crosses into a block another node owns, and whether they may go now (cells phase 6, spec §5).
-// The watch tick in the receiver (Task 14) asks pickHandoffs every 250 ms; the creature tick (Task 16) asks
-// handoffTarget for each creature it moved.
-
 import { unsettled } from "./tradesettle";
 import { storeIsUp } from "./health";
 
@@ -11,10 +7,6 @@ import { storeIsUp } from "./health";
 export const EDGE_MARGIN_PX = 64;
 /** How far inside the block a player must stand to be handed straight back to the node they came from (HANDOFF_DWELL_MS in handoff.ts). */
 export const DWELL_MARGIN_PX = 2 * EDGE_MARGIN_PX;
-/**
- * How far ahead of a walking player a border to another node is looked for: within this distance their client is told
- * which node is next and opens a session there (PlayerHandoff.prepare). The handoff itself starts EDGE_MARGIN_PX inside.
- */
 export const HANDOFF_PREPARE_PX = 384;
 /** The distances along the walk the prepare looks at, nearest first: a border is found within the first step past it. */
 const PREPARE_STEPS_PX: readonly number[] = [96, 192, 288, HANDOFF_PREPARE_PX];
@@ -34,10 +26,6 @@ export function bareMapName(map: string): string {
   return String(map ?? "").replace(/\.json$/i, "");
 }
 
-/**
- * The node a player or creature at (x, y) should move to, or null. It moves only when another node owns the point
- * and this node owns none of the points `margin` (EDGE_MARGIN_PX) around it. A point nobody owns stays where it is.
- */
 export function handoffTarget(map: string, x: number, y: number, ownerAt: OwnerAt, self: string, margin: number = EDGE_MARGIN_PX): string | null {
   const bare = bareMapName(map);
   const owner = ownerAt(bare, x, y);
@@ -53,19 +41,12 @@ const UNIT: Readonly<Record<string, readonly [number, number]>> = {
   upleft: [-1, -1], upright: [1, -1], downleft: [-1, 1], downright: [1, 1],
 };
 
-/**
- * The node whose block a player at (x, y) walking in `walk` reaches within HANDOFF_PREPARE_PX, or null: only while this
- * node owns the point they stand on, and only along the way they walk (a player walking away, or standing, has none).
- */
 export function prepareTarget(map: string, x: number, y: number, walk: string | null, ownerAt: OwnerAt, self: string): string | null {
   const unit = walk ? UNIT[walk] : undefined;
   if (!unit) return null;
   const bare = bareMapName(map);
   const here = ownerAt(bare, x, y);
   if (here && here !== self) {
-    // Already past the border but not yet far enough in for the handoff (EDGE_MARGIN_PX): the prepare stays while they
-    // keep walking into that block, so the client's session is not closed a moment before the switch uses it. It ends
-    // when they turn back toward this node or walk toward another one.
     const step = PREPARE_STEPS_PX[0];
     const scaleHere = unit[0] !== 0 && unit[1] !== 0 ? Math.SQRT1_2 : 1;
     return ownerAt(bare, x + unit[0] * step * scaleHere, y + unit[1] * step * scaleHere) === here ? here : null;
@@ -97,13 +78,6 @@ export interface HandoffChecks {
   storeUp?(): boolean;
 }
 
-/**
- * Why `player` may not be handed to `target` now, or null. A corpse (dead and not yet a ghost) stays, and so does a
- * player with a resurrection or a graveyard teleport on offer: the offer and the corpse live on this node. A ghost
- * may go. A trade, a cast or an admin's drag ends first, and so does the settling after a lost trade. A down link
- * pauses handoffs (spec §7). `draining`: asked by the handoff itself once the player is drained, so its own pending
- * flag and the player's frozen state are not a reason.
- */
 export function handoffBlocked(player: any, target: string, checks: HandoffChecks, opts: { draining?: boolean } = {}): BlockReason | null {
   const username = String(player?.username ?? "");
   if (player?.remote) return "remote";
@@ -112,8 +86,6 @@ export function handoffBlocked(player: any, target: string, checks: HandoffCheck
   if (player?.reviveOffered) return "revive";
   if (player?.ghostTeleportPending) return "ghost-teleport";
   if (checks.trading(username)) return "trading";
-  // Marked unsettled after a lost trade: the mark is held on this node only, and the node they went to would write
-  // their bags and coins from rows that may predate the swap (cluster/tradesettle.ts). They stay until it runs out.
   if ((checks.settling ?? unsettled)(username)) return "settling";
   if (player?.casting) return "casting";
   if (checks.dragged(String(player?.id ?? ""))) return "dragged";
@@ -130,12 +102,6 @@ function isCoordinate(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
 
-/**
- * What the watch does about players who walk toward a border (PlayerHandoff.prepare / unprepare): each moving player
- * who is not picked this tick has the node ahead of them prepared, or, walking another way, the prepare withdrawn. A
- * standing player is left as they are (the client's own timer ends a session that is not used). `walkOf` answers the
- * direction a player's mover steps in, or null.
- */
 export function prepareWalkers(
   players: Iterable<any>,
   picks: ReadonlyArray<HandoffPick>,

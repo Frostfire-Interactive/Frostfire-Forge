@@ -1,6 +1,4 @@
 import log from "../modules/logger";
-// The language service, a git submodule at src/language-service, runs in this process: its
-// translator is a Python child process the engine starts (see that folder's README).
 import { set_logger, start_translator, translate_text, TranslationRequestError } from "../language-service/src/api";
 
 set_logger({ info: log.info, warn: log.warn, error: log.error });
@@ -43,10 +41,6 @@ const language = {
         }
     },
 
-    /**
-     * One translation per language for a line, shared by every listener who reads that language: the first to ask
-     * starts it and the rest wait on the same answer, so listeners asking at once do not each call the translator.
-     */
     perLanguage: (translateTo: (target: string) => Promise<string>): ((target: string) => Promise<string>) => {
         // A Map: a listener's language comes from their client, and "__proto__" must not reach an object's prototype.
         const lines = new Map<string, Promise<string>>();

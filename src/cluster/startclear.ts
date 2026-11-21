@@ -2,15 +2,6 @@ import log from "../modules/logger";
 import { clusterEnabled } from "./config";
 import type { NodeRegistry } from "./nodes";
 
-/**
- * What a node does to the shared database when it starts (player.clear): it drops verification codes and every
- * account's party, deletes the guests and all parties. That is for a world nobody is in. In a cluster it runs only when
- * no other node of the region is beating, as a node that starts or restarts next to running ones would delete the
- * guests and parties of everyone playing there. Two nodes starting at once may both clear: nobody is playing yet.
- *
- * Live nodes that cannot be read skip it: a skipped clear only leaves stale guests and parties. Outside a cluster it
- * runs as always, without a read. A clear that throws is the caller's to handle, as before. Whether it ran.
- */
 export async function clearOnStart(
   clear: () => Promise<void>,
   nodes: NodeRegistry | null,

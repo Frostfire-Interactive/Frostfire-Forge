@@ -5,11 +5,6 @@ import { SYNC_EXIT_HYSTERESIS } from "./constants";
 import { CreatureRegistry } from "./registry";
 import type { CreatureInstance, CreatureMoveEntry, CreatureSnapshot, CreatureTemplate } from "./types";
 
-/**
- * Creature spawns sent to one player per AOI refresh. A player arriving in a
- * dense area gets them over a few refreshes (300ms apart) rather than paying
- * for hundreds of snapshots in a single tick.
- */
 const MAX_ENTER_PER_REFRESH = 150;
 
 const EMPTY: ReadonlySet<string> = new Set();
@@ -57,10 +52,6 @@ export function toSnapshot(instance: CreatureInstance, template: CreatureTemplat
   };
 }
 
-/**
- * Which creatures a viewer should start / stop seeing. Enter uses the plain
- * radius; exit uses radius * hysteresis so creatures near the edge don't churn.
- */
 export function diffVisibility(
   known: ReadonlySet<number>,
   nearby: Iterable<CreatureInstance>,
@@ -102,15 +93,7 @@ export interface SyncDeps {
   resolvePlayer(id: string): SyncPlayer | null;
   sendSpawn(wt: any, snapshots: CreatureSnapshot[]): void;
   sendDespawn(wt: any, ids: number[]): void;
-  /**
-   * Position updates; `reliable` is used for stop packets so final positions are never lost. `json` is each entry
-   * already serialized (JSON.stringify of it, in the same order), made once per tick for all viewers.
-   */
   sendMoves(wt: any, entries: CreatureMoveEntry[], reliable: boolean, json: string[]): void;
-  /**
-   * The moving (not reliable) entries as binary records (socket/creature_move_codec.ts), each made once per tick.
-   * Without it every entry goes through sendMoves. An entry that does not fit a record still goes through sendMoves.
-   */
   sendBinaryMoves?(wt: any, records: Uint8Array[]): void;
   /** Per-viewer fields (tap state, lootable) applied to snapshots before sending. */
   decorate?(snapshot: CreatureSnapshot, creature: CreatureInstance, playerId: string): void;
@@ -150,11 +133,6 @@ export class CreatureSync {
     this.viewers.delete(playerId);
   }
 
-  /**
-   * A player arrived from another node by a handoff, with its client still showing `ids`. Recorded as known,
-   * so the next refresh sends only what differs: despawns for those this node does not show them, spawns for
-   * the new ones.
-   */
   adopt(playerId: string, map: string, layerId: string | null, ids: Iterable<number>): void {
     this.forget(playerId);
     const state: ViewerState = { map, layerId, ids: new Set() };
@@ -167,14 +145,6 @@ export class CreatureSync {
     }
   }
 
-  /**
-   * Recompute visibility for players in one slice of the population.
-   *
-   * Every player still gets refreshed once per `slices` calls, but the work is
-   * spread across ticks instead of landing on one: with hundreds of players,
-   * each doing a radius query over a crowded map, doing them all together was
-   * the single most expensive thing in the creature tick.
-   */
   refresh(slice = 0, slices = 1): void {
     const maps = new Set<string>(this.deps.registry.mapsWithCreatures());
     for (const v of this.viewers.values()) maps.add(v.map);
@@ -190,11 +160,6 @@ export class CreatureSync {
       }
     }
 
-    // Anyone we track who wasn't on one of those maps has left the world or
-    // moved to a map without creatures. The client clears its creature list on
-    // LOAD_MAP, so they are simply forgotten without a despawn packet. `seen`
-    // holds every player on those maps, not just this slice, so this stays
-    // correct when slicing.
     for (const playerId of [...this.viewers.keys()]) {
       if (!seen.has(playerId)) this.forget(playerId);
     }
@@ -244,10 +209,6 @@ export class CreatureSync {
 
     if (enter.length > 0) {
       const snapshots: CreatureSnapshot[] = [];
-      // Entering a crowded map would otherwise build every snapshot in one
-      // tick - hundreds of them, blowing well past the 100ms budget. Spread
-      // the backlog over the next few refreshes instead; the rest are picked
-      // up on the following pass because they stay outside `state.ids`.
       const batch = enter.length > MAX_ENTER_PER_REFRESH ? enter.slice(0, MAX_ENTER_PER_REFRESH) : enter;
       for (const id of batch) {
         const c = this.deps.registry.get(id);
@@ -285,10 +246,6 @@ export class CreatureSync {
     this.observers.delete(instance.id);
   }
 
-  /**
-   * Send position changes for creatures that moved (best-effort) or stopped
-   * (reliable) since the last call, to the players who can see them.
-   */
   flushMoves(candidates: Iterable<CreatureInstance>): void {
     const moving = new Map<number, CreatureMoveEntry>();
     const stopped = new Map<number, CreatureMoveEntry>();

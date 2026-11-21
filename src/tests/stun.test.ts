@@ -18,8 +18,6 @@ describe("isStunned", () => {
   });
 
   test("compares against an epoch clock, not performance.now()", () => {
-    // stunnedUntil is written as Date.now() + duration. A 5s stun applied now
-    // must read as active when checked against Date.now(), and inactive after.
     const now = Date.now();
     const player = { stunnedUntil: now + 5000 };
     expect(isStunned(player, now)).toBe(true);

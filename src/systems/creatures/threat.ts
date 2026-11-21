@@ -1,10 +1,3 @@
-/**
- * WoW threat table. Pure data structure: no engine imports.
- *
- * - Threat accumulates per unit; the current victim keeps aggro until another
- *   unit exceeds 110% of its threat (in melee range) or 130% (at range).
- * - Taunt forces the victim for a duration and matches top threat.
- */
 import type { CreatureCombatState } from "./types";
 
 export const MELEE_PULL_RATIO = 1.1;
@@ -121,10 +114,6 @@ export class ThreatTable {
     this.victimId = unitId;
   }
 
-  /**
-   * Choose the victim. `eligible` filters units that can currently be
-   * attacked (alive, reachable...); `inMelee` decides the 110% vs 130% rule.
-   */
   selectVictim(now: number, inMelee: (unitId: string) => boolean, eligible: (unitId: string) => boolean = () => true): string | null {
     if (this.tauntedBy && now < this.tauntUntil && this.entries.has(this.tauntedBy) && eligible(this.tauntedBy)) {
       this.victimId = this.tauntedBy;

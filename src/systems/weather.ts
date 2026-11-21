@@ -19,12 +19,6 @@ const rowOf = (weather: WeatherData): WeatherData => ({
   sounds: parseSounds(weather.sounds ?? null),
 });
 
-/**
- * A statement that changes the weather table, then `change` made to the list
- * held: the same list, so whoever was handed it at startup sees the change.
- * A statement that throws may still have been applied (a timeout, say), so
- * the table is read again rather than the list left as it was.
- */
 async function write(sql: string, values: any[], change: (list: WeatherData[]) => WeatherData[]): Promise<any> {
   let response;
   try {

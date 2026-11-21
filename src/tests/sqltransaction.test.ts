@@ -2,8 +2,6 @@ import { expect, test, describe, beforeEach, afterEach } from "bun:test";
 import { SQL } from "bun";
 import { runTransaction, GuardError, NotStartedError } from "../controllers/sqltransaction";
 
-// A real in-memory SQLite database: what is under test is whether the rows
-// are there afterwards, which no stand-in can answer.
 let db: any;
 
 const copperOf = async (username: string) => (await db.unsafe(`SELECT copper FROM currency WHERE username = '${username}'`))[0]?.copper;

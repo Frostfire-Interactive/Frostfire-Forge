@@ -1,10 +1,6 @@
 import { BLOCK_SIZE_PX, type BlockTable } from "./blocks";
 import type { ClusterStore } from "./store";
 
-// The size of every map in blocks, published by the nodes that load the maps so
-// the coordinator can lay out the block table without having the maps itself.
-// Names have no ".json", as in `accounts.map`.
-
 export interface MapExtent {
   name: string;
   widthPx: number;
@@ -28,11 +24,6 @@ export function extentOf(name: string, widthPx: number, heightPx: number): MapEx
   };
 }
 
-/**
- * A map made while the node runs (the map editor's New map, here or on another node): its size is published, as for
- * the maps loaded at start, so the coordinator splits it; the node keeps its block table. Every node that takes the map
- * in publishes it: the same entry, written again.
- */
 export async function takeInMap(node: { store: ClusterStore; blocks: Pick<BlockTable, "useExtents" | "load">; maps: string[] }, extent: MapExtent): Promise<void> {
   const name = bare(extent.name);
   node.blocks.useExtents([{ ...extent, name }]);

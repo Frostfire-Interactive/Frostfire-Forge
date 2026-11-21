@@ -50,12 +50,6 @@ export interface ConnectionToken {
   nodeId: string;
 }
 
-/**
- * A connection ticket as the Gateway makes one (src/socket/ticket.ts): for the
- * account whose token will log in on it, or for none when the client only
- * connects. In cluster mode a node takes only tickets bound to it: the node id
- * is NODE_ID unless one is given ("" binds it to none).
- */
 export function generateConnectionToken(serverSecret: string, origin: string, accountToken?: string, nodeId = process.env.NODE_ID || ""): ConnectionToken {
   const token = crypto.randomBytes(32).toString("hex");
   const timestamp = Date.now().toString();
@@ -79,8 +73,6 @@ export class BenchmarkConnection {
   private constructor(session: any, stream: any) {
     this.session = session;
     this.stream = stream;
-    // A bidirectional stream is a readable and a writable half, so sends go
-    // through a writer rather than a raw write().
     this.writer = stream.writable.getWriter();
 
     (async () => {
@@ -129,9 +121,6 @@ export class BenchmarkConnection {
 
       if (this.state !== 3) {
         this.state = 3;
-        // The stream ended while the session was still open (e.g. the server
-        // reset it after a queue-full). Close the session immediately so it
-        // doesn't linger until the server's idle timeout kills it.
         const reason = loopError ? `stream-ended:${loopError}` : "stream-ended:clean-fin";
         try {
           this.session.close({ code: 1, reason });
@@ -161,9 +150,6 @@ export class BenchmarkConnection {
   }
 
   static async connect(url: string, serverSecret: string, useragent: string = "Frostfire-Forge-Benchmark/1.0", origin: string = "http://localhost", accountToken?: string): Promise<BenchmarkConnection> {
-    // A local certificate is pinned by hash; anything else goes through the
-    // platform trust store. This transport has no CA-pem or skip-verify
-    // option: pinning covers the local case, and is stricter than either.
     const caPem = resolveLocalCertPem();
     const session = new WebTransport(
       url,
@@ -284,8 +270,6 @@ export class BenchmarkConnection {
   }
 
   private writeRaw(bytes: Uint8Array): void {
-    // The write resolves once the transport accepts the bytes; the benchmark
-    // does not await it, so a failure is reported rather than thrown.
     this.writer.write(bytes).catch((error: any) => {
       debug("Benchmark stream write failed:", error);
     });

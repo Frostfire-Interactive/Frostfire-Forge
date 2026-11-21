@@ -1,20 +1,11 @@
 const HEADER_BYTES = 4;
 
-// The largest frame a connection may send grows as it proves who it is, so a
-// stranger cannot make the server buffer and parse megabytes:
-/** Before AUTH_CONNECT: the connection ticket only. */
 export const CONNECT_FRAME_BYTES = 4 * 1024;
 /** After AUTH_CONNECT, until a player logs in: the AUTH packet only. */
 export const LOGIN_FRAME_BYTES = 16 * 1024;
 /** A logged-in player's packets, unless they use the tools: map saves and editor packets are large. */
 export const PLAYER_FRAME_BYTES = 256 * 1024;
 
-/**
- * The largest frame this connection's player may send: the configured maximum
- * for an admin or anyone holding a permission (the tools need it) and on a
- * benchmark server, a normal player's limit otherwise, and the login limit
- * before anyone is logged in.
- */
 export function frameLimitFor(player: { isAdmin?: boolean; permissions?: unknown[] } | null | undefined, maxFrameSize: number, benchmark = false): number {
   if (benchmark) return maxFrameSize;
   if (!player) return Math.min(LOGIN_FRAME_BYTES, maxFrameSize);
@@ -72,11 +63,6 @@ export class FrameDecoder {
       return [];
     }
 
-    // Capacity must be checked against the uncompacted write offset: frames
-    // pipelined in the buffer can legally hold the tail of one max-size frame
-    // plus the start of the next, and the tail of the buffer behind readOffset
-    // is not usable until compaction. Checking the compacted size would let
-    // set() write past the end of the buffer.
     if (this.writeOffset + chunk.length > this.buffer.length) {
       if (this.readOffset > 0) {
         this.buffer.copyWithin(0, this.readOffset, this.writeOffset);

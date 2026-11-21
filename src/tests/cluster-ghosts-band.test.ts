@@ -5,10 +5,6 @@ import { BLOCK_SIZE_PX } from "../cluster/blocks";
 import { databaseModule, mockQuery } from "./setup";
 import { linkPair, settle } from "./cluster-fakelink";
 
-// The border band (fix 1 of the ghost wave): the scan visits only entities within MIRROR_KEEP_PX of a block
-// another node owns, and a mirror is released the moment its entity is no longer visited. Two Ghosts joined by a
-// fake link pair, the real mirrorTargets, and a block table the test replaces the way BlockTable does (a new
-// owners object per change).
 mock.module("../controllers/sqldatabase", () => databaseModule({ default: mockQuery }));
 mock.module("../config/settings.json", () => ({ default: { creatures: {} }, creatures: {} }));
 

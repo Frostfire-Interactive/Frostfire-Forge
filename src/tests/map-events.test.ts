@@ -1,9 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { followMapEvents, type MapPlace } from "../modules/mapevents";
 
-// The engine follows the asset server's changes (/map-events) instead of asking every few seconds: one connection,
-// on which the asset server sends the maps changed since this server's place, then each change as it is made.
-
 type Step = Error | Response | ((signal: AbortSignal) => Response);
 
 function stream(signal?: AbortSignal) {

@@ -2,16 +2,10 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, spy
 import { characterDatabaseModule as databaseModule } from "./setup";
 import { receiverSource } from "./receiver-source";
 
-// Generated at server start (`bun create-config`) and gitignored, so CI has
-// no copy on disk. Mock the values instead of requiring the file.
 mock.module("../config/settings.json", () => ({
   default: { creatures: {} },
   creatures: {},
 }));
-
-// ------------------------------------------------------------ fake database
-// The panel only reads: accounts, permissions and loot tables. Anything else
-// answers with no rows.
 
 type Row = Record<string, any>;
 let tables: Record<string, Row[]>;
@@ -102,11 +96,6 @@ let replies: Record<string, string[]>;
 const accountOf = (username: string) => tables.accounts.find((row) => row.username === username)!;
 const tick = () => new Promise((resolve) => setTimeout(resolve, 1));
 
-/**
- * Stands in for the receiver. The commands the panel has to be careful with
- * do here what they do there: the admin packets and /admin and /restart flip
- * what they find, after the wait a database call gives a second request.
- */
 const receiver = (actor: any) => async (asked: PanelRun): Promise<string[]> => {
   ran.push({ by: actor.username, run: asked });
   await tick();
@@ -203,10 +192,6 @@ afterAll(() => {
   for (const id of SESSIONS) playerCache.remove(id);
   panel.setControlPanelBridge(null);
 });
-
-// ---------------------------------------------------- the rules, by action
-// What each control needs: one name from every group, or the admin role. This
-// is the table the report is written from.
 
 type Needs = { command: string; groups?: string[][]; role?: boolean; confirm?: boolean };
 const COMMAND_RULE = ["admin.permission", "admin.*"];

@@ -10,15 +10,6 @@ import { inMove, registerBlockPart, type BlockMove, type BlockOf, type BlockPart
 import type { GhostKindName, Ghosts } from "../ghosts";
 import { objectViews, type ObjectViews } from "./objects";
 
-// The objects of a moving block (cells phase 7): ground loot, chests, death skeletons, tornadoes. On the old owner
-// each leaves its own objects, is handed over in the ghost tracker, and stays shown here as the new owner's mirror.
-// On the new owner each becomes its own, and its mirror entry is dropped. Gathering nodes and ground AOEs do not move:
-// the new owner's spawner fills its own areas, and an AOE runs out in seconds.
-// Each collect logs, under the move's id, every object it took, by name: a move later lost on any path (an order
-// never decided, a node that died) leaves what it carried named in the log.
-// At most once rests on the move's order (blockmove.ts): accept or restore runs once per move. Run twice on the same
-// data, the part refuses only what is still here; an object taken since (loot picked up) would be taken in again.
-
 export const OBJECTS_PART = "objects";
 
 export interface MovedObjects {
@@ -75,10 +66,6 @@ function untakenRolls(playerLoot: unknown): string {
   }).join("; ");
 }
 
-/**
- * A record for a log line, by id; loot with the item and how many, a chest with each player's untaken rolled items:
- * what was lost or refused is named.
- */
 function named(v: unknown): string {
   if (!isObject(v)) return String(v);
   if (v.item != null) return `${String(v.id ?? "?")} (${String(v.item)} x${String(v.quantity)})`;
@@ -86,22 +73,12 @@ function named(v: unknown): string {
   return String(v.id ?? "?");
 }
 
-/**
- * A rolled chest item as a move carries it, held to the hand-over bounds (itembounds.ts checkBoundsNow, security review
- * Minor 6): a name of the item table (when one is loaded) and a whole count from 1 to the item quantity cap, as ground
- * loot is held to. A bound not read yet does not drop it: a moved record cannot wait, so only a known bound refuses.
- * The cap and the table are read in accept. Guard (test "a moved chest's rolled item is held to the bounds: a name not
- * in the item table is dropped").
- */
 const isRolledItem = (v: unknown): boolean => {
   if (!isObject(v) || !isId(v.itemName) || !isItemQuantity(v.quantity)) return false;
   const verdict = checkBoundsNow([{ itemName: v.itemName, quantity: v.quantity }], 0);
   return verdict.ok || !verdict.ready;
 };
 
-// Security review M4: the count of moved ground loot is held to what one configured source hands out (itembounds.ts
-// isItemQuantity, read in accept), so a node cannot hand over more of an item than any loot gives. Guard (test "moved loot or a
-// chest roll above the most one source gives is refused by name").
 export function isMovedLoot(v: unknown): v is LootItem {
   if (!isObject(v)) return false;
   return isId(v.id) && isText(v.item) && isItemQuantity(v.quantity) && isText(v.quality) && isText(v.iconUrl)
@@ -245,8 +222,6 @@ export function objectMovesPart(deps: ObjectMovesDeps): BlockPart<MovedObjects> 
       for (const mover of [...list].reverse()) adoptAll(mover, data[mover.key] as any[], deps, move);
     },
     accept: async (move, data, from) => {
-      // The quantity cap and the item table read now (itembounds.ts): a configured row above 9999 is moved, not dropped,
-      // and a rolled chest item is checked against the table this node loads.
       await refreshItemQuantityMax();
       await refreshItemNames();
       if (!isObject(data)) {

@@ -1,9 +1,3 @@
-/**
- * Achievement editor: what the admin achievement editor window (/achievements) asks for, built as the gathering
- * editor is (systems/gathering/editor.ts). Every field of a save is checked here, written to the achievements table
- * and then to the cache the counting reads (store.ts), and answered with every achievement as it then stands. The
- * pick lists (creatures, quests, items, mounts, maps, spells, icons) come from caches, given by index.ts.
- */
 import log from "../../modules/logger";
 import permissions from "../permissions";
 import * as store from "./store";

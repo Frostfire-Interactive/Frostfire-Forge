@@ -4,10 +4,6 @@ import { join } from "path";
 import { withLeaveSaves } from "./setup";
 import { receiverSource } from "./receiver-source";
 
-// Neither socket/server.ts nor socket/receiver.ts can be imported (the first
-// starts the server, the second imports the first), so the code under test is
-// run from its source, with the names it uses handed in as fakes.
-
 type Row = Record<string, any>;
 const read = (file: string) => readFileSync(join(import.meta.dir, "..", "socket", file), "utf8");
 const receiver = receiverSource();

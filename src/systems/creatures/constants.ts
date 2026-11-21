@@ -1,7 +1,5 @@
 import * as settings from "../../config/settings.json";
 
-// Optional overrides from settings.json -> "creatures". Everything has a
-// WoW-derived default so the system runs without any config.
 const cfg: Record<string, any> = (settings as any)?.creatures || {};
 
 /** Pixels per WoW yard. Tiles are 32px, so the default makes 1 tile = 4 yards. */
@@ -9,11 +7,6 @@ export const YARD_PX: number = Number(cfg.yardPx) || 8;
 
 export const yards = (y: number): number => y * YARD_PX;
 
-/**
- * Speeds are converted against the player's run speed rather than YARD_PX so
- * WoW's speed relationships hold: a creature at the WoW run speed (7 yd/s)
- * moves exactly as fast as an unmounted player (6px per 30Hz tick).
- */
 export const PLAYER_RUN_PX_PER_SEC = 180;
 export const WOW_RUN_YD_PER_SEC = 7;
 export const speedPxPerSec = (ydPerSec: number): number => (ydPerSec * PLAYER_RUN_PX_PER_SEC) / WOW_RUN_YD_PER_SEC;
@@ -57,9 +50,6 @@ export const CORPSE_EMPTY_MS = 60_000;
 export type Rng = () => number;
 let activeRng: Rng = Math.random;
 export const rng: Rng = () => activeRng();
-export function setRng(next: Rng | null): void {
-  activeRng = next ?? Math.random;
-}
 
 /** Inclusive integer in [min, max]. */
 export function randInt(min: number, max: number, r: Rng = rng): number {

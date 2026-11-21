@@ -3,10 +3,6 @@ import { Database } from "bun:sqlite";
 import { databaseModule, standInFor } from "./setup";
 import { CHARACTER_TABLES } from "../utility/charactertables";
 
-// The engine's start-up guest purge (systems/player.ts, clear) on the schema database_setup_sqlite.ts makes, in an
-// in-memory SQLite database with foreign keys on (as the engine's connection has them): a guest is removed by its
-// account, and no row of its character is left in any table of CHARACTER_TABLES.
-
 const db = new Database(":memory:");
 db.exec("PRAGMA foreign_keys = ON");
 

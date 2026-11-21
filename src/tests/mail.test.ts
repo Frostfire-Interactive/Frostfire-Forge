@@ -2,14 +2,6 @@ import { afterAll, beforeAll, beforeEach, describe, expect, mock, spyOn, test } 
 import { characterDatabaseModule } from "./setup";
 import { GuardError } from "../controllers/sqltransaction";
 
-// Mail between players: where mailboxes stand, and sending, taking, deleting,
-// sending back and the expiry of mail. The real mail, inventory, currency and
-// player systems run against a fake database, and what each player holds there
-// is compared with what was sent.
-//
-// Named to run before questrewards.test.ts, which stands in for the inventory
-// and currency systems in every file that runs after it.
-
 mock.module("../config/settings.json", () => ({
   default: { creatures: {} },
   creatures: {},

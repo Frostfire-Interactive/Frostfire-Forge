@@ -43,8 +43,6 @@ let schedulerInterval: ReturnType<typeof setInterval> | null = null;
 
 const zonesByMap = new Map<string, GroundAoeZone[]>();
 const zoneOccupants = new Map<string, Set<string>>();
-// Cluster mode: zones another node owns near the border. Shown to the players here and never ticked:
-// their owner applies their effects (phase 5).
 const remoteZones = new Map<string, GroundAoeZone>();
 
 let playerDeathHandler: ((player: any, attacker: any, damageInfo: { damage: number; isCrit: boolean }) => Promise<void>) | null = null;
@@ -61,10 +59,6 @@ export function setPlayerDeathHandler(handler: typeof playerDeathHandler) {
   playerDeathHandler = handler;
 }
 
-/**
- * Cluster mode: a zone tick on a player of a neighbouring node standing in it (a mirror). Registered by
- * receiver.ts, which sends the hit to the player's owner; the owner checks and applies it.
- */
 type MirrorZoneHitHandler = (caster: any, mirror: any, zone: GroundAoeZone, damage: number) => Promise<unknown>;
 let mirrorZoneHitHandler: MirrorZoneHitHandler | null = null;
 
@@ -72,8 +66,6 @@ export function setMirrorZoneHitHandler(handler: MirrorZoneHitHandler | null) {
   mirrorZoneHitHandler = handler;
 }
 
-// Who should be seeing a zone: players near its centre on its layer, whose own sight radius covers the centre. A
-// zone with no layer is for players with no layer, as getPlayersNearPoint treats null.
 function zoneAudience(zone: GroundAoeZone): any[] {
   const { x, y } = zone.position;
   return getPlayersNearPoint(x, y, zone.mapName, AOI_CONFIG.DEFAULT_RADIUS, zone.layerId).filter((player) => {
@@ -116,8 +108,6 @@ function despawnToViewers(zone: GroundAoeZone) {
   zone.viewers.clear();
 }
 
-// Brings a zone's viewers up to date: players who came into view get the spawn, players who left get the despawn.
-// Spawns reach only who is near, so someone walking in later would otherwise take its damage without seeing it.
 function syncViewers(zone: GroundAoeZone) {
   const audience = new Map<string, any>();
   for (const player of zoneAudience(zone)) audience.set(String(player.id), player);
@@ -134,11 +124,6 @@ function syncViewers(zone: GroundAoeZone) {
   }
 }
 
-/**
- * Brings the zones a player sees up to date after they arrive or change layer or map: zones they were shown that are
- * no longer theirs (another layer or map) are despawned for them, and the zones of their layer in range are sent.
- * `fresh` is a new login: whatever the zones remember of that player's id is from a connection that is gone.
- */
 export function resyncZonesFor(player: any, fresh = false): void {
   if (!player?.wt) return;
   const playerId = String(player.id);
@@ -163,10 +148,6 @@ export function resyncZonesFor(player: any, fresh = false): void {
   }
 }
 
-/**
- * A mirror of a zone another node owns (its GHOST_SPAWN record). False when the id is a zone of this node's own. A
- * record sent again replaces the zone and keeps who it was shown to. `duration` is in ms, as the owner keeps it.
- */
 export function addRemoteZone(r: any): boolean {
   if (findZoneById(String(r.id))) return false;
   const zone: GroundAoeZone = {
@@ -338,10 +319,6 @@ export function getZonesOnMap(mapName: string): GroundAoeZone[] {
   return zonesByMap.get(String(mapName ?? "").replaceAll(".json", "")) || [];
 }
 
-/**
- * The zones a player at (x, y) on a layer should be showing: that layer's zones whose centre is within `radius` (the
- * player's sight radius), which is who a spawn reaches. For a player who has just arrived or changed layer.
- */
 export function getZonesInRange(mapName: string, layerId: string | null, x: number, y: number, radius: number): GroundAoeZone[] {
   return getZonesOnMap(mapName).filter(
     (z) => z.layerId === layerId && (z.position.x - x) ** 2 + (z.position.y - y) ** 2 <= radius * radius

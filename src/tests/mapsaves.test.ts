@@ -1,9 +1,6 @@
 import { expect, test } from "bun:test";
 import { leaveToSave, mapSaveUnderWay, onLeftChangeMissed, startMapSave } from "../modules/mapsaves";
 
-// A map editor save under way, here or on another node of the region (modules/mapsaves.ts): the asset server's word
-// of the change is left to it, and taken in after all when the save ends without saving.
-
 function missedOnes(): { missed: string[]; stop: () => void } {
   const missed: string[] = [];
   const stop = onLeftChangeMissed((name) => { missed.push(name); });

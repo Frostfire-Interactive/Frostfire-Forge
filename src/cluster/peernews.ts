@@ -1,11 +1,6 @@
 import log from "../modules/logger";
 import type { ClusterBus } from "./bus";
 
-// News from one node for the region's other nodes (cluster mode): something happened here that the players there
-// see too, such as a weather change, an edit to the game's content or a notice for a map's players. The node it
-// happened on has done its own part, for its own players and its own caches; each other node does the same for its
-// own, with the handler the engine set for that news (this module does not import the engine).
-
 export type NewsHandler = (data: any, from: string) => unknown;
 
 /** The bus kind all news travels as. */

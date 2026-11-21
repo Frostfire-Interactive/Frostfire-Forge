@@ -32,10 +32,6 @@ export interface AwaySlot {
   holder: string;
 }
 
-/**
- * Cluster mode: a spawn slot as it travels with its block (cells phase 7). A waiting slot carries the time it has
- * left; a held slot's creature lives on `holder`.
- */
 export type MovedSlot =
   | { kind: "waiting"; spawnId: number; layerId: string | null; inMs: number }
   | { kind: "held"; spawnId: number; layerId: string | null; instanceId: number; poolId: number | null; templateId: number; holder: string };
@@ -50,17 +46,7 @@ export interface SpawnerHooks {
   onDespawn?(instance: CreatureInstance): void;
   /** A foreign creature (its spawn slot is on another node) died or left the world here: tell its home. */
   onForeignGone?(instance: CreatureInstance, home: string, opts: { respawn: boolean; delayMs: number | null }): void;
-  /**
-   * How many players of a layer stand in the block holding (x, y). Without it
-   * every layer is filled everywhere; with it per_layer copies on an overflow
-   * layer exist only in blocks where that layer has players.
-   */
   playersInBlock?(layerId: string, x: number, y: number): number;
-  /**
-   * Cluster mode: whether this node spawns at (x, y) of the map (its block is
-   * this node's; or no one's, once the start grace is over). A slot it says no
-   * to is not spawned here and waits for reviewOwnership. Absent: always.
-   */
   spawnsHere?(map: string, x: number, y: number): boolean;
 }
 
@@ -88,10 +74,6 @@ export function rollRespawnMs(spawn: CreatureSpawn, multiplier: number = RESPAWN
   return Math.max(0, Math.round(seconds * 1000 * multiplier));
 }
 
-/**
- * Picks which template a spawn point produces. Pools with a rare template roll
- * rare_chance_pct, but never produce a second rare while one is alive.
- */
 export function pickTemplateId(
   spawn: CreatureSpawn,
   pool: CreatureSpawnPool | undefined,
@@ -104,13 +86,6 @@ export function pickTemplateId(
   return spawn.template_id;
 }
 
-/** A spawn point materialised on one layer (or shared across all, layerId null). */
-/**
- * Creatures spawned in one tick. Spawns due together are common - a new layer
- * gets a copy of every per-layer spawn point on its map at once - and each one
- * also costs a visibility check against every player. The overflow waits for
- * the next tick 100ms later, so a busy map fills in over a second or so.
- */
 const MAX_SPAWNS_PER_TICK = 100;
 
 /** Whether two map -> layer-id sets hold exactly the same layers. */
@@ -150,19 +125,10 @@ export class CreatureSpawner {
   private emptySince = new Map<string, number>();
   /** Slots that came due where this node does not spawn (spawnsHere): not spawned, kept for when it does. */
   private elsewhere = new Map<string, PendingSlot>();
-  /**
-   * Cluster mode, on a creature's home: slots whose live creature was handed to another node. The slot stays
-   * taken (never spawned again) until the holder reports the creature dead or lost (releaseAway).
-   */
   private away = new Map<string, AwaySlot>();
   private awayIds = new Map<number, string>();
   /** Cluster mode, on a holder: creatures handed over here whose slot is on another node (their home). */
   private foreign = new Map<number, string>();
-  /**
-   * Cluster mode, on a block's old owner: slots that moved with the block, for OUTGOING_KEEP_MS. Each is also an
-   * elsewhere slot here; reviewOwnership leaves it alone, as the block table says this node until the move commits.
-   * `moving` holds from export until the move is sent (settleSlots); a restore removes the entry.
-   */
   private outgoing = new Map<string, { to: string; until: number; instanceId: number | null; templateId: number | null; moving: boolean }>();
   /** Dead creatures still in the world -> when their slot comes due. The slot was let go at the death (died). */
   private corpses = new Map<number, number>();
@@ -187,8 +153,6 @@ export class CreatureSpawner {
     this.elsewhere.clear();
     this.outgoing.clear();
     this.waitingOnLayer.clear();
-    // A reload starts every slot over. The holders find their creatures' slots gone at their next sweep.
-    // Released one by one, so an away creature also leaves its pool and no pool is left counting it.
     for (const slot of this.awaySlots()) this.releaseAway(slot.instanceId, now, { respawn: false });
     // A foreign creature is gone here for good; its home is told to respawn it, which its own slot check may refuse.
     for (const id of [...this.foreign.keys()]) this.despawn(id, now);
@@ -208,11 +172,6 @@ export class CreatureSpawner {
     this.tick(now);
   }
 
-  /**
-   * Swap in new data without touching creatures that are still valid. New
-   * spawn points spawn immediately; creatures of deleted spawn points are
-   * removed. Callers refresh changed creatures themselves.
-   */
   updateData(data: SpawnerData, now: number): void {
     this.data = data;
     this.perLayerSpawnsByMap.clear();
@@ -240,18 +199,10 @@ export class CreatureSpawner {
     return this.perLayerSpawnsByMap.keys();
   }
 
-  /**
-   * Report the live layers per map. New layers get their own copies of every
-   * per_layer spawn; creatures on layers that no longer exist are removed.
-   */
   setLayers(layersByMap: Map<string, Iterable<string>>, now: number): void {
     const next = new Map<string, Set<string>>();
     for (const [map, ids] of layersByMap) next.set(map, new Set(ids));
 
-    // Reconciliation walks every live creature and pending spawn, which is the
-    // most expensive thing the spawner does. Layers only change when players
-    // arrive, leave or get condensed, so skip it entirely when the set is the
-    // same as last time - the common case, several times a second.
     if (sameLayers(this.layers, next)) return;
 
     // Only the layers that actually appeared or disappeared need work.
@@ -279,11 +230,6 @@ export class CreatureSpawner {
     }
   }
 
-  /**
-   * Cluster mode, after the block table changed (or the start grace ended): skipped slots this node now spawns are
-   * scheduled, at their own due time if it is still ahead. A slot that just moved off with its block is left alone:
-   * the table still says this node until the coordinator commits the move.
-   */
   reviewOwnership(now: number): void {
     this.pruneOutgoing(now);
     for (const [key, slot] of [...this.elsewhere]) {
@@ -351,8 +297,6 @@ export class CreatureSpawner {
         this.elsewhere.set(key, slot);
         continue;
       }
-      // A copy on an overflow layer waits for a player of that layer in its
-      // block; the check is cheap and does not use the spawn budget.
       if (this.waitsForPlayers(slot.spawnId, slot.layerId)) {
         slot.dueAt = now + DORMANT_RETRY_MS;
         continue;
@@ -373,15 +317,6 @@ export class CreatureSpawner {
     return this.hooks.playersInBlock(layerId, home.x, home.y) === 0;
   }
 
-  /**
-   * Overflow-layer creatures whose block (where they spawned, or where they
-   * are now) has had no player of their layer for EMPTY_BLOCK_DESPAWN_MS are
-   * removed, with no rewards. Only settled creatures go: one fighting (maybe
-   * with a player just over the block edge) or dead (a corpse, maybe with
-   * loot, which the corpse timer removes) is left alone and its empty time
-   * starts again. The slot then respawns after its normal respawn roll, once
-   * a player is back in the block, so leaving and returning is no quick reset.
-   */
   private sweepEmptyBlocks(now: number): void {
     const playersInBlock = this.hooks.playersInBlock;
     if (!playersInBlock || now - this.lastSweepAt < EMPTY_SWEEP_MS) return;
@@ -436,10 +371,6 @@ export class CreatureSpawner {
     return this.data.templates.get(templateId);
   }
 
-  /**
-   * Remove a live creature. By default schedules its slot to respawn after the
-   * rolled respawn window (or `delayMs` if given).
-   */
   despawn(instanceId: number, now: number, opts: { respawn?: boolean; delayMs?: number } = {}): void {
     const instance = this.registry.remove(instanceId);
     if (!instance) return;
@@ -483,11 +414,6 @@ export class CreatureSpawner {
     this.schedule(spawn.id, instance.layerId, now + (opts.delayMs ?? rollRespawnMs(spawn, this.respawnMultiplier, this.r)));
   }
 
-  /**
-   * A creature died. Its respawn time runs from now, not from when the corpse goes: the slot is let go at once, and
-   * the corpse stays on its own timer, as its loot may outlast the respawn. It keeps its pool place until it goes or
-   * the slot comes due, so another spawn point of the pool does not replace it sooner than it did.
-   */
   died(instanceId: number, now: number): void {
     const instance = this.registry.get(instanceId);
     if (!instance) return;
@@ -567,11 +493,6 @@ export class CreatureSpawner {
     return [...this.away.values()].map((slot) => ({ ...slot }));
   }
 
-  /**
-   * Take in a creature handed over here. `home` is the node that owns its spawn slot (null: this node). Returns
-   * false, taking in nothing, for a creature whose home is this node but whose away slot is gone (a reload, a
-   * deleted spawn point or a vanished layer released it): its slot may already hold a fresh copy.
-   */
   adopt(instance: CreatureInstance, home: string | null, opts: { announce?: boolean } = {}): boolean {
     const key = this.awayIds.get(instance.id);
     if (home === null && key === undefined) {
@@ -621,12 +542,6 @@ export class CreatureSpawner {
     return [...this.foreign].map(([instanceId, home]) => ({ instanceId, home }));
   }
 
-  /**
-   * Cluster mode, a block moving to `to`: every slot whose spawn point lies in the block (`inBlock` of its home)
-   * leaves this node. A waiting slot goes with the time it has left. A live slot goes held by this node (`self`):
-   * its creature stays here, foreign now, with home `to`. An away slot goes with its holder. A held slot's pool
-   * place goes with it. Each one stays here as an elsewhere slot, and as outgoing for OUTGOING_KEEP_MS.
-   */
   exportSlots(inBlock: (map: string, x: number, y: number) => boolean, to: string, self: string, now: number): MovedSlot[] {
     this.pruneOutgoing(now);
     const inside = (spawnId: number) => {
@@ -671,10 +586,6 @@ export class CreatureSpawner {
     return out;
   }
 
-  /**
-   * Cluster mode: the move that took these slots out was sent, so their creatures may be handed on again (to the new
-   * owner first of all). The slots stay outgoing for the rest of OUTGOING_KEEP_MS (or of the hold, holdSlots).
-   */
   settleSlots(slots: MovedSlot[]): void {
     for (const slot of slots) {
       const entry = this.outgoing.get(slotKey(slot.spawnId, slot.layerId));
@@ -682,11 +593,6 @@ export class CreatureSpawner {
     }
   }
 
-  /**
-   * Cluster mode: the move that took these slots out is not decided yet and its old owner keeps holding them (blockmove.ts,
-   * UNDECIDED_HOLD_MS), past OUTGOING_KEEP_MS. They are answered for for `forMs` more from `now`, still moving: a creature
-   * stays here, foreign, so a restore finds it, and no second one is spawned or handed on meanwhile.
-   */
   holdSlots(slots: MovedSlot[], now: number, forMs: number): void {
     for (const slot of slots) {
       const entry = this.outgoing.get(slotKey(slot.spawnId, slot.layerId));
@@ -694,10 +600,6 @@ export class CreatureSpawner {
     }
   }
 
-  /**
-   * True while the slot of creature `instanceId` is moving out with its block: taken out (exportSlots), neither sent
-   * nor put back. Its creature must stay here, foreign, so a restore finds it and no second one is spawned.
-   */
   movingOut(instanceId: number, now: number): boolean {
     this.pruneOutgoing(now);
     for (const entry of this.outgoing.values()) if (entry.instanceId === instanceId) return entry.moving;
@@ -710,11 +612,6 @@ export class CreatureSpawner {
     return null;
   }
 
-  /**
-   * Cluster mode, a node died (node-dead): the slots that were sent to it are no longer answered for here, so their
-   * holders' sweeps find them gone. Called with dropForeignFrom(to), which removes their creatures still here. A slot
-   * still moving is kept: its move ends in a restore or a send. How many.
-   */
   forgetOutgoingTo(to: string): number {
     let dropped = 0;
     for (const [key, entry] of [...this.outgoing]) {
@@ -725,11 +622,6 @@ export class CreatureSpawner {
     return dropped;
   }
 
-  /**
-   * Cluster mode: take in the slots of a block that moved here (accept), or put back the ones a move that did not
-   * happen took out (restore). `self` is this node. A slot this node already has live or away is not taken: the one
-   * here keeps its creature. How many were taken.
-   */
   importSlots(slots: MovedSlot[], now: number, self: string): number {
     let taken = 0;
     for (const slot of slots) {
@@ -754,9 +646,6 @@ export class CreatureSpawner {
         this.schedule(slot.spawnId, slot.layerId, now + wait);
         continue;
       }
-      // Its creature is here as a foreign one: the old owner's, the new owner's on a restore, or one its holder
-      // handed here before the slot arrived. Then the slot is held here, whatever its holder field says: an away slot
-      // would name a node that no longer has the creature, and its sweep would spawn a second one.
       const instance = this.registry.get(slot.instanceId);
       const here = !!instance && !instance.remote && this.foreign.has(slot.instanceId);
       if (slot.holder !== self && !here) {
@@ -780,21 +669,12 @@ export class CreatureSpawner {
     return taken;
   }
 
-  /**
-   * For OUTGOING_KEEP_MS after its slot moved with its block: the node the slot of creature `instanceId` went to.
-   * Null while the move is not decided (still moving): a move put back keeps the slot here.
-   */
   outgoingHome(instanceId: number, now: number): string | null {
     this.pruneOutgoing(now);
     for (const entry of this.outgoing.values()) if (entry.instanceId === instanceId) return entry.moving ? null : entry.to;
     return null;
   }
 
-  /**
-   * A foreign creature's slot moved with its block to `home` (CREATURE_HOME). home null: it moved to this node, which
-   * holds it away for this creature, so the creature is this node's live one again. False when the creature is not
-   * foreign here, or (home null) no away slot here is held for it.
-   */
   rehome(instanceId: number, home: string | null): boolean {
     if (!this.foreign.has(instanceId)) return false;
     if (home !== null) {
@@ -821,10 +701,6 @@ export class CreatureSpawner {
     return freed;
   }
 
-  /**
-   * Cluster mode, a home died (node-dead): its creatures held here are removed, with no CREATURE_DIED (no one is
-   * there to hear it). Its blocks are refilled, and their slots respawn on the new owners. How many.
-   */
   dropForeignFrom(home: string): number {
     let dropped = 0;
     for (const [instanceId, from] of [...this.foreign]) {
@@ -942,10 +818,6 @@ export class CreatureSpawner {
 
     const level = rollLevel(template, this.r);
     const maxHealth = computeMaxHealth(template, level);
-    // A patrol spawn's spawnpoint is the first point of its path: the
-    // creature starts on its route instead of walking in from the marker.
-    // Anything else (no path, an empty path, another movement type) keeps the
-    // placed position.
     const { x: homeX, y: homeY } = this.homeOf(spawn);
     const instance: CreatureInstance = {
       id,

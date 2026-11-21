@@ -2,35 +2,12 @@ import log from "../modules/logger";
 import assetCache from "../services/assetCache";
 import lootTable from "./lootTable";
 
-// The bounds an item hand-over written from another node's word is held to (security review phase 7, H1 and M4):
-// a grant read back from the cluster store, an owner node's answer to a take, and a moved block's ground loot. Each
-// item must be one of the item table this node loads, each quantity a whole number from 1 to the most one configured
-// source hands out, and the copper a whole number from 0 to the most one corpse holds. A list over a known bound is
-// refused whole and logged lost by name; nothing of it is written.
-//
-// A bound this node has not read yet (its creature templates or its loot tables not loaded) is not a reason to lose
-// anything (fix round 1): such a write is "not ready". The caller leaves it parked (or parks it again), and a later
-// check writes it once the bound is known. Only a value over a known bound is refused.
-//
-// Items have no stack limit of their own (the items table has no such column, and inventory rows add up without
-// one). The quantity cap is the larger of ITEM_QUANTITY_MAX and the largest quantity any configured source hands out
-// as one row, over all items (not per item): the loot tables' max_quantity and the gathering areas' quantity_max.
-// ITEM_QUANTITY_MAX is what the sources that are not configured rows stop at: a loot table row made in the editor
-// (looteditor.ts QUANTITY_MAX), an admin /drop (commands.ts) and a class's starter items (classeditor.ts
-// QUANTITY_MAX) all stop at 9999.
-//
-// Copper reaches a hand-over only as a share of corpse money: the most is the biggest gold_max of this node's
-// creature templates (kill.ts maxCorpseCopper, which kill.ts hands in when it loads: setCopperCap). Until the
-// templates load, the copper cap is not known.
-
 /** The least the quantity cap is: what a loot table row made in the editor, /drop and a class's starter items stop at. */
 export const ITEM_QUANTITY_MAX = 9999;
 /** The most an inventory row holds (an INT column): the cap a moved record is held to while the sources are not read. */
 export const STORED_QUANTITY_MAX = 2147483647;
 /** The most item rows one hand-over holds (cluster/grants.ts MAX_GRANT_ITEMS). */
 export const HANDED_ITEMS_MAX = 64;
-
-export interface BoundedItem { itemName: string; quantity: number }
 
 /** The copper cap, or null while it is not known (kill.ts: no creature templates loaded yet). */
 let copperCap: () => number | null = () => null;
@@ -50,18 +27,10 @@ export function copperMax(): number | null {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
 }
 
-/**
- * A configured source of item quantities: the largest quantity it hands out as one row, or null while it is not
- * read. A source that throws is not read either.
- */
 export type QuantitySource = () => number | null | Promise<number | null>;
 
 const quantitySources = new Map<string, QuantitySource>();
 
-/**
- * Sets the source `name` (null removes it). Answers the one set before, so a test can put it back. The loot tables
- * are set here; gathering/index.ts sets its areas each time it loads them.
- */
 export function setQuantitySource(name: string, source: QuantitySource | null): QuantitySource | null {
   const previous = quantitySources.get(name) ?? null;
   if (source) quantitySources.set(name, source);
@@ -85,10 +54,6 @@ setQuantitySource("gathering areas", () => null);
 
 let quantityCap = { most: ITEM_QUANTITY_MAX, known: false };
 
-/**
- * Reads every source again: the cap is the larger of ITEM_QUANTITY_MAX and the largest configured quantity, and
- * known only when every source was read. Kept for itemQuantityMaxNow.
- */
 export async function refreshItemQuantityMax(): Promise<{ most: number; known: boolean }> {
   let most = ITEM_QUANTITY_MAX;
   let known = true;
@@ -111,10 +76,6 @@ export function itemQuantityMaxNow(): { most: number; known: boolean } {
   return { ...quantityCap };
 }
 
-/**
- * Whether `value` is a quantity one row may hold: a whole number from 1 to the cap as last read. While the cap is
- * not known, up to what a row stores (a moved record cannot wait: it is taken in, not lost).
- */
 export const isItemQuantity = (value: unknown): value is number =>
   typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= (quantityCap.known ? quantityCap.most : STORED_QUANTITY_MAX);
 
@@ -138,12 +99,6 @@ export async function refreshItemNames(): Promise<Set<string> | null> {
   return itemNames;
 }
 
-/**
- * Checks `items` and `copper` against the bounds. The item table and the quantity sources are read once. When the
- * item table is not loaded (no table at all), the names are not checked here: inventory.add then finds no item of
- * any name and writes none, so nothing can be made of one. A value over a known bound wins over one not yet
- * checkable: the write is then refused, not left parked.
- */
 export async function checkBounds(items: readonly unknown[], copper: unknown): Promise<BoundsVerdict> {
   if (Array.isArray(items) && items.length > 0 && items.length <= HANDED_ITEMS_MAX) {
     await refreshItemQuantityMax();
@@ -152,11 +107,6 @@ export async function checkBounds(items: readonly unknown[], copper: unknown): P
   return checkBoundsNow(items, copper);
 }
 
-/**
- * checkBounds against the quantity cap and the item table as last read (refreshItemQuantityMax, refreshItemNames),
- * without reading them: for a check that cannot wait, such as a moved block's records (cluster/kinds/objectmoves.ts),
- * whose accept reads them first.
- */
 export function checkBoundsNow(items: readonly unknown[], copper: unknown): BoundsVerdict {
   if (!Array.isArray(items)) return { ok: false, ready: true, why: "the items are not a list" };
   if (items.length > HANDED_ITEMS_MAX) return { ok: false, ready: true, why: `${items.length} item rows, more than ${HANDED_ITEMS_MAX}` };
@@ -212,11 +162,6 @@ export function describeHanded(items: readonly unknown[], copper: unknown): stri
   return parts.join(", ") || "nothing";
 }
 
-/**
- * Checks `write` and logs what it found: "ok" (in bounds, nothing logged); "refused" (over a known bound: logged by
- * name as lost, and the caller writes none of it); "not-ready" (a bound not known yet: logged at info, and the caller
- * leaves it parked so a later check writes it).
- */
 export async function handedVerdict(write: HandedWrite): Promise<"ok" | "refused" | "not-ready"> {
   const verdict = await checkBounds(write.items, write.copper);
   if (verdict.ok) return "ok";

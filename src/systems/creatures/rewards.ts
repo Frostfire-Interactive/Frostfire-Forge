@@ -51,11 +51,6 @@ export interface XpMember {
   level: number;
 }
 
-/**
- * XP per member. The kill is valued as if the highest-level member killed it
- * (so a high-level helper can make the creature grey for everyone), multiplied
- * by the group bonus, then split by each member's share of the total levels.
- */
 export function distributeKillXp(
   members: XpMember[],
   creatureLevel: number,

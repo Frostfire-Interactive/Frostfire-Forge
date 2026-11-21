@@ -1,8 +1,3 @@
-/**
- * Hooks the socket layer registers so creature combat can use engine-owned
- * player flows (barriers, death, stat broadcasts, spell effects) without the
- * creature system importing receiver.ts.
- */
 export interface CreatureEngineBridge {
   /** Apply already-mitigated damage to a player, including death handling. */
   damagePlayer(player: any, amount: number, info: { isCrit: boolean; creatureId: number; creatureName: string }): Promise<void> | void;

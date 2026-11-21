@@ -13,9 +13,6 @@ import { trackPacket, waitIdle } from "../cluster/inflight";
 import { linkPair, settle } from "./cluster-fakelink";
 import log from "../modules/logger";
 
-// Handoff fix 1: the player keeps walking until the drain, refusals are said and retried by kind, a player is not sent
-// straight back, and each handoff leaves one line of times on each node.
-
 type Node = { handoff: PlayerHandoff; calls: LinkCalls; players: Map<string, any>; log: string[]; clock: { now: number }; deps: HandoffDeps };
 
 function ticketFor(target: string): SwitchTicket {

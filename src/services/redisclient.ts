@@ -1,16 +1,6 @@
 import { RedisClient, type RedisOptions } from "bun";
 import log from "../modules/logger";
 
-// Redis clients that come back after an outage. A Bun client reconnects on its own for a while only: Bun 1.4.4 stops
-// for good once the connection has been away longer than connectionTimeout, whatever maxRetries says, and every call
-// then fails with "Connection has failed" until the process restarts. So while a connection is lost a fresh client is
-// tried every REVIVE_MS and swapped in when one connects. This is the cluster store's approach (cluster/redisstore.ts),
-// and the shared cache client's (the asset and row cache, SharedRedis below): one implementation, RedisSlot.
-//
-// With CLIENT_OPTIONS nothing queues while Redis is away: a call fails at once, so a login is not held behind a queue
-// that may never drain. connectionTimeout stays for the first connection only: for a refused connection Bun's connect()
-// neither resolves nor rejects, so it does not bound an attempt. Each attempt has its own deadline here instead.
-
 export const CONNECT_WAIT_MS = 5_000;
 /** How often a lost connection is tried again with a fresh client (ms). */
 export const REVIVE_MS = 3_000;
@@ -26,11 +16,6 @@ export const CLIENT_OPTIONS: RedisOptions = {
   enableOfflineQueue: false,
   connectionTimeout: CONNECT_WAIT_MS,
 };
-/**
- * The cache client's: the same, but with Bun's default offline queue on, as the `redis` singleton it replaces had. A
- * call made while the client reconnects waits and completes when it is back, so a short blip fails nothing on a single
- * node (CACHE=redis, no cluster). The cluster store keeps CLIENT_OPTIONS: its callers must not wait on a queue.
- */
 export const SHARED_OPTIONS: RedisOptions = { ...CLIENT_OPTIONS, enableOfflineQueue: true };
 
 /** `connecting`, or a rejection after `ms`: a connect that is refused neither resolves nor rejects. */
@@ -63,11 +48,6 @@ export interface RedisSlotOptions {
   make: () => RedisClient;
   reviveMs: number;
   attemptMs: number;
-  /**
-   * Work on a fresh client, once connected, before it takes the lost one's place (the subscriber puts its channels on
-   * it). False when the slot changed meanwhile, or the work throws: the fresh client is dropped and the next tick tries
-   * again. `stale` tells whether the attempt is pointless now.
-   */
   prepare?: (fresh: RedisClient, stale: () => boolean) => Promise<boolean>;
   /** A fresh client has taken the lost one's place. */
   adopted?: (fresh: RedisClient) => void;
@@ -99,9 +79,6 @@ export class RedisSlot {
     return this.connected && this.client !== null && !this.closedByUs.has(this.client);
   }
 
-  // Logs a lost connection once per outage (not once per failed attempt to get it back), and the return.
-  // A client that reconnects on its own does not say when it loses the connection, only when it has it again.
-  // While it is lost, a fresh client is tried every reviveMs (see revive); the client's own return stops that.
   private watch(client: RedisClient, connected: boolean): void {
     let down = false;
     client.onclose = (error) => {
@@ -211,17 +188,6 @@ export class RedisSlot {
   }
 }
 
-/**
- * The cache client: the one Redis connection the asset and row cache (CACHE=redis) and the worlds' player counts share,
- * in place of Bun's `redis` singleton, which gives up for good after a long outage. It connects on first use. A call
- * made while the first connection is made waits for it (CONNECT_WAIT_MS at most), then goes to the client, or fails
- * like any call to a lost connection.
- *
- * Bun's client has no deadline of its own: against a Redis that froze, a call never ends, and whatever awaits it (an
- * admin's edit, say) goes on when Redis wakes. So a call left unanswered for callMs asks Redis whether it answers at all,
- * and fails if it does not. A flat deadline would not do: the connection answers in order and some values are tens of
- * MB, so on a slow link a healthy Redis can keep a call waiting for longer than a frozen one should.
- */
 export class SharedRedis {
   private readonly slot: RedisSlot;
   private started: Promise<void> | null = null;
@@ -239,8 +205,6 @@ export class SharedRedis {
     this.slot = new RedisSlot({ name: "Redis cache", make, reviveMs, attemptMs });
   }
 
-  // Made on the first call. A first connection that is refused or does not answer in time starts the revival at once:
-  // the client may never say that it was lost.
   private start(): Promise<void> {
     this.started ??= (async () => {
       const client = this.first ?? this.make();
@@ -260,8 +224,6 @@ export class SharedRedis {
     return this.slot.client!;
   }
 
-  // `run`, for as long as Redis answers. A call that gave up may still be carried out when Redis wakes: the commands
-  // already on the wire are, and nothing can take them back.
   private async call<T>(run: (client: RedisClient) => Promise<T>): Promise<T> {
     const started = Date.now();
     const running = this.redis().then(run);
@@ -303,8 +265,6 @@ export class SharedRedis {
     }
   }
 
-  // A connection that stopped answering never says so, and may never speak again (a host gone without a goodbye). It
-  // counts as lost, so a fresh client takes its place once one connects.
   private stalled(): void {
     const client = this.slot.client;
     if (!client || !this.slot.isUp()) return;

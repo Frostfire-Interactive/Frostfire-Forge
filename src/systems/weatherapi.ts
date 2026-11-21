@@ -1,13 +1,3 @@
-/**
- * Real weather: a world whose weather is "weather_api" follows the weather of
- * a real place. "weather_api" is a word of /weather, like "clear" and
- * "random", not a row of the weather table: its values are a reading of
- * OpenWeatherMap's current weather (WEATHER_API_KEY, WEATHER_API_LOCATION),
- * taken at startup and every few minutes and held here, in memory, the same
- * for every world. The client draws by a weather's name, so it is never told
- * "weather_api": it is told the one of the names it draws (clear, rainy,
- * snowy, thunderstorm, sandstorm, fog) that the last reading looks like.
- */
 import log from "../modules/logger";
 
 export const WEATHER_API = "weather_api";
@@ -19,27 +9,11 @@ const ENDPOINT = "https://api.openweathermap.org/data/2.5/weather";
 /** OpenWeatherMap renews a place's reading about every ten minutes. */
 const DEFAULT_MINUTES = 10;
 const TIMEOUT_MS = 10_000;
-/**
- * Snow is reported as the water it melts to, a third or less of what the same
- * sight of rain would be: a steady snowfall is about 1 mm an hour.
- */
 const SNOW_WEIGHT = 3;
 /** Wind slower than this (mph) has no direction worth showing. */
 const CALM = 1;
-/**
- * USER REQUEST 2026-10-16 ("if it's windy with the weather_api, a sandstorm should occur at different levels of
- * harshness"): a dry reading with wind this fast (mph) or more looks like a sandstorm, as do the sand and dust
- * conditions (731 sand and dust whirls, 751 sand, 761 dust) at any wind. The client draws it only in the desert zones
- * (clear elsewhere), harsher the faster the wind. Then ("Any wind detected with weather_api in a desert biome should
- * trigger some sandstorm effects to a degree"): any wind that blows at all (CALM or more) is enough, a light one
- * drawn as little more than a few grains.
- */
 export const SANDSTORM_WIND = CALM;
 const SAND_CONDITIONS = [731, 751, 761];
-/**
- * USER REQUEST 2026-11-13 ("I would like to add a new weather type: fog"): the mist (701) and fog (741) conditions look
- * like fog, at any wind (never a sandstorm). The client draws it as a pale haze everywhere, as thick as the humidity.
- */
 const FOG_CONDITIONS = [701, 741];
 
 /** The weather until the first reading, and with no key or place to read: a still, clear day. */
@@ -57,22 +31,12 @@ function lookOfCondition(id: number): Look {
   return "clear";
 }
 
-/**
- * How hard it falls, 0 to 100, from millimetres an hour: 0.5 (a drizzle) is
- * about 12, 2.5 (moderate rain) about 46, 7.6 (heavy rain) about 85. A
- * condition that falls with no amount reported is judged by its id, whose
- * last digit runs light, moderate, heavy within each group.
- */
 function fallOf(mmPerHour: number | null, id: number): number {
   if (mmPerHour !== null && mmPerHour > 0) return clamp(Math.round(100 * (1 - Math.exp(-mmPerHour / 4))), 5, 100);
   const step = id % 10;
   return step === 0 ? 20 : step === 1 ? 50 : 85;
 }
 
-/**
- * Where the wind blows to on the map (north up), from the compass bearing it
- * blows from: a west wind (270) blows right, a north wind (0) blows down.
- */
 function directionOf(degFrom: number, speed: number): string {
   if (speed < CALM) return "none";
   const to = (((degFrom + 180) % 360) + 360) % 360;
@@ -82,11 +46,6 @@ function directionOf(degFrom: number, speed: number): string {
   return "up";
 }
 
-/**
- * The weather and the look of one reading: the body of OpenWeatherMap's
- * current weather asked for in imperial units (Fahrenheit, miles an hour, as
- * the weather table keeps them). Null when the body is not a reading.
- */
 export function readingToWeather(body: any): { row: WeatherData; look: Look; utcOffset: number | null } | null {
   const temperature = body?.main?.temp;
   if (typeof temperature !== "number" || !Number.isFinite(temperature)) return null;
@@ -123,11 +82,6 @@ let held: { row: WeatherData; look: Look } = { row: { ...STILL }, look: "clear" 
 /** The place's shift from UTC in seconds, from the last reading that gave one. Null until then. */
 let utcOffset: number | null = null;
 
-/**
- * The shift from UTC, in seconds, of the place the weather is read from: the
- * time of day there is the game's. Null when no reading gave one, and the
- * client keeps to its own clock.
- */
 export function utcOffsetSeconds(): number | null {
   return utcOffset;
 }
@@ -137,19 +91,10 @@ export function currentWeather(): WeatherData {
   return held.row;
 }
 
-/**
- * The name the client is told for a weather: its own, but for "weather_api",
- * which is told as what it looks like now.
- */
 export function shownAs(name: string): string {
   return name === WEATHER_API ? held.look : name;
 }
 
-/**
- * The place asked for, as the query OpenWeatherMap takes: "lat,lon"
- * ("47.61,-122.33") or a city with its country ("Seattle,US"). Null when
- * there is none.
- */
 export function locationQuery(location: string | undefined): string | null {
   const place = String(location ?? "").trim();
   if (!place) return null;
@@ -207,14 +152,6 @@ export async function refresh(fetcher: Fetcher = fetch as unknown as Fetcher): P
 
 let timer: ReturnType<typeof setInterval> | null = null;
 
-/**
- * Starts following the real weather: a reading is taken now and then every
- * WEATHER_API_MINUTES (ten by default), and `onChange` is called with the
- * weather whenever a reading differs from the last. `onClock` is called when
- * the place's shift from UTC becomes known or changes (daylight saving).
- * Without a key or a place nothing is asked, and "weather_api" is a still,
- * clear day.
- */
 export async function startWeatherApi(onChange: (row: WeatherData) => void, onClock: (utcOffset: number) => void = () => {}): Promise<void> {
   if (!String(process.env.WEATHER_API_KEY ?? "").trim() || !locationQuery(process.env.WEATHER_API_LOCATION)) {
     log.info(`Weather API: off (set WEATHER_API_KEY and WEATHER_API_LOCATION to have "${WEATHER_API}" follow a real place)`);

@@ -1,5 +1,3 @@
-// What an engine event is to the achievements: the deeds it stands for (who did what, how much), and whether a deed
-// counts toward an achievement. No state and no network: service.ts does the counting, index.ts the listening.
 import { Events } from "../events";
 import { CRITERIA, ID_TARGETS, type AchievementDef, type CriterionType, type Deed } from "./types";
 

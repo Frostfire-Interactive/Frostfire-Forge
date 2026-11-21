@@ -6,11 +6,6 @@ import { MemoryStore } from "../cluster/memorystore";
 import { addSnapshotMap, readSnapshot, snapshotKey, useSnapshotMaps } from "../cluster/snapshots";
 import { receiverSource } from "./receiver-source";
 
-// Cluster mode: a map made in the map editor (CREATE_MAP) while the region runs joins it at once. Every node of the
-// region takes the map in (peer news "map-created": a Tiled map fetched from the asset server, a world as at start),
-// and each publishes its size, so the coordinator splits it like the maps loaded at start, and keeps its block table.
-// socket/handlers/editors.ts and modules/assetloader.ts cannot be imported: these read their source.
-
 const receiver = receiverSource();
 const loader = readFileSync(new URL("../modules/assetloader.ts", import.meta.url), "utf8");
 const index = readFileSync(new URL("../cluster/index.ts", import.meta.url), "utf8");

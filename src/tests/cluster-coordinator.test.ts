@@ -11,9 +11,6 @@ import log from "../modules/logger";
 // The bus signs its envelopes (security review H1): every bus of a test shares this key.
 const TEST_BUS_KEY = "test-bus-key";
 
-// MemoryStore expires keys by Date.now, so the fake clock is Bun's system time:
-// the lock and the heartbeats run out when the test moves it on.
-
 const T0 = new Date("2026-10-21T12:00:00Z").getTime();
 let clock = T0;
 const advance = (ms: number) => {
@@ -463,8 +460,6 @@ test("a block table deleted while the cluster runs is left alone: no block is gi
       await coordinatorOf.tick();
     };
 
-    // Deleted by a party that can write Redis (DEL needs no store key). Split afresh, the blocks would change hands
-    // with no move order while each node still serves them: a block live on two nodes.
     await store.del("cells:blocks:main");
     for (let i = 0; i < 3; i++) await pass();
     // Guard (secfix A round 2, the map's epoch counter): a map split before is left alone, like a corrupt table.
@@ -485,8 +480,6 @@ test("a block table deleted while the cluster runs is left alone: no block is gi
     await pass(next);
     expect(await tableOf("main")).toEqual(split!);
 
-    // The counter is not sealed and can be deleted too. Guard (secfix A round 2, the table seen in this run): this
-    // run read the table before, and leaves the map alone.
     await store.del("cells:blocks:main");
     await store.del("cells:blocksepoch:main");
     await pass(next);
@@ -511,9 +504,6 @@ test("a standby does not assign", async () => {
   await make("coord-b").tick();
   expect(await tableOf("main")).toBeNull();
 });
-
-// Cells phase 7 (Task 13 re-review, m7): a beat of the dead run that lands after the takeover's last read holds that
-// run's lease for up to ALIVE_TTL_MS + LEASE_MARGIN_MS. Its blocks are given out only once that has passed.
 
 /** Nodes a and c with one block each of "main"; c stops beating and is taken over with no confirm wait. */
 async function takeoverOfC(onTombstone: (store: MemoryStore) => Promise<void>, onSleep: (store: MemoryStore) => Promise<void> = async () => {}) {

@@ -1,10 +1,6 @@
 import { expect, test } from "bun:test";
 import assetCache, { changedElsewhere, onWrite } from "../services/assetCache";
 
-// What a process keeps in memory of a cached list (the NPCs it streams, the item sheets, the cutscene triggers) is
-// read again when the list is written. In a cluster the list is written on one node: the others are told
-// (cluster/index.ts), and changedElsewhere has their listeners hear it as a write of their own.
-
 test("a write here is heard by key, and a clear as every key", async () => {
   const heard: (string | null)[] = [];
   const stop = onWrite((key) => heard.push(key));

@@ -1,13 +1,3 @@
-// The realm whitelist: whether it is on, and the usernames it lets in.
-//
-// WHITELIST in the environment says how the server starts. An admin can switch
-// it while the server runs (/whitelist on|off, or the control panel); that
-// lasts until the server stops, and the environment decides again at the next
-// start.
-//
-// The usernames are read from the database when the whitelist is turned on,
-// never at a login: a login reads the set held here.
-
 import query from "../controllers/sqldatabase";
 import log from "../modules/logger";
 import { clusterEnabled, regionId } from "../cluster/config";
@@ -48,11 +38,6 @@ export function onWhitelistSwitch(listener: (enabled: boolean) => void): void {
   listeners.push(listener);
 }
 
-/**
- * Reads this realm's usernames from the database, in place of the ones held.
- * Resolves with how many there are; if the database fails, so does this, and
- * the ones held are left as they were.
- */
 export async function loadRealmWhitelist(): Promise<number> {
   const rows = (await query("SELECT username FROM whitelist WHERE realm = ?", [whitelistRealm()])) as Array<{ username: string }>;
   realmWhitelist.clear();
@@ -62,12 +47,6 @@ export async function loadRealmWhitelist(): Promise<number> {
 
 let turn: Promise<unknown> = Promise.resolve();
 
-/**
- * Turns the whitelist on or off for as long as the server runs. Turning it on
- * reads the usernames from the database first and puts `by` (the admin asking)
- * on the list if they are not on it, so whoever turns it on can log back in.
- * Players already online are left alone: only logins from then on are checked.
- */
 export function setWhitelistEnabled(wanted: boolean, by?: string): Promise<{ success: boolean; message: string }> {
   // One switch at a time: the list is read between being asked and enforcing it.
   const mine = turn.then(async () => {

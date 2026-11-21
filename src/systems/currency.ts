@@ -29,9 +29,6 @@ const rows = rowCache<Currency>("currency", async (username) => {
     return response[0] ?? null;
 }, { perPlayer: true });
 
-// One change to a player's balance at a time. Adding and removing work from the balance held and write the new
-// one, so two running side by side would both start from the same balance and one of them would be lost; and
-// statements sent side by side reach the database in no set order.
 const oneAtATime = turns();
 
 /** Whether an INT column holds `value` as it was given. Any other number the database rounds or clips its own way. */
@@ -56,8 +53,6 @@ async function write(username: string, currencyData: Currency) {
     try {
         await query(statement.sql, statement.values);
     } catch (error) {
-        // A write that threw may still have been made (one that timed out, say): the balance held is forgotten
-        // and the next read loads it.
         await rows.drop(username);
         throw error;
     }
@@ -115,12 +110,6 @@ async function pendingIn(batch: Batch, username: string): Promise<{ balance: Cur
     }));
 }
 
-/**
- * A change to a player's balance as part of `batch` (see services/batch): worked from the balance
- * the batch has so far, with this system's turn taken until the batch ends. Its statement is added
- * to the batch; the balance becomes the one held once the batch is kept, and the one held is
- * forgotten if it is not.
- */
 async function changeIn(batch: Batch, username: string, next: (balance: Currency) => Currency): Promise<Currency> {
     const state = await pendingIn(batch, username);
     const characterId = await needCharacterId(username);

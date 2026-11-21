@@ -2,10 +2,6 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { followListsSavedElsewhere } from "../socket/authentication_pool";
 
-// The login workers build a player's spell book, inventory and mounts from their own copy of those lists
-// (socket/authentication_pool.ts). In a cluster an editor's save on another node writes the shared list, this node is
-// told (services/assetCache.ts changedElsewhere), and its workers are handed the new list as after a save here.
-
 function fakeCache() {
   const listeners = new Map<string, (elsewhere: boolean) => void>();
   return {

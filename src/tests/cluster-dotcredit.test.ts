@@ -149,8 +149,6 @@ test("a kill of a player on this node is refused: a peer cannot name a local pla
   expect(applyDotCredit(caster, { victimId: "7", victimName: "V", killed: true }, deps)).toBe(false);
 });
 
-// dots.ts is read, not imported: importing it loads the AOI, packet and spell modules, which start timers and need the
-// asset caches, so the tick cannot be run here. The shape of the hook is pinned instead.
 test("dots.ts gives a tick of a caster on another node PvP state and a killer", () => {
   const source = readFileSync(join(import.meta.dir, "..", "systems", "dots.ts"), "utf8");
   // Guard: the remote branch. A caster that is not in playerCache and is not the target is a remote caster.

@@ -7,9 +7,6 @@ import { MemoryStore } from "../cluster/memorystore";
 // The bus signs its envelopes (security review H1): every bus of a test shares this key.
 const TEST_BUS_KEY = "test-bus-key";
 
-// Social systems change a member's cached player (a party id cleared) and
-// send them a packet. Both happen in an action on the node holding the member.
-
 const encode = (text: string) => new TextEncoder().encode(text);
 const decode = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));

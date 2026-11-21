@@ -6,117 +6,19 @@ import { bareMap } from "./mirrors";
 import { MOVES_KEY, MoveOrders, isOpen, moveKey, type MoveOrder, type MoveState } from "./moveorders";
 import type { ClusterStore } from "./store";
 
-// Carrying out a move order (spec §2, moving a block). The coordinator writes the order (rebalance, moveorders.ts)
-// and commits the new owner in the block table once the order says "sent" (coordinator.ts, settleMoves).
-//
-// The old owner, told `block-move { id }`, starts the order (ordered -> sending), takes every part's state out of the
-// block (collect), and sends it all to the new owner in one BLOCK_MOVE call. The new owner takes the order
-// (sending -> sent) BEFORE it takes anything in, then accepts each part.
-//
-// So the order, not the call, says where the block's state is. An order that went to "sent" had its parts taken in
-// by the new owner, once. An order that went from "sending" to "aborted" had nothing taken in, and never will. Each
-// change is one swapIfEpoch, so exactly one of the two happens, and the old owner puts its parts back only after
-// the second (close). A call whose outcome is unknown (a timeout, a link that dropped after sending) is settled by
-// the old owner's own abort: if it lands, the new owner's take cannot.
-//
-// The old owner carries out one order at a time: a second order for it while one runs is aborted, as is one for a
-// block it does not hold at the order's blockEpoch, checked before the start and again once the start landed. One
-// open order per node is the coordinator's rule, but it is not atomic across a change of leader.
-//
-// The old owner decides the order within timeoutMs + decideForMs from the start. That is below the creature
-// spawner's OUTGOING_KEEP_MS, which a slot that was sent is answered for (preflight C5). An order still undecided
-// then (it cannot be read, or the new owner, alive but behind, does not say whether it took the order in) is not
-// given up on: the old owner keeps holding the parts for up to undecidedHoldMs more, with the block marked given away
-// from then on (so no slot spawns here while its creatures are foreign) and frozen, and keeps reading the order and
-// asking. The parts are told (BlockPart.hold) so a part that lets go on a timer, the spawner's OUTGOING_KEEP_MS, holds on.
-// Safety over latency: a block frozen for minutes is acceptable, a creature removed or doubled is not. Only past that
-// hold, with the order still undecided, are the parts logged lost and never put back on a guess.
-//
-// A block whose parts are too big for one call (MAX_CALL_BODY_BYTES) is put back, and its order is closed with
-// reason "too-big" (preflight D11): the coordinator leaves the block out of its plans while the order is kept.
-//
-// A block the old owner sent (or lost at the deadline) stays given away on it (givenAway) until its own table shows
-// the block at a higher epoch, whoever owns it, or the order is read back aborted. The spawner's OUTGOING_KEEP_MS
-// timer is only a second guard: a commit may come later than that (a store outage, a restart, a table that cannot be
-// read), and the old owner must not spawn the block's slots while the new owner holds them (preflight C5). At boot
-// the set is seeded from the open orders that name this node as the old owner.
-//
-// The order alone does not decide a put-back (security review, secfix A round 1). The order records are sealed, but
-// an earlier sealed revision can be written back over a later one (a replay): "sending" over "sent" lets the old
-// owner's abort swap land while the new owner holds the parts. So before the old owner puts back parts it may have
-// sent (a call that may have run and gave no answer), it asks the new owner over the signed link (BLOCK_MOVE_HELD)
-// whether it took the order in. The new owner answers from its own memory of the orders it took, not from the
-// store; an order it says it did not take is refused there from then on, so the answer stays true. "Held": the
-// parts are the new owner's, and the old owner finishes as for a send. No answer: nothing is put back until the
-// coordinator's tombstone names the new owner's run (or a later one), as for a dead node; past the hold the
-// parts are lost, as below. A refusal from the new owner, or a call that never ran, needs no question: the parts
-// never got there. The same question is asked before a block given away is taken back (review).
-//
-// "Held" with an order that reads aborted means the record was rolled back. The old owner writes the order forward to
-// "sent" (advanceToSent, secfix A round 2), so the coordinator commits the new owner as for any sent order, and a
-// restart of the old owner finds the order open (seed) instead of a table that still names it.
-//
-// What is still lost, each logged by name: the parts held by a node that dies part way (they die with it); a part
-// whose accept or restore throws; the parts held while the order cannot be read until the end of the hold (each part drops
-// what it still holds of them, `lost`). Should that order be read back aborted later, each part puts back what other
-// nodes still hold of the block (`lostAborted`) before the block is this node's again. Nothing is ever on both nodes.
-//
-// Probe before collecting (stall fix). A new owner that is alive but behind answers late over a link that is clogged
-// with bulk frames (ghosts, AOI): the call, and the question after it, then wait minutes in the queue, and the old owner
-// holds the block frozen all that time. So before the old owner takes anything out, it sends the new owner a small call
-// (BLOCK_MOVE_PROBE) and waits MOVE_PROBE_TIMEOUT_MS (longer for a sender whose own loop lags, probeDeadlineMs). No answer in time: the order is aborted ("unreachable") with nothing
-// taken out, nothing frozen, nothing held. The answer changes no state on the new owner. A new owner that does not know
-// the call (an older build) does not answer it, which is the same as no answer.
-//
-// Held blocks do not block the node (stall fix). While an undecided order holds its block frozen (the hold), the old
-// owner may carry out an order for another block. The held block stays given away, its parts stay with its own order
-// (taken, held, then sent, restored or lost, once), and a second order for it is aborted "busy" as before. Everything a
-// move keeps is per block or per order: the `given` entry, the `took` and `refused` sets, the parts' data, and the spawner's
-// outgoing slots (keyed by slot, a slot belonging to one block). One held order at a time frees the node; a second hold
-// keeps it busy until the first is decided.
-//
-// With the cluster off nothing here runs: the mover is made in startCluster (cluster/index.ts).
-
 export const BLOCK_MOVE = "BLOCK_MOVE";
 /** How long the old owner waits for the new owner's answer. Below MOVE_SEND_TIMEOUT_MS (coordinator.ts). */
 export const BLOCK_MOVE_TIMEOUT_MS = 20_000;
 /** How often the old owner tries again to read an order it could not read. */
 export const DECIDE_RETRY_MS = 1_000;
-/**
- * How long, after the answer was due, the old owner holds a block's state while its order cannot be read. With
- * BLOCK_MOVE_TIMEOUT_MS it stays below the spawner's OUTGOING_KEEP_MS (60 s, preflight C5), and well below ORDER_KEEP_MS.
- */
 export const DECIDE_FOR_MS = 30_000;
-/**
- * How much longer than timeoutMs + decideForMs the old owner holds a block's state that it could not decide, because
- * the order cannot be read or the new owner (alive, but behind) does not say whether it took the order in. The block
- * stays given away and frozen meanwhile: nothing is lost and nothing is on both nodes. A lagging new owner answers
- * within a minute or two; a dead one is found by its tombstone. Past it the parts are lost, logged by name. With
- * the rest it stays below ORDER_KEEP_MS (coordinator.ts): the closed order is still there to be read for the whole hold.
- */
 export const UNDECIDED_HOLD_MS = 240_000;
 /** The old owner asks the new owner whether it took an order in, before it puts back parts it may have sent. */
 export const BLOCK_MOVE_HELD = "BLOCK_MOVE_HELD";
-/**
- * How long the old owner waits for that answer. One question can start just before the deadline, so the hold is at
- * most BLOCK_MOVE_TIMEOUT_MS + DECIDE_FOR_MS + this, still below the spawner's OUTGOING_KEEP_MS (60 s). A hold past the
- * deadline (UNDECIDED_HOLD_MS) extends the spawner's timer for the slots through BlockPart.hold.
- */
 export const HELD_ASK_TIMEOUT_MS = 3_000;
 /** The old owner asks the new owner, before it takes anything out of the block, whether it is there and ready. */
 export const BLOCK_MOVE_PROBE = "BLOCK_MOVE_PROBE";
-/**
- * How long the old owner waits for that answer. A link that is not clogged answers in a few milliseconds; one that is
- * (bulk frames ahead of the call, a node behind) did not answer in 20 s in the runs this was made for. The wait is
- * short, so a move that cannot go through is given up on before any state is touched.
- */
 export const MOVE_PROBE_TIMEOUT_MS = 2_500;
-/**
- * The longest the old owner waits for the probe answer. The wait is MOVE_PROBE_TIMEOUT_MS or, for a sender whose own
- * event loop is behind, PROBE_LAG_FACTOR times that lag: the timer runs on the sender's loop, so a sender 400 ms behind
- * times out on a healthy new owner whose answer sits a few ticks in its own queue. Capped here so the whole move
- * (probe, then BLOCK_MOVE_TIMEOUT_MS) stays below MOVE_SEND_TIMEOUT_MS (coordinator.ts, 60 s) with room for the swaps.
- */
 export const MOVE_PROBE_MAX_MS = 10_000;
 /** How many ticks of its own lag the old owner allows the probe answer. */
 export const PROBE_LAG_FACTOR = 8;
@@ -130,20 +32,9 @@ export const MAX_FREEING_HOLDS = 1;
 /** How many orders the new owner remembers taking in, and refusing after a question. Oldest forgotten first. */
 export const HELD_KEEP = 4096;
 
-/**
- * Why an order was closed, written on it when the old owner knows (preflight D11): "too-big" (the parts do not fit one
- * call), "busy" (aborted unstarted, the old owner being already sending or still holding an earlier move of the block)
- * "unreachable" (the new owner did not answer the probe in time; nothing was taken out), "held" (aborted unstarted because
- * the old owner still holds the block from an earlier order) or "not-started" (the coordinator gave up on an order its old
- * owner never started).
- */
 export type OrderEnd = "too-big" | "busy" | "unreachable" | "held" | "not-started";
 /** What a swap writes on the order with its state: why it closed, and the parts the new owner was sent. */
 export interface OrderNotes { reason?: OrderEnd; parts?: string[] }
-/**
- * An order as stored: `reason` is set only on an order closed for a known reason; `parts` names what the new owner
- * took in, set with the take.
- */
 export interface EndedOrder extends MoveOrder, OrderNotes {}
 
 export interface BlockMoveBody { order: MoveOrder; parts: Record<string, unknown> }
@@ -152,19 +43,11 @@ export interface BlockMoveAnswer { ok: boolean; reason?: string }
 export interface ProbeAnswer { ready: boolean }
 /** BLOCK_MOVE_HELD: whether the new owner took the order in. null: its take is under way; ask again. */
 export interface HeldAnswer { held: boolean | null }
-/**
- * Asked of a new owner that may have been sent the parts: the run it had announced when the call was made (null when
- * it could not be read). Only a tombstone naming that run or a later one lets the parts back without its answer.
- */
 interface Asked { run: number | null }
 type Whereabouts = "free" | "held" | "unknown";
 /** How a run ended on the old owner: sent, put back, too big and put back, not started, or lost (logged by name). */
 export type MoveEnd = "sent" | "restored" | "too-big" | "skipped" | "lost";
 
-/**
- * The move orders, with the swap that also writes notes on the order (why it ended, what was taken in). It is the
- * same one swapIfEpoch on the order's revision as MoveOrders.swap, so the notes land with the state or not at all.
- */
 export class BlockMoveOrders extends MoveOrders {
   constructor(private readonly orderStore: ClusterStore, private readonly clock: () => number = Date.now) {
     super(orderStore, clock);
@@ -177,12 +60,6 @@ export class BlockMoveOrders extends MoveOrders {
     return (await this.orderStore.swapIfEpoch(moveKey(id), order.epoch, JSON.stringify(next))) ? next : null;
   }
 
-  /**
-   * Order `base.id` written forward to "sent": its new owner said it took the order in, but the record reads otherwise
-   * (an earlier revision written back, then aborted). Over the revision read, whatever its state; or written afresh
-   * from `base` and listed again when the order is gone, so the coordinator still commits it. The order as it now
-   * reads sent (or done), or null when the write lost to another one: read again and retry.
-   */
   async advanceToSent(base: MoveOrder, notes: OrderNotes): Promise<EndedOrder | null> {
     const order = await this.get(base.id);
     if (order?.state === "sent" || order?.state === "done") return order;
@@ -200,10 +77,6 @@ export interface BlockMoverDeps {
   calls: Pick<LinkCalls, "call" | "handle">;
   /** The block's owner in this node's table; null when it has none or the map is not known. */
   ownerOf(map: string, bx: number, by: number): BlockOwner | null;
-  /**
-   * Whether this node may own blocks now: it is not fenced, its lease is valid and its run is not taken (the spawn
-   * gate's test, cluster/index.ts). A node that may not takes no block in. Default: always.
-   */
   canOwn?: () => boolean;
   /** The parts, lowest order first. blockParts unless a test gives others. */
   parts?: () => Array<BlockPart<any>>;
@@ -227,10 +100,6 @@ export interface BlockMoverDeps {
 }
 
 interface Taken { part: BlockPart<any>; data: unknown }
-/**
- * A block this node gave away: the epoch it held it at, and the order that moved it. `lost`: what a move lost at the
- * deadline took out, for the parts' lostAborted should the order be read back aborted.
- */
 interface Given { blockEpoch: number; orderId: string; lost?: { move: BlockMove; taken: Taken[] }; asked?: Asked; heldWarned?: boolean; deciding?: boolean }
 
 const givenKey = (map: string, bx: number, by: number) => `${bareMap(map)}|${bx},${by}`;
@@ -312,12 +181,6 @@ export class BlockMover {
     void this.run(id).catch((error) => log.error(`Move order ${id} could not be started on ${this.deps.self}: ${error}`));
   }
 
-  /**
-   * Whether this node gave the block away and does not yet know where it went: its spawner must not spawn there,
-   * whatever its table says. Ends once this node's table shows the block at a higher epoch than the one the order
-   * moved it at, whoever owns it: the commit, a takeover after it, a move back, or a refill to this node. Each such
-   * write comes after the move closed, so no other node still holds the block's slots as its own.
-   */
   givenAway(map: string, bx: number, by: number): boolean {
     const key = givenKey(map, bx, by);
     const entry = this.given.get(key);
@@ -330,17 +193,10 @@ export class BlockMover {
     return this.given.size;
   }
 
-  /**
-   * At boot: the blocks of the open orders that name this node as the old owner are given away. Their parts died with
-   * the last run, or are on the new owner already; the order says which once it closes (review). How many.
-   */
   async seed(): Promise<number> {
     let seeded = 0;
     for (const order of await this.deps.orders.all()) {
       if (order.from !== this.deps.self || !isOpen(order)) continue;
-      // Past "ordered", the last run may have sent the parts: the new owner is asked before the block is taken back.
-      // Unanswered, a tombstone of the run it announces now (or a later one) counts: any run that took the parts in
-      // started before this seed (security review sec7, Minor 1).
       this.give(order, undefined, order.state === "ordered" ? undefined : { run: await this.announcedRun(order.to) });
       seeded++;
     }
@@ -348,11 +204,6 @@ export class BlockMover {
     return seeded;
   }
 
-  /**
-   * Reads the order of each block given away: one read back aborted was never taken in, and the block is this node's
-   * again. For a move lost at the deadline, each part's lostAborted runs first. A store that cannot be read, or an
-   * order that is gone, changes nothing (the table still ends it).
-   */
   async review(): Promise<void> {
     for (const [key, entry] of [...this.given]) {
       let order: MoveOrder | null;
@@ -364,8 +215,6 @@ export class BlockMover {
       }
       // A block whose move is still being decided is the move's to settle (close): it puts the parts back itself.
       if (entry.deciding || order?.state !== "aborted" || this.given.get(key) !== entry) continue;
-      // Guard (test "a block given away is not taken back while its new owner holds it"). An order read aborted may be
-      // an earlier revision written back; the new owner, if the parts may have reached it, says whether it took them.
       if (entry.asked) {
         const whereabouts = await this.whereIs(toMove(order), entry.asked);
         if (this.given.get(key) !== entry) continue;
@@ -398,11 +247,6 @@ export class BlockMover {
     });
   }
 
-  /**
-   * Where the parts of `move` are, by the new owner's word: "free" when it says it did not take the order in (and
-   * now never will), or, unanswered, when the coordinator's tombstone names its run as asked, or a later one;
-   * "held" when it says it took it in; "unknown" otherwise.
-   */
   private async whereIs(move: BlockMove, asked: Asked): Promise<Whereabouts> {
     let outcome: CallOutcome<HeldAnswer> | null = null;
     try {
@@ -418,9 +262,6 @@ export class BlockMover {
     return (await this.buried(move.to, asked)) ? "free" : "unknown";
   }
 
-  // Whether the coordinator's tombstone for `nodeId` names the run asked, or a later one, and no later run of it is
-  // announced. The run that may have taken the parts in started before the call; a tombstone of an earlier run (one
-  // still kept, or written back) does not count.
   private async buried(nodeId: string, asked: Asked): Promise<boolean> {
     if (asked.run === null || !this.deps.buriedRun) return false;
     try {
@@ -453,10 +294,6 @@ export class BlockMover {
     return { held: false };
   }
 
-  /**
-   * New owner: the BLOCK_MOVE_PROBE handler. Changes nothing here: it only says whether this node would take a block in
-   * now, as accept's own gate does (fenced, lease lapsed or run taken: no).
-   */
   probeHere(): ProbeAnswer {
     return { ready: this.deps.canOwn ? this.deps.canOwn() : true };
   }
@@ -472,8 +309,6 @@ export class BlockMover {
     return probeDeadlineMs(lag, this.probeTimeoutMs);
   }
 
-  // Asks the new owner whether it is there and ready, before anything is taken out. False when it does not answer in
-  // time, answers not ready, or does not know the call: the order is not carried out.
   private async probe(move: BlockMove, waitMs: number): Promise<boolean> {
     try {
       const outcome = await this.deps.calls.call<ProbeAnswer>(move.to, BLOCK_MOVE_PROBE, { id: move.id }, { timeoutMs: waitMs });
@@ -546,8 +381,6 @@ export class BlockMover {
       log.warn(`Move order ${id} names ${order.from} as the old owner, not ${self}: left alone`);
       return "skipped";
     }
-    // A block still given away is not this node's to send, whatever its table says: an earlier move of it is not
-    // settled, and a lost one keeps what it took out for lostAborted. A second export would replace that.
     if (this.givenAway(order.map, order.bx, order.by)) {
       await orders.swapWith(id, "ordered", "aborted", { reason: "held" });
       log.warn(`Move order ${id}: ${where(order)} is still given away by an earlier move from ${self}: aborted`);
@@ -560,8 +393,6 @@ export class BlockMover {
       return "skipped";
     }
     this.sending = id;
-    // Only the block as the coordinator saw it. One that changed hands since (a takeover, another order), or that
-    // this node's table does not give it at that epoch, is not this node's to send.
     const held = this.holds(order);
     if (held !== true) {
       await orders.swap(id, "ordered", "aborted");
@@ -571,8 +402,6 @@ export class BlockMover {
     // The start is one swap: an order the coordinator aborted meanwhile is not started.
     const sending = await orders.swap(id, "ordered", "sending");
     if (!sending) return "skipped";
-    // The probe may wait longer than its base for a lagging sender. The decide deadline is measured from when the probe
-    // returns (before it nothing is taken, so only the close below can use it), so it keeps its distance from the collect.
     const probeWait = this.probeWaitMs();
     let deadline = this.now() + this.timeoutMs + this.decideForMs;
     const move = toMove(sending);
@@ -622,20 +451,10 @@ export class BlockMover {
       return this.close(sending, taken, deadline, "too-big");
     }
     log.warn(`Move order ${id}: ${move.to} did not confirm ${where(move)} (${outcomeText(outcome)}): the order decides`);
-    // A refusal is the new owner's word that it took nothing in; a call that never ran sent nothing. Otherwise the
-    // parts may be there, and the new owner is asked before they are put back.
     const reached = outcome?.ok !== true && !(outcome && neverRan(outcome));
     return this.close(sending, taken, deadline, undefined, reached ? asked : null);
   }
 
-  // The one place the old owner decides what became of the parts it took out. The new owner takes them in only after
-  // its own swap sending -> sent, so this node's swap sending -> aborted landing means they were never taken in and
-  // never will be. When it fails, the order is read: sent or done means the new owner has them; aborted means the
-  // coordinator gave the order up first, before any take. A store that cannot be read decides nothing: the parts
-  // stay held, and the read is tried again until the deadline. `reason` is written on the order with the abort.
-  //
-  // `asked`: the parts may have reached the new owner (a call that may have run, unanswered). An abort then puts
-  // nothing back until the new owner says it did not take the order in, or its run's tombstone is found (whereIs).
   private async close(sending: MoveOrder, taken: Taken[], deadline: number, reason?: OrderEnd, asked: Asked | null = null): Promise<MoveEnd> {
     const { self, orders } = this.deps;
     const move = toMove(sending);
@@ -656,8 +475,6 @@ export class BlockMover {
             return "sent";
           }
           if (order?.state === "aborted") {
-            // Guard (test "a replayed sending revision: the old owner puts nothing back while the new owner holds the
-            // block"). The abort may have landed on an earlier revision written back over "sent".
             const whereabouts = asked ? await this.whereIs(move, asked) : "free";
             if (whereabouts === "free") {
               await this.restore(move, taken);
@@ -668,8 +485,6 @@ export class BlockMover {
               log.error(`Move order ${move.id} reads aborted, but ${move.to} took ${where(move)} in: the order record was rolled back. ${self} keeps it given away, and writes the order forward to sent`);
               this.give(sending, undefined, asked);
               await this.finish(move, taken);
-              // Guard (test "a rolled-back order the new owner holds is written forward ..."). Left aborted, the order is
-              // never committed, and a restart of this node would serve the block by its table while the new owner does.
               await this.forward(sending, { parts: taken.map((entry) => entry.part.name) }, this.now() + this.decideForMs);
               return "sent";
             }
@@ -690,21 +505,14 @@ export class BlockMover {
         }
         if (this.now() >= deadline) {
           if (taken.length === 0) {
-            // Nothing was taken out and no call was made: there is nothing to hold, freeze or lose. The order is left to the
-            // coordinator, which aborts a sending order.
             log.warn(`Move order ${move.id} could not be read in time, but nothing was taken out of ${where(move)}: ${self} lets it go`);
             return "skipped";
           }
           if (this.now() < deadline + this.undecidedHoldMs) {
-            // Safety over latency: the new owner may only be behind. The block stays given away (no slot spawns here
-            // while its creatures are foreign) and frozen, the parts stay held, and the order is read again.
             if (!holding) {
               holding = true;
               this.give(sending, undefined, asked, true);
               this.holding.add(move.id);
-              // The block is frozen and given away, its parts are this order's: the node may carry out an order for another
-              // block meanwhile (a second order for this one is aborted "busy" by givenAway). Only the first undecided hold
-              // frees the node; a second keeps it busy until one is decided.
               if (this.sending === move.id && this.holding.size <= MAX_FREEING_HOLDS) this.sending = null;
               await this.holdOn(move, taken, deadline + this.undecidedHoldMs + this.askTimeoutMs + this.retryMs - this.now());
               log.warn(`Move order ${move.id} is not decided yet: ${self} keeps holding the ${named(taken)} of ${where(move)} for up to ${this.undecidedHoldMs} ms more, the block stays frozen`);
@@ -722,8 +530,6 @@ export class BlockMover {
     }
   }
 
-  // An order the new owner said it holds, written forward to "sent" (advanceToSent), tried again until `until` (once
-  // when null). Whether it landed. Not landed, the block stays given away in this run only: review tries again.
   private async forward(order: MoveOrder, notes: OrderNotes, until: number | null): Promise<boolean> {
     let warned = false;
     for (;;) {
@@ -746,8 +552,6 @@ export class BlockMover {
     }
   }
 
-  // How the order ended is not known: the new owner may hold the parts. The block stays given away (review reads the
-  // order later), and each part drops what it still holds of them here, so nothing can be on both nodes.
   private async lose(sending: MoveOrder, taken: Taken[], asked: Asked | null): Promise<void> {
     this.give(sending, taken, asked);
     const move = toMove(sending);
@@ -793,27 +597,14 @@ export class BlockMover {
     if (!order) return { ok: false, reason: "no such order" };
     // Only the old owner the order names may hand this node a block, and only one the order sends here.
     if (order.from !== from || order.to !== self) return { ok: false, reason: "not this pair" };
-    // A call sent again after it ran: the parts were taken in by this run. An order that reads taken but not by this
-    // run (an earlier run, or a record written back) took nothing in here.
     if (this.took.has(id)) return { ok: true };
     if (order.state === "sent" || order.state === "done") return { ok: false, reason: "taken in by another run" };
     if (order.state !== "sending") return { ok: false, reason: `the order is ${order.state}` };
-    // A node that was stalled past its takeover can handle a BLOCK_MOVE before its beat finds the tombstone. A takeover
-    // gives nothing out until the node's lease has lapsed, so a node taken over always refuses here: taken in, the
-    // block would be committed to a node the coordinator has forgotten.
     if (this.deps.canOwn && !this.deps.canOwn()) return { ok: false, reason: "this node may not own blocks now" };
-    // Only a block this node's table gives to the old owner at the order's epoch. One taken over since (the old owner
-    // died, or the table moved on) would strand the parts here, on a node the block is not committed to.
     const owner = this.deps.ownerOf(order.map, order.bx, order.by);
     if (owner?.nodeId !== order.from || owner.epoch !== order.blockEpoch) {
       return { ok: false, reason: `the block is not ${order.from}'s at epoch ${order.blockEpoch} here` };
     }
-    // The take is one swap, before anything is taken in. Once it lands the old owner can no longer abort the order
-    // and put the parts back; if the old owner or the coordinator aborted first, it fails and nothing is taken in.
-    // It names the parts on the order, for the coordinator's log should the commit find the block moved on.
-    //
-    // Guard (test "a new owner that said it did not take an order never takes it in"). The claim is checked and made
-    // with no await between them and the old owner's question (heldHere), so the answer the old owner got stays true.
     if (this.took.has(id)) return { ok: true };
     if (this.refused.has(id)) return { ok: false, reason: "the old owner was told it was not taken in" };
     // A second call while the take is under way answers as the take ends, and takes nothing in.

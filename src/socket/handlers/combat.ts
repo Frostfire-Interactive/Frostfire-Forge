@@ -57,9 +57,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         if (!currentPlayer) return;
         // Corpses and ghosts cannot cast.
         if (currentPlayer.isDead || currentPlayer.isGhost) return;
-        // GM stealth is non-interactive: an invisible admin casting would hit
-        // things (AoE, ground zones, projectiles) while nothing can see or fight
-        // back, and the visuals would give the admin away anyway.
         if (currentPlayer.isStealth) return;
         if (currentPlayer.isGuest) {
           sendPacket(
@@ -92,8 +89,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           return;
         }
 
-        // Stunned players cannot cast. stunnedUntil is an epoch timestamp
-        // (Date.now()-based), so it must be compared against Date.now().
         if (freshPlayerForDelay?.stunnedUntil && freshPlayerForDelay.stunnedUntil > Date.now()) {
           return;
         }
@@ -126,14 +121,9 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         }
 
         if ((data as any).creature === true) {
-          // As in WoW: a friendly spell (a heal, or harmless effects only) cast
-          // with an enemy selected lands on the caster instead of failing.
           const creatureSpellValue = Number(spell.damage) || 0;
           const friendlySpell = creatureSpellValue < 0 ||
             (creatureSpellValue === 0 && Array.isArray(spell.effects) && spell.effects.length > 0 && !spellHasHostileEffects(spell));
-          // An AoE centred on the caster (Flamestrike-style) ignores the
-          // selection: the normal cast hits every player and creature around
-          // the caster, so the selected creature is not needed.
           const casterCentredAoe = (Number(spell.aoe_radius) || 0) > 0 && spell.ground_aoe !== 1;
           if (!friendlySpell && !casterCentredAoe) {
             await castSpellOnCreature(wt, currentPlayer, spell, Number(targetId));
@@ -190,17 +180,11 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           return;
         }
 
-        // A harmful spell with no target (an area around the caster, or one
-        // placed on the ground) answers to the no-PvP zones as a targeted one
-        // does through player.canAttack. Asked here, before the cooldown is
-        // read: nothing may wait between that read and the cooldown being set.
         const pvpAllowed: PvpAllowed = (position) => player.isInPvPZone(currentPlayer.location.map, position as PositionData, PVP_BODY);
         if ((isAoeSpell || isGroundAoe) && ((spell?.damage ?? 0) > 0 || spellHasHostileEffects(spell))) {
           const aim = isGroundAoe ? { x: Number((data as any).groundX), y: Number((data as any).groundY) } : null;
           const refused = await areaCastRefusal(currentPlayer.location.position, aim, pvpAllowed);
           if (refused) {
-            // Told only when it is where they aimed that is wrong. A cast refused because the caster stands in a
-            // no-PvP area says nothing (USER REQUEST 2026-10-06: "Remove the 'you are not in a pvp area' notification").
             if (refused === "aim") sendPacket(wt, packetManager.notify({ message: "You cannot cast that into a no-PvP area" }));
             listener.emit(Events.SPELL_FAILED, { player: currentPlayer, target, spellName: spell.name, reason: "nopvp" } as any);
             return;
@@ -237,8 +221,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
 
         currentPlayer.interruptableSpell = !spell?.can_move || false;
 
-        // A stand-still spell pressed while moving simply does nothing: it
-        // never started, so there is no cast to interrupt and nothing to show.
         if (!spell?.can_move && currentPlayer.moving) {
 
           listener.emit(Events.SPELL_FAILED, { player: currentPlayer, target, spellName: spell.name, reason: "moving" } as any);
@@ -260,9 +242,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           return;
         }
 
-        // ATOMIC: Set cooldown immediately to prevent race condition with mana deduction
-        // This must happen before any other async operations
-        // Only apply spell cooldown (not cast_time) for faster feel
         freshPlayerForMana.spellCooldowns = freshPlayerForMana.spellCooldowns || {};
         const spellCooldownTime = spell.cooldown * 1000;
         freshPlayerForMana.spellCooldowns[spell_id] = performance.now() + spellCooldownTime;
@@ -371,16 +350,12 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
 
           const splashTargets: Array<{ target: any }> = [];
           const aoeIsHeal = spell_damage < 0;
-          // Only this layer's players within the radius can be hit; the grid
-          // keeps the scan to the crowd round the caster, not the whole map.
           for (const p of playersAndMirrorsNear(aoeX, aoeY, currentPlayer.location.map, aoeRadius, layerManager.getPlayerLayer(currentPlayer.id))) {
             // A mirror (another node's player) passes the same checks; its hit goes to its owner below.
             if (p.id === currentPlayer.id && !aoeIsHeal) continue;
             if (p.isGuest) continue;
             // Ghosts cannot be damaged or healed.
             if (p.isGhost) continue;
-            // An admin in stealth is out of the game for everyone else: no spell touches them
-            // (player.canAttack refuses one as a target).
             if (p.isStealth) continue;
             const inParty = currentPlayer?.party?.includes(p?.username) || false;
             if (aoeIsHeal) {
@@ -819,8 +794,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
 
         log.debug(`[ATTACK] Identified target as player. username=${target.username}`);
 
-        // Casting at someone behind you turns you to face them (WoW) rather
-        // than failing the facing check below.
         if (target.id !== currentPlayer.id && target.location?.position) {
           faceToward(currentPlayer, Number(target.location.position.x), Number(target.location.position.y));
         }
@@ -931,9 +904,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           listener.emit(Events.SPELL_CAST, { player: currentPlayer, spellName: spell.name, target, isEntityTarget: false });
 
           if (target.remote) {
-            // A player of a neighbouring node: its owner checks and applies the effects, and flags the target
-            // as a local hit does, also when the spell has no effects (spec §4). The caster's flag is set
-            // by hitRemotePlayer once the hit landed.
             await hitRemotePlayer(currentPlayer, target, remoteHit(currentPlayer, spell, 0, false, { skipEffects: !hasEffects, showsDamage: false, harmful: true }));
           } else {
             if (Array.isArray(spell.effects) && spell.effects.length > 0) {
@@ -1016,9 +986,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           listener.emit(Events.SPELL_CAST, { player: currentPlayer, spellName: spell.name, target, isEntityTarget: false });
 
           if (target.remote) {
-            // A player of a neighbouring node: its owner checks and applies the effects, and flags the target
-            // as a local hit does, also when the spell has no effects (spec §4). The caster's flag is set
-            // by hitRemotePlayer once the hit landed.
             await hitRemotePlayer(currentPlayer, target, remoteHit(currentPlayer, spell, 0, false, { skipEffects: !hasEffects, showsDamage: false, harmful: true }));
           } else {
             if (Array.isArray(spell.effects) && spell.effects.length > 0) {
@@ -1085,8 +1052,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         // Check if spell was manually cancelled via ESC during cast time
         const updatedPlayer = playerCache.get(currentPlayer.id);
         if (updatedPlayer && updatedPlayer.manualSpellCancel && updatedPlayer.manualSpellCancel >= spellStartTime) {
-          // Spell was cancelled during cast time, abort execution
-          // Clear the manual cancel flag so next cast is allowed
           if (updatedPlayer.spellCooldowns) {
             delete updatedPlayer.spellCooldowns[spell_id];
             cooldownManager.deleteCooldown(updatedPlayer.username, spell_id);
@@ -1117,8 +1082,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         currentPlayer.mounted = false;
         playerCache.set(currentPlayer.id, currentPlayer);
 
-        // The target may have moved behind the caster during the cast: face
-        // them again so the completion check below does not fail on facing.
         const targetNow = entityById(target.id) ?? target;
         if (!isSelf && targetNow.location?.position) {
           faceToward(currentPlayer, Number(targetNow.location.position.x), Number(targetNow.location.position.y));
@@ -1252,8 +1215,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         let finalDamage: number;
         let isCrit: boolean;
         if (spell_damage < 0) {
-          // WoW-style heal: level roll + cast-time share of the damage stat,
-          // 150% on a crit. Negative = healing.
           const heal = rollHeal(spell_damage, currentPlayer.stats, spell.cast_time);
           finalDamage = -heal.amount;
           isCrit = heal.isCrit;
@@ -1304,8 +1265,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         // False only when a mirrored target's owner refused the hit or did not answer: nothing landed.
         let remoteLanded = true;
         if (target.remote) {
-          // A player of a neighbouring node: its owner checks no-PvP and immunity, and applies the hit (spec §4).
-          // A dodged damage spell is still harmful: the target is flagged and the attack recorded, as a local one is.
           remoteLanded = await hitRemotePlayer(currentPlayer, target, remoteHit(currentPlayer, spell, finalDamage, isCrit, {
             skipEffects: spell_damage > 0 && finalDamage === 0,
             showsDamage: spell_damage !== 0,
@@ -1315,11 +1274,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           broadcastToAOIBestEffort(currentPlayer, packetManager.updateStats({ id: currentPlayer.id, target: currentPlayer.id, stats: currentPlayer.stats }));
           sendStatsToPartyMembers(currentPlayer.username, currentPlayer.id, currentPlayer.stats);
         } else {
-          // Apply damage to player target
-          // Add if negative damage (healing) to current health, subtract positive damage
-          // Positive damage is first absorbed by absorbtion, remainder hits health
-          // Corpses awaiting release can neither be damaged further nor healed;
-          // only the release + revive flow changes their state.
           if (target.isDead) {
             return;
           }
@@ -1436,14 +1390,10 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         }
         listener.emit(Events.SPELL_CAST, { player: currentPlayer, spellName: spell.name, target, isEntityTarget: false });
 
-        // AoE splash: apply damage and effects to all valid targets within aoe_radius
-        // of the primary target (excluding the primary target itself).
         const aoeRadius = spell?.aoe_radius;
         if (aoeRadius && aoeRadius > 0) {
           const splashTargets: Array<{ target: any; distance: number }> = [];
 
-          // Collect nearby players: same layer only, and only the crowd within
-          // the radius of the target.
           for (const p of playersAndMirrorsNear(targetX, targetY, currentPlayer.location.map, aoeRadius, layerManager.getPlayerLayer(currentPlayer.id))) {
             // A mirror (another node's player) passes the same checks; its hit goes to its owner below.
             if (p.id === target.id) continue;
@@ -1472,8 +1422,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           for (const splash of splashTargets) {
             const splashTarget = splash.target;
 
-            // AoE damage: independent roll per target (same formula as primary)
-            // Heals: WoW-style roll (negative = healing); damage: level roll + damage stat.
             let splashDmg = spell_damage < 0
               ? -rollHeal(spell_damage, currentPlayer.stats, spell.cast_time).amount
               : Math.floor(Math.random() * ((playerLevel - 1) * 3 + 1)) + spell_damage + (playerLevel - 1) * 2 + attackerDamageBonus;
@@ -1562,8 +1510,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           false
         );
 
-        // Mark this as a manual cancel (not a movement interrupt)
-        // Don't set lastInterruptTime to allow immediate recast
         currentPlayer.casting = false;
         currentPlayer.castId = (currentPlayer.castId || 0) + 1;
         currentPlayer.manualSpellCancel = performance.now();

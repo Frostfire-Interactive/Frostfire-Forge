@@ -74,8 +74,6 @@ test("a handover from a node that does not own the mirror is ignored", async () 
     await settle();
     links.b.send("c", "GHOST_HANDOVER", { kind: "player", id: "7", num: 7, to: "z" });
     await settle();
-    // Guard: entry.from === from. Without it any peer could take another node's entity's mirror. The target
-    // is a third node: a handover naming its own sender is ignored by a separate check.
     expect(nodes.c.ghosts.ownerOf("player", "7")).toBe("a");
   } finally {
     stop();
@@ -165,8 +163,6 @@ test("a handover leaves nothing tracked, so the next scan does not despawn it ev
     await settle();
     nodes.a.ghosts.handOver("player", "7", "b");
     nodes.a.local.delete("7");
-    // Without the untrack the entry stays (with no peers, so the scan below sends nothing and then drops it):
-    // only looking before the scan shows the guard.
     expect((nodes.a.ghosts as any).tracked.get("player")?.has("7")).toBe(false);
     nodes.a.ghosts.scan();
     await settle();

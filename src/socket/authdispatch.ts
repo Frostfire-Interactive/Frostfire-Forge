@@ -1,21 +1,3 @@
-/**
- * The dispatch of login jobs over the auth-worker pool (authentication_pool.ts), apart from the workers
- * themselves so a test can run it with fake ones.
- *
- * - Every job goes to the worker with the fewest jobs in flight; of equals, the next one after the last chosen.
- * - Every worker's answers reach the same handlers, a replacement's too: the dispatcher attaches its listeners to
- *   each worker it starts, nobody else does.
- * - A worker that errors or exits is dropped, replaced, and its jobs in flight fail at once, each once, with the
- *   answer a failed login gives (`authenticated: false` and an error), so the receiver tells the client and clears
- *   the queue entries as it does for any failed login. A late answer from the dropped worker is ignored.
- * - A job whose token is already in flight goes to the worker that holds it, never to a second one. The AUTH case
- *   (socket/handlers/session.ts) already refuses such a login before it gets here (`authentication_queue`, by
- *   token, is set before the post and cleared by `completeLogin` only when the answer, or the failure above, has
- *   come), so this only makes the guarantee hold without that guard.
- * - The lists the workers copy at their start (spells, items, mounts) are kept here: a refresh reaches every
- *   worker and the copy given to a replacement.
- */
-
 /** What the pool needs of a worker (a worker_threads Worker, or a fake one). */
 export interface PoolWorker {
   postMessage(message: unknown): void;
@@ -95,10 +77,6 @@ export class AuthDispatcher<W extends PoolWorker> {
     return this.slots.length;
   }
 
-  /**
-   * "message": called with every worker's answer, as an EventEmitter would (a failure of the handler is the
-   * caller's). "lost": called with a job whose worker stopped, just before its failed answer goes to "message".
-   */
   on(event: "message", handler: (result: any) => unknown): this;
   on(event: "lost", handler: (job: AuthJob) => unknown): this;
   on(event: string, handler: (arg: any) => unknown): this {
@@ -211,10 +189,6 @@ export class AuthDispatcher<W extends PoolWorker> {
     if (holder && --holder.count <= 0) this.holders.delete(entry.job.token);
   }
 
-  /**
-   * A worker stopped (error or exit; once, whichever comes first): it is dropped and ended, a new one is started in
-   * its place while the pool runs, and every job it held fails.
-   */
   private retire(slot: Slot<W>, message: string | null): void {
     if (slot.dead) return;
     slot.dead = true;
@@ -265,14 +239,6 @@ export class AuthDispatcher<W extends PoolWorker> {
 /** The most threads a worker's database pool may have. */
 const MAX_AUTH_DB_THREADS = 64;
 
-/**
- * The environment an auth worker starts with. Each worker imports the database controller, which starts its own
- * pool of database threads (DB_WORKER_POOL_SIZE, 8 by default), each holding up to 10 connections. With every
- * worker of the pool used, the default would let one node open eight times the connections it did when one worker
- * did the logins. A worker runs its queries at most as fast as one thread can, so it gets one thread
- * (AUTH_DB_WORKER_POOL_SIZE changes it): the pool as a whole still reaches as many connections as the one worker
- * did, spread over its workers.
- */
 export function authWorkerEnv(env: Record<string, string | undefined>): Record<string, string> {
   const wanted = parseInt(env.AUTH_DB_WORKER_POOL_SIZE || "", 10);
   const threads = Number.isInteger(wanted) && wanted > 0 ? Math.min(wanted, MAX_AUTH_DB_THREADS) : 1;

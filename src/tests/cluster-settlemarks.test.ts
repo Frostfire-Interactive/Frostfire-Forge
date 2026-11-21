@@ -4,9 +4,6 @@ import { LateError, NotStartedError, runTransaction, runWithRetries } from "../c
 import { settle } from "./cluster-fakelink";
 import { characterDatabaseModule } from "./setup";
 
-// Settle marks shared through the cluster's store (cluster/tradesettle.ts), and the open-by deadline of a swap's
-// transaction (controllers/sqltransaction.ts). Two TradeSettle objects on one MemoryStore play two nodes.
-
 /** What each transaction the batch sent was given: how many arguments, and its options. */
 const transactionCalls: Array<{ arity: number; options: unknown }> = [];
 /** Every statement sent outside a transaction that is not a read. */
@@ -257,8 +254,6 @@ test("an admin's write to a player marked on another node waits for the mark", a
   }
 });
 
-// /give is run from its source, with the names its case uses handed in (as admin-commands.test.ts runs commands):
-// the command module cannot be imported here, it starts the server.
 const GIVE_NAMES = [
   "commandName", "currentPlayer", "wt", "args", "sendPacket", "packetManager", "playerCache", "player", "assetCache",
   "inventory", "getIconUrl", "settleStoreAttached", "settleForAdmin", "settlingNotice", "tryOnPlayer", "notSent",
@@ -672,8 +667,6 @@ test("the database client and worker hand the open-by deadline to the transactio
   expect(client).toContain("options.openBy === undefined ? { transaction: statements } : { transaction: statements, openBy: options.openBy }");
 });
 
-// Security review H1: a mark holds a player's writes for as long as it says is left, so no mark is taken for longer
-// than any node ever sets one (SETTLE_MS).
 test("a mark that claims more than SETTLE_MS is held for SETTLE_MS", async () => {
   const { SETTLE_MS, leftOf } = await import("../cluster/tradesettle");
   expect(leftOf(JSON.stringify({ left: SETTLE_MS * 1000 }))).toBe(SETTLE_MS);

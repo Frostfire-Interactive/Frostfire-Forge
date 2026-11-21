@@ -2,16 +2,6 @@ import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
 import { characterDatabaseModule, testCharacterId } from "./setup";
 import { GuardError } from "../controllers/sqltransaction";
 
-// What a player owns (inventory, equipment, bags, currency, collectables) is
-// read from caches, and written to the database and the cache together. These
-// run the real systems against a fake database and compare, after every
-// change, what the systems answer with what that database holds.
-
-// ------------------------------------------------------------ fake database
-// The five tables, run the way MySQL runs them: names compared without regard
-// to case, INT columns holding whole numbers whatever they were given, ids and
-// defaults filled in by an INSERT.
-
 type Row = Record<string, any>;
 
 const EQUIPMENT_SLOTS = [
@@ -137,8 +127,6 @@ async function ask(sql: string, params: any[] = []) {
 
 mock.module("../controllers/sqldatabase", () => characterDatabaseModule({
   default: ask,
-  // All of its statements or none: one that is refused puts the tables back as they were. One that is made
-  // with the answer never coming stands for a transaction that was kept whole and never answered.
   transaction: async (statements: Array<{ sql: string; values?: any[]; mustChange?: boolean }>) => {
     transactions++;
     const before = structuredClone({ tables, nextId });

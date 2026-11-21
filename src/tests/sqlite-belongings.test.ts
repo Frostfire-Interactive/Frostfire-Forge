@@ -3,11 +3,6 @@ import os from "os";
 import path from "path";
 import fs from "fs";
 
-// The inventory, currency and home systems on a real SQLite file, made by its setup, their rows a character's by its
-// id. Their statements are written for MySQL, and the other test files hand them to a stand-in that takes them as
-// written: only a database says whether SQLite reads them. It runs in a process of its own (see the fixture), so
-// the stand-ins other test files put in place of the database layer do not reach it.
-
 const name = `ff_belongings_test_${process.pid}`;
 const file = path.join(os.tmpdir(), "frostfire_forge", `${name}.sqlite`);
 const remove = () => { for (const suffix of ["", "-wal", "-shm"]) fs.rmSync(file + suffix, { force: true }); };

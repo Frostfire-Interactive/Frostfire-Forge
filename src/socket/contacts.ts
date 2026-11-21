@@ -4,12 +4,6 @@ import { deliverToPlayer, registerPlayerAction, runOnPlayer } from "../cluster/d
 import { clusterDirectory } from "../cluster/index";
 import { packetManager } from "./packet_manager";
 
-// Whether a friend, party member or guild member is online. This is the only source of it: a client cannot tell from
-// who it sees, since a contact may be out of sight, on another map or on another node. A player greets their contacts
-// when they log in (a crossing to another node is not a login), and tells them when they leave. Each contact answers
-// from the node that holds them, the only one that knows whether they are stealthed, so a player learns how every
-// contact stands: online or not.
-
 const statusOf = (username: string, online: boolean) => packetManager.updateOnlineStatus({ online, username });
 
 /** Everyone whose lists show this player: friends, party, guild. Lower case, each once, never the player. */
@@ -62,11 +56,6 @@ registerPlayerAction("friends-update", async (p, { friends }) => {
   await deliverToPlayer(p.username, packetManager.updateFriends({ friends }));
 });
 
-/**
- * A node's players are gone and said nothing: this node's players learn it of their contacts there. The directory
- * says who is still online; an entry the dead run left behind counts as gone, and a restarted node's entries are its
- * new run's. It may be read before or after those entries are cleared.
- */
 export async function contactsLost(peer: string, restarted: boolean): Promise<void> {
   const directory = clusterDirectory();
   if (!directory) return;

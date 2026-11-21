@@ -1,21 +1,7 @@
-// Chaos run for the cells cluster (phase 7): a block moves, Redis goes away, a node dies. It drives the Docker test
-// stack from outside and checks what the cluster wrote in Redis and logged.
-//
-// Start the stack first (from the engine repo root):
-//   docker compose -f src/docker/docker-compose.cluster.yml --env-file src/docker/cluster.env up -d --build
-// Then:  bun src/docker/cluster-chaos.ts
-//   docker compose -f src/docker/docker-compose.cluster.yml --env-file src/docker/cluster.env down
-//
-// Only the test stack is touched: its own compose project, ports and database. The script reads no .env file and
-// prints no configuration or log text. Exit code: 0 all checks passed, 1 a check failed, 2 the stack is not up. A SKIP line
-// is a check that cannot fail in the current world (no creatures, no load in the block); it does not change the code.
-
 import { join } from "node:path";
 import { creatureTotal, ownerChanges, type Order } from "./chaos-moves";
 
 const COMPOSE = join(import.meta.dir, "docker-compose.cluster.yml");
-// Compose builds Redis' password and the nodes' REDIS_URL from this file, and refuses to run without it. The script only
-// hands over its path; it never opens it.
 const ENV_FILE = join(import.meta.dir, "cluster.env");
 const NODES = ["node-1", "node-2", "node-3"] as const;
 type Node = (typeof NODES)[number];
@@ -293,10 +279,6 @@ async function redisGoesAway(): Promise<void> {
   check(newDead.length === 0, "no node was taken over during the outage", newDead.join(", "));
   for (const node of NODES) check(!(await logsSince(node, since)).includes(FENCED), `${node} was not fenced`);
   const after = ownersByBlock(await tables());
-  // The rebalancer keeps working before and after the outage, and its own moves change owners too. A change is its own
-  // when a move order into the new owner was committed since the start: one that was not committed then, or is new.
-  // The orders, not the logs: they name the block and the new owner, and need no clock or text match. Stopping the
-  // coordinator instead would also stop the dead-node confirmation the check above relies on.
   const { changed, unexplained } = ownerChanges(before, after, ordersBefore, await moveOrders());
   check(unexplained.length === 0, "no block changed owner during the outage, except by the rebalancer's own committed move orders",
     unexplained.length > 0 ? unexplained.slice(0, 5).join(", ") : `${changed.length} moved by the rebalancer`);

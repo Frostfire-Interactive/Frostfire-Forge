@@ -12,12 +12,6 @@ import { addRemoteGatherNode, removeRemoteGatherNode, spawner as gatherSpawner }
 import { ghosts, type GhostCandidate, type GhostKind } from "../ghosts";
 import { idNumber } from "../linkproto";
 
-// Ghost kinds for the things players see but do not walk: loot, chests,
-// gathering nodes, skeletons, ground AOEs, tornadoes. None of them is written on
-// the receiving side. Loot and chests go to the whole map, as this node's own do;
-// the rest go to the players near them.
-// A spawn whose id is one of this node's own is refused (false), so Ghosts records nothing for it.
-
 const bare = (map: unknown) => String(map ?? "").replace(/\.json$/, "");
 /** Whether every value is a number a position or count can hold: a record from the wire is not trusted to be one. */
 const finite = (...values: unknown[]) => values.every((value) => typeof value === "number" && Number.isFinite(value));

@@ -9,12 +9,6 @@ import type { CarriedChain, CarriedScene } from "../systems/cutsceneplayer";
 import { SICKNESS_DURATION_MS, saveOnDisconnect as saveSickness } from "../systems/resurrection";
 import { STAT_INT_MAX } from "../systems/creatures/remotereward";
 
-// Cells phase 6: the arrival side of a player handoff, kept out of the receiver so it can be tested. The state record
-// is the one Task 13's handoffState builds on the old node (Deviation 18): cooldowns, the last attack and the
-// consumable cooldown travel as remaining or elapsed milliseconds, the effects and the sickness as Date.now()
-// deadlines. The record came over a link and is the only source of these values here, so each element is checked
-// against what this node's own rules could have made, and what could not is dropped or clamped, with a warning.
-
 export interface HandoffState {
   dots: any[];
   barriers: any[];
@@ -44,21 +38,12 @@ export interface HandoffState {
 /** The directions a MOVEXY names (the same eight as VALID_DIRECTIONS in receiver.ts), as the walk of an arrival may be. */
 export const WALK_DIRECTIONS: ReadonlySet<string> = new Set(["up", "down", "left", "right", "upleft", "upright", "downleft", "downright"]);
 
-/**
- * The way a player is walking, for the handoff: the direction their mover steps in (their facing can differ while a
- * cast is on), or null when they stand. The drain unregisters the mover but leaves `moving` as it was, so this reads
- * the player's own record, not the game loop.
- */
 export function walkOf(p: any): string | null {
   if (p?.moving !== true || p.isDead) return null;
   const direction = String(p._movementState?.targetDirection ?? p.location?.position?.direction ?? "").toLowerCase();
   return WALK_DIRECTIONS.has(direction) ? direction : null;
 }
 
-/**
- * How long a walking player's mover has not stepped, at `now` (performance.now()): from the drain, the old node stops
- * stepping them, while the client walks on. 0 for a player not walking, or one that never stepped here.
- */
 export function walkIdleMsOf(p: any, now = performance.now()): number {
   if (!walkOf(p) || typeof p._lastStepAt !== "number") return 0;
   return Math.max(0, Math.round(now - p._lastStepAt));
@@ -83,25 +68,12 @@ function catchUpBudgetMs(catchUp: ResumeCatchUp, now: number): number {
   return Math.min(MAX_RESUME_CATCH_UP_MS, positive(catchUp.idleMs) + Math.max(0, now - catchUp.committedAt));
 }
 
-/**
- * The steps a resumed walk takes at once on top of its first, at `now` (Date.now()): the ticks the player stood still
- * between the two nodes' movers while the client walked on. The old node's mover last stepped `idleMs` before the
- * commit, and this node's first step is now: the walk would have taken a step every tick in between, of which the
- * first step is one. Without them the server is that many steps behind the client for the rest of the walk, and the
- * client slows down to meet it. Only for the walk the arrival goes on with, at most MAX_RESUME_CATCH_UP_MS of it, less
- * what the gap replay walked of it (`spentMs`).
- */
 export function resumeCatchUpSteps(catchUp: ResumeCatchUp | null | undefined, direction: string, now: number, tickMs: number): number {
   if (!catchUp || catchUp.walk !== direction || !(tickMs > 0)) return 0;
   const idle = catchUpBudgetMs(catchUp, now);
   return Math.max(0, Math.round(idle / tickMs) - Math.round(positive(catchUp.spentMs) / tickMs) - 1);
 }
 
-/**
- * The walking time the catch-up of resumeCatchUpSteps makes up at `now`, in ms (HANDOFF_DONE's `catchUpMs`): the steps it
- * takes on top of the first, times the tick. The client weighs its walked position against the point moved on by this much
- * walk, where the node's first echo will be, not against the point the player stood at.
- */
 export function resumeCatchUpMs(catchUp: ResumeCatchUp | null | undefined, now: number, tickMs: number): number {
   if (!catchUp) return 0;
   return Math.round(resumeCatchUpSteps(catchUp, catchUp.walk, now, tickMs) * tickMs);
@@ -116,11 +88,6 @@ export interface GapSegment {
   ms: number;
 }
 
-/**
- * What the client did in the gap of a handoff, from the old node's last step on, as the `gap` it sends with AUTH says: the stretches it
- * walked or stood in order, each ended by a change of key, and the direction it holds now ("" for none). The client
- * walked them from the point the old node last echoed, which is the point the arrival stands at.
- */
 export interface GapInput {
   segments: GapSegment[];
   held: string;
@@ -132,11 +99,6 @@ const gapWalkOf = (value: unknown): string | null => {
   return WALK_DIRECTIONS.has(walk) ? walk : null;
 };
 
-/**
- * A gap report as this node takes it, or null when it is not one: the directions must be ones a MOVEXY names (or
- * "" for standing), each stretch a finite length of 0 or more, at most MAX_RESUME_CATCH_UP_MS. Only the first
- * MAX_GAP_SEGMENTS stretches are read.
- */
 export function gapInputOf(data: unknown): GapInput | null {
   if (!data || typeof data !== "object") return null;
   const r = data as { segments?: unknown; held?: unknown };
@@ -162,13 +124,6 @@ export interface GapPlan {
   walk: string | null;
 }
 
-/**
- * The replay of the gap of a resumed arrival that walked (`catchUp`), at `now` (Date.now()): the stretches the client
- * reported as ended, walked a tick's step at a time (each stretch in the whole steps nearest its length: the client walks
- * every stretch to a whole tick before it turns or stops, so the node ends where the client drew the player), as far as
- * the standstill the walk would make up reaches; then the walk goes on in the direction the client holds, or stops. Without it the node walks the whole standstill the way the player walked into the handoff,
- * past where a client that let go or turned in the gap is. Null without a report or a walk to make up.
- */
 export function gapPlanOf(input: GapInput | null | undefined, catchUp: ResumeCatchUp | null | undefined, now: number, tickMs: number): GapPlan | null {
   if (!input || !catchUp || !(tickMs > 0)) return null;
   const budget = catchUpBudgetMs(catchUp, now);
@@ -191,10 +146,6 @@ export const MAX_GAP_UPDATES = 32;
 /** How long after HANDOFF_DONE a later report is still walked (applyLateGap); one after it is only answered. */
 export const MAX_GAP_LATE_MS = 1000;
 
-/**
- * A gap report and its number, in the order the client sent them: the one with AUTH is 0, each HANDOFF_GAP after it one
- * more. From AUTH to HANDOFF_DONE the client sends one at each change of the direction it holds, with the whole gap so far.
- */
 export interface GapUpdate {
   seq: number;
   input: GapInput;
@@ -215,11 +166,6 @@ export function newerGap(kept: GapUpdate | null | undefined, update: GapUpdate |
   return update.seq > kept.seq ? update : kept;
 }
 
-/**
- * The gap of a resumed arrival as its login walked it (receiver.ts), kept for the reports that come after (applyLateGap):
- * the number of the newest report read, where the arrival stood before the replay, and what the walk makes up. `catchUp`
- * is null when the arrival did not walk: a later report is then only answered.
- */
 export interface GapApplied {
   seq: number;
   map: string;
@@ -232,12 +178,6 @@ export interface GapApplied {
   pending: GapUpdate | null;
 }
 
-/**
- * The walk the new node has the player in when it sends HANDOFF_DONE: the direction of the resumed walk (the MOVEXY it
- * is about to run for the arrival, as walkOf read it on the old node), or null when it does not walk the player. A dead
- * or stunned player, or one a teleport holds, is not walked, so they are null. The dead, stun and teleport checks are
- * defence: walk is already null for a dead player (walkOf), and no stun or teleport is set before the walk resumes.
- */
 export function doneWalkOf(walk: string | null | undefined, p: any, now = Date.now()): string | null {
   if (typeof walk !== "string" || !WALK_DIRECTIONS.has(walk)) return null;
   if (p?.isDead || p?.ghostTeleportPending) return null;
@@ -254,17 +194,8 @@ export const ARRIVAL_CLOCK_SLACK_MS = 5_000;
 /** A DoT's stacks when its spell names none (systems/dots.ts). */
 const DEFAULT_MAX_STACKS = 5;
 
-/**
- * The DoT scheduler's period in seconds (SCHEDULER_INTERVAL_MS in systems/dots.ts, 250 ms; the spell editor's
- * smallest "tick every" is the same). A DoT that ticks faster is one no spell makes: it would tick on every pass.
- * The test of this file reads dots.ts, so the two cannot drift apart.
- */
 export const MIN_DOT_INTERVAL_S = 0.25;
 
-/**
- * What this node knows that an arrival's record is checked against. Without a lookup nothing is known: a caster is
- * cleared and a corpse is dropped.
- */
 export interface ArrivalKnown {
   /** Whether `id` / `username` is a player this node holds: in the player cache, or the mirror of one on a neighbour. */
   caster?: (id: string, username: string) => boolean;
@@ -278,11 +209,6 @@ function holdsMap(maps: ReadonlyArray<{ name: string }> | undefined, corpseMap: 
   return (maps ?? []).some((m) => m?.name === `${map}.json`);
 }
 
-/**
- * The maps an arrival's corpse is checked against. `startup` is the list this node loaded at start; `load` reads the
- * whole set from the cache (20 MB over Redis), so it runs only for a corpse on a map the startup list lacks (a map
- * created since, assetloader.addCreatedMap). An arrival with no corpse, or one on a startup map, never calls it.
- */
 export async function arrivalMaps(
   rawState: any,
   startup: ReadonlyArray<{ name: string }> | null | undefined,
@@ -338,10 +264,6 @@ const positive = (value: unknown): number => {
   return Number.isFinite(n) && n > 0 ? n : 0;
 };
 
-/**
- * Keeps the elements of one effect list that `why` finds nothing wrong with (it answers the reason, or null), at most
- * MAX_ARRIVAL_EFFECTS of them. Each one dropped is logged with the player's name.
- */
 function checkedList(who: string, kind: string, value: unknown, why: (element: any) => string | null): any[] {
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value)) {
@@ -364,12 +286,6 @@ function checkedList(who: string, kind: string, value: unknown, why: (element: a
   return kept;
 }
 
-/**
- * One DoT or HoT of an arrival that passed the checks, made to fit what a spell can make: a tick no faster than the
- * scheduler runs, a tick no larger than STAT_INT_MAX over all stacks (the sign stays: a HoT is negative), a next tick
- * neither older than an arrival can be nor farther ahead than one period, and a caster only when this node knows them. A caster who is not a known
- * player gives no kill or PvP credit (systems/dots.ts treats an empty caster as no caster).
- */
 function clampedDot(d: any, now: number, who: string, known: ArrivalKnown): any {
   const out = { ...d };
   if (out.interval < MIN_DOT_INTERVAL_S) {
@@ -382,8 +298,6 @@ function clampedDot(d: any, now: number, who: string, known: ArrivalKnown): any 
     out.damagePerTick = out.damagePerTick < 0 ? -most : most;
   }
   const periodMs = out.interval * 1000;
-  // Ticks owed for the time the handoff took are kept (the scheduler pays them one per pass, as after a relog): the
-  // arrival waits at most ARRIVAL_TTL_MS, so a tick further behind than that, and a period, cannot be a real one.
   if (out.nextTickAt < now - ARRIVAL_TTL_MS - periodMs) out.nextTickAt = now;
   else if (out.nextTickAt > now + periodMs + ARRIVAL_CLOCK_SLACK_MS) out.nextTickAt = now + periodMs;
   const id = typeof out.casterId === "string" || typeof out.casterId === "number" ? String(out.casterId) : "";
@@ -393,8 +307,6 @@ function clampedDot(d: any, now: number, who: string, known: ArrivalKnown): any 
       out.casterId = id;
       out.casterUsername = name;
     } else {
-      // A creature casts as "creature:<id>" under its template's name (creatures/index.ts): its credit goes nowhere, and
-      // that is no news. Anyone else who is not known is.
       const creature = typeof out.casterId === "string" && out.casterId.startsWith("creature:");
       (creature ? log.debug : log.warn)(`The caster of one of the effects over time ${who} brought by handoff is not a player this node knows: no credit for it`);
       out.casterId = "";
@@ -415,10 +327,6 @@ export const SCENE_CLOCK_SLACK_MS = 30_000;
 
 const placeOf = (place: any): boolean => !!place && typeof place === "object" && typeof place.map === "string" && place.map.length > 0 && finite(place.x) && finite(place.y);
 
-/**
- * The cutscene of an arrival, or null when it has none or when what came could not be a session this node's rules
- * make. A scene dropped is only that: the client plays it to the end, and the player is not held.
- */
 function arrivalScene(raw: any, deadState: number, now: number, who: string): CarriedScene | null {
   if (raw === undefined || raw === null) return null;
   const drop = (why: string): null => {
@@ -477,10 +385,6 @@ function arrivalChain(raw: any, deadState: number, who: string): CarriedChain | 
   return null;
 }
 
-/**
- * The record as it came over the link, each field made the type the login reads and each element checked against
- * `limits`. `who` names the player in the warnings.
- */
 export function handoffStateOf(raw: unknown, limits: ArrivalLimits, who = "an arriving player", known: ArrivalKnown = {}): HandoffState {
   const r: any = raw && typeof raw === "object" ? raw : {};
   const latest = limits.now + limits.effectHorizonMs + ARRIVAL_CLOCK_SLACK_MS;
@@ -572,11 +476,6 @@ export function handoffStateOf(raw: unknown, limits: ArrivalLimits, who = "an ar
   };
 }
 
-/**
- * Put what the player brings where the login path restores it from: the effects under the lowercase name, the
- * cooldowns and lockout as this node's performance.now() deadlines, the sickness as a relog leaves it. What this
- * node kept of the player from an earlier visit is replaced, never added to.
- */
 export function seedArrival(username: string, state: HandoffState, now = performance.now()): void {
   const lower = username.toLowerCase();
   effectManager.saveDots(lower, state.dots);
@@ -600,11 +499,6 @@ export function arrivalFields(state: HandoffState, now = performance.now()) {
   };
 }
 
-/**
- * The mount an arrival keeps, checked as the MOUNT packet checks it (socket/handlers/movement.ts): the player owns
- * the mount among their collectables, is alive, and does not stand inside a building. The old node's word is not
- * enough: a warp into a building is handed off before the warp's own dismount runs, and the record came over a link.
- */
 export function arrivalMount(
   fields: { mounted: boolean; mount_type: string | null },
   collectables: ReadonlyArray<any>,
@@ -627,11 +521,6 @@ export function playersToDespawn(shownBefore: Iterable<string>, shownNow: Readon
   return out;
 }
 
-/**
- * Whether a player is dragged by an admin, or is an admin dragging someone (dragged id to admin id). The ids are
- * compared as text: the map's keys and values are numbers by their type, but a drag started with an id read from a
- * packet can hold a string.
- */
 export function draggedCheck(dragged: ReadonlyMap<number, number>): (playerId: string) => boolean {
   return (playerId) => {
     const id = String(playerId);
@@ -658,11 +547,6 @@ export function remoteAdminOf(args: any): string | null {
   return typeof by === "string" && by.trim().length > 0 ? by : null;
 }
 
-/**
- * The summon or teleport a link brought, or why it is refused. Every field is checked before use: the map is one
- * this node has (its name without ".json"), the point is a finite number inside that map, and `why` and `admins`
- * are exactly what the admin's node sends.
- */
 export function adminMoveOf(args: any, maps: ReadonlyArray<{ name: string; data?: any }>): AdminMove | string {
   const by = remoteAdminOf(args);
   if (by === null) return "no admin name";
@@ -683,10 +567,6 @@ export function adminMoveOf(args: any, maps: ReadonlyArray<{ name: string; data?
   return { by, map, x, y, why: args.why, admins: args.admins };
 }
 
-/**
- * Whether the admin who asked for cells-teleport-to may summon admins, as the admin's own node worked it out from
- * their permissions (commands.ts TELEPORT). Only a boolean true counts: a missing or other value is false.
- */
 export function reverseSummonAdmins(args: any): boolean {
   return args?.admins === true;
 }
@@ -698,12 +578,6 @@ export function warpTarget(ctx: Pick<LinkContext, "ownerAt" | "self"> | null, ma
   return owner && owner !== ctx.self ? owner : null;
 }
 
-/**
- * What a resumed arrival's own SPAWN_PLAYER shows, at the deferred spawn step. The client kept its world and the
- * player has walked on since the snapshot: the spawn carries the walk, the mount and the cast as they are now, and the
- * point they stand at now, or the client would rebuild an idle pose and snap back to the snapshot point while the
- * server has them walking on. Null when the player has no usable point (the caller keeps the login values).
- */
 export function resumeSelfSpawn(
   current: any,
   nameOf: (direction: string, walking: boolean, mounted: boolean, mountType: string | undefined, casting: boolean) => string,
@@ -713,8 +587,6 @@ export function resumeSelfSpawn(
   if (!here || !Number.isFinite(here.x) || !Number.isFinite(here.y)) return null;
   const direction = here.direction || "down";
   const mounted = current.mounted === true;
-  // `moverRunning`: the game loop steps this player (a mover is registered). That is a walk even when a stray stop
-  // cleared `moving` while the newest MOVEXY was still on its way to registering the mover.
   return {
     animationName: nameOf(direction, (current.moving === true || moverRunning) && !current.isDead, mounted, mounted ? current.mount_type || undefined : undefined, current.casting === true),
     x: here.x,
@@ -728,9 +600,6 @@ export const RESUME_WALK_RECOVER_MS = 3000;
 /** The longest the deferred spawn waits for the resumed walk to begin. */
 export const RESUME_WALK_WAIT_MS = 500;
 
-/**
- * Waits for `work`, at most `ms`; the timer is cleared when the work ends first. Never rejects.
- */
 export async function waitFor(work: Promise<unknown>, ms: number): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -740,12 +609,6 @@ export async function waitFor(work: Promise<unknown>, ms: number): Promise<void>
   }
 }
 
-/**
- * A mover about to register after a stray stop (a superseded mover's tick cleared `moving`): for a player who just
- * arrived by a resumed handoff (`until` is the end of that window, undefined for everyone else), `moving` is put back
- * and true is returned, so the caller sends the walk pose again. Anyone else, a dead or ghost-teleporting player, a
- * player who is moving already, or a window that has ended is left alone (false).
- */
 export function recoverResumedWalk(
   player: { moving?: boolean; isDead?: boolean; ghostTeleportPending?: boolean },
   until: number | undefined,

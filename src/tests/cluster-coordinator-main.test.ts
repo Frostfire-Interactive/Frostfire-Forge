@@ -10,8 +10,6 @@ const PRELOAD = join(import.meta.dir, "preload-config.ts");
 const SECRET = "coordinator-main-test-secret-0123456789abcdef";
 
 async function start(env: Record<string, string>): Promise<{ exited: number | "timeout"; output: string }> {
-  // From a directory with no .env file, so nothing fills a variable in.
-  // --preload: the process is not a test run, so bunfig.toml's preload (the stand-ins for the generated config files, absent on a fresh checkout) does not reach it.
   const proc = Bun.spawn([process.execPath, "--preload", PRELOAD, MAIN], {
     cwd: tmpdir(),
     env: { PATH: process.env.PATH ?? "", SystemRoot: process.env.SystemRoot ?? "", REGION_ID: "test", CLUSTER_LINK_SECRET: SECRET, ...env },

@@ -1,80 +1,3 @@
-// Local multi-node harness: `bun cluster-local <nodes> [--coordinators <n>]`
-// starts <n> cluster coordinators (default 1) and <nodes> engine processes from
-// this repo, on this machine. One coordinator leads and the rest stand by: with
-// --coordinators 2, stopping the leader's process (its pid is in its log line)
-// shows the standby taking over within the 5 s lock ttl.
-//
-// Each run starts from a clean cluster state: before any child starts, every
-// `cells:*` key in Redis (block tables, the map catalogue, node registry, player
-// directory, counters) is deleted, so tables from an earlier run with other
-// nodes do not carry over. Nothing of the cluster may be running then.
-//
-// Before starting it:
-//   - Redis must be running:  docker compose -f src/docker/docker-compose.redis.yml up -d
-//     and REDIS_URL set in .env.production (this refuses to start without it).
-//   - The gateway must be running (each node registers with it, as one engine
-//     does). This starts neither Redis nor the gateway.
-//
-// What every child gets (on top of the harness's own environment, which
-// `--env-file=.env.production` fills; Bun's --env-file never overrides a
-// variable that is already set, so these go through the child's env):
-//   CLUSTER=true, CACHE=redis, REGION_ID (the harness's, default "local")
-// The coordinators also get CLUSTER_EXPECTED_NODES=<nodes>: they split the maps
-// only once every node is live, so the first node up does not take every block.
-// And CLUSTER_SETTLE_MS=<nodes> x the ready timeout, the longest the one-by-one
-// start below can take: it replaces the coordinator's 60 s cap, which a slow
-// start would outlast (the last nodes would then get no blocks).
-//
-// What differs per node (i = 1..N; base = the value the engine would use alone,
-// read the same way server.ts reads it; node i uses base + 10 * i):
-//   NODE_ID                  node-<i>
-//   SERVER_ID                <REGION_ID>-node-<i>. The gateway keys game servers by
-//                            this id, so nodes sharing one would overwrite each
-//                            other's registration (host/port) on every heartbeat.
-//                            Side effects of the per-node id: the asset-server
-//                            world-list calls carry it, and the gateway realm list
-//                            shows one entry per node (cluster mode folds them into
-//                            one region from phase 3 Task 6).
-//   WEBSRV_PORTSSL           public game port: TCP (HTTPS) and the WebTransport
-//                            UDP listener, advertised to the gateway as port and
-//                            wtPort. base: WEBSRV_PORTSSL, else GAME_PORT, else 3000
-//   GAME_PORT                the same value (server.ts reads it when WEBSRV_PORTSSL
-//                            is unset)
-//   WEBSRV_PORT              plain HTTP port; only when the base env sets it
-//                            (server.ts falls back to the game port otherwise)
-//   WEBSRV_INTERNAL_PORT     internal HTTPS port (127.0.0.1; the engine's admin and
-//                            gateway-facing server). base: WEBSRV_INTERNAL_PORT, else
-//                            3002. It binds with reusePort, so a clash would not
-//                            fail: two nodes would silently share the port.
-//   NODE_LINK_PORT           node-to-node link port (UDP); base NODE_LINK_PORT, else game port + 5;
-//                            NODE_LINK_PORT=0 turns the links off on every node
-//   NODE_LINK_HOST           127.0.0.1 (every node is on this machine)
-//   NODE_LINK_BIND_HOST      the base NODE_LINK_BIND_HOST, else 127.0.0.1 (nodes refuse to start with it unset)
-//
-// Shared by all nodes (no per-node value needed): TLS certificate paths, the
-// database (DATABASE_*), the asset server, SERVER_HOST / PUBLIC_HOST. The log file
-// (src/logs/<date>.log) is shared too: it is appended to a line at a time with
-// the synchronous API, so lines from the nodes interleave but are not corrupted.
-// The engine has no metrics or benchmark port. Each node runs its own DB worker
-// pool (DB_WORKER_POOL_SIZE) and auth pool (AUTH_POOL_SIZE); lower them in
-// .env.production for large N.
-//
-// The nodes start one after another: the next starts when the previous prints
-// its readiness line ("WebTransport listening on UDP port ..."), or after 60 s.
-// All nodes sync the world maps into the same directory and write each file as
-// <file>.tmp then rename (src/modules/worldmaps.ts), so two nodes syncing at
-// once would write the same .tmp file; startup also runs schema checks against
-// the database and may (re)issue the local certificate.
-//
-// Output of every child is prefixed with its name. Ctrl+C (or SIGTERM) stops
-// all children, then a hard kill of any still running after 30 s (a node's
-// graceful shutdown takes a while: achievements, directory sweep, saves).
-// Stopping on SIGINT: elsewhere the harness sends SIGINT to each child; on
-// Windows it sends nothing, because the console Ctrl+C already reaches every
-// child and Bun's kill() may hard-terminate, which would skip the nodes'
-// graceful save. If every coordinator dies, the nodes are left running and a
-// loud warning is printed.
-
 import path from "node:path";
 import fs from "node:fs";
 import { clearClusterState } from "./cluster-redis";
@@ -136,8 +59,6 @@ function portFrom(value: string | undefined, fallback: number | null): number | 
 const baseGamePort = portFrom(process.env.WEBSRV_PORTSSL, null) ?? portFrom(process.env.GAME_PORT, 3000)!;
 const baseHttpPort = portFrom(process.env.WEBSRV_PORT, null);
 const baseInternalPort = portFrom(process.env.WEBSRV_INTERNAL_PORT, 3002)!;
-// By default links get their own base (game port + 5), so a node's link port does not meet another node's
-// game, HTTP or internal port (they step by PORT_STEP = 10). NODE_LINK_PORT=0 turns the links off on every node.
 const linksOff = process.env.NODE_LINK_PORT?.trim() === "0";
 const baseLinkPort = portFrom(process.env.NODE_LINK_PORT, null) ?? baseGamePort + 5;
 

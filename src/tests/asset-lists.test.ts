@@ -1,15 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { databaseModule } from "./setup";
 
-// The lists the asset cache holds of whole tables (items, mounts, weather,
-// worlds, npcs, particles): read from the database at startup, answered from
-// what is held after that, and kept in step by each write.
-
-// ------------------------------------------------------------ fake database
-// A few statement shapes, run against in-memory tables the way MySQL would:
-// names are compared without regard to case, a flag is kept as 0 or 1, and a
-// number column keeps a number. A statement it does not know is an error.
-
 type Row = Record<string, any>;
 let db: Record<string, Row[]>;
 let nextId: number;
@@ -418,8 +409,6 @@ describe("worlds", () => {
     expect(reads()).toEqual(["SELECT * FROM worlds"]);
   });
 
-  // USER REPORT 2026-10-31 ("the bar stays 0% for 30s"): without CACHE=redis the count went to Bun's own client, which
-  // tries a server that is not there for 31 s, and the first login after a start waited for it behind the worlds' lock.
   test("without CACHE=redis a player count is kept here, and no Redis is asked", async () => {
     const configured = process.env.CACHE;
     delete process.env.CACHE;

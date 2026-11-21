@@ -31,15 +31,8 @@ const rows = rowCache<InventoryRow[]>("inventory", async (username) => {
   )) as InventoryRow[] || [];
 }, { perPlayer: true });
 
-// One change to a player's rows at a time. Each works from the rows held and puts back what its write left, so two
-// running side by side would each put back rows without the other's change; and statements sent side by side reach
-// the database in no set order.
 const oneAtATime = turns();
 
-/**
- * A change to a player's rows, in its turn. When it fails, the rows held are forgotten and the next read loads them:
- * a write that threw may still have been made (one that timed out, say), so what is held can be trusted no longer.
- */
 function change<T>(username: string, work: () => Promise<T>): Promise<T> {
   return oneAtATime(username, async () => {
     try {
@@ -71,10 +64,6 @@ function insertedId(result: any): number | null {
 /** Whether an INT column holds `value` as it was given. Any other number the database rounds or clips its own way. */
 const storedAsGiven = (value: unknown) => value == null || (Number.isInteger(value) && Math.abs(value as number) <= 2147483647);
 
-/**
- * After a write: `next` is what the player's rows have become. Unless a number that was written is one the database
- * does not store as given: what it holds then cannot be worked out here, so the rows are read again instead.
- */
 async function hold(username: string, next: InventoryRow[], written: unknown[] = []) {
   if (written.every(storedAsGiven)) await rows.set(username, next);
   else await rows.drop(username);
@@ -98,11 +87,6 @@ interface Pending {
   unknown: boolean;
 }
 
-/**
- * A player's rows as `batch` has them so far, the first time with this system's turn taken until
- * the batch ends. Once the batch is kept they are the rows held; if it is not, the rows held are
- * forgotten (see `change`).
- */
 async function pendingIn(batch: Batch, username: string): Promise<Pending> {
   await batch.hold(oneAtATime, username);
   // Read once the player is settled: a trade lost across a border may still be swapped on its host (cluster/tradesettle.ts).
@@ -131,19 +115,10 @@ const inventory = {
     if (!name || !item.name) return;
     return ((await rows.get(name)) ?? []).filter((row) => sameName(row.item, item.name));
   },
-  /**
-   * In a `batch`: how many of an item the player has as the batch stands, and whether it is in use (worn, or a bag
-   * in a bag slot). Null when they have none. Nothing outside the batch changes it before the batch ends.
-   */
   async heldIn(batch: Batch, name: string, item: string): Promise<{ quantity: number; equipped: boolean } | null> {
     const row = (await pendingIn(batch, name)).held.find((held) => sameName(held.item, item));
     return row ? { quantity: Number(row.quantity), equipped: Number(row.equipped) === 1 } : null;
   },
-  /**
-   * With a `batch` (see services/batch), the statement is added to it instead of sent, and the
-   * answer is true when there was one to add. Each must change a row for the batch to be kept: an
-   * item is never gained beside a write that was lost.
-   */
   async add(name: string, item: InventoryItem, batch?: Batch) {
     if (!name || !item?.quantity || !item?.name) return;
     if (Number(item.quantity) <= 0) return;
@@ -196,8 +171,6 @@ const inventory = {
           "INSERT IGNORE INTO inventory (character_id, item, quantity) VALUES (?, ?, ?)",
           [characterId, resolvedName, quantity]
         );
-        // The new row is what was written, the table's defaults for the rest, and the id the database answered
-        // with. An answer without one leaves the row unknown, so the rows are read again.
         const id = insertedId(result);
         if (id === null) await rows.drop(name);
         else await hold(name, [...held, { id, character_id: characterId, item: resolvedName, quantity, equipped: 0, slot: null, bag_slot: null }], [quantity]);
@@ -255,8 +228,6 @@ const inventory = {
       const characterId = await needCharacterId(username);
       let held = (await rows.get(username)) ?? [];
       const written: unknown[] = [];
-      // Together: a save that stops part way would leave some items moved and the rest where they
-      // were, two of them in one slot.
       await transaction(slots.map((s) => ({
         sql: "UPDATE inventory SET slot = ?, bag_slot = ? WHERE item = ? AND character_id = ?",
         values: [s.slot, s.bag_slot ?? null, s.item, characterId],

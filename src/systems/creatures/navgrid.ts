@@ -1,12 +1,5 @@
 import type { Rng } from "./constants";
 
-/**
- * Walkability grid for creature movement, decoded from the map collision RLE
- * that assetloader stores as [width, height, value, count, value, count, ...].
- *
- * Creature positions use the same anchor as players: the footprint spans
- * x - FOOT_W/2 .. x + FOOT_W/2 horizontally and y .. y + FOOT_H vertically.
- */
 export const FOOT_W = 16;
 export const FOOT_H = 16;
 
@@ -200,10 +193,6 @@ export class NavGrid {
     }
   }
 
-  /**
-   * A* over tiles (8-way, no corner cutting), returning smoothed anchor
-   * waypoints excluding the start. `null` when unreachable within maxNodes.
-   */
   findPath(from: Point, to: Point, maxNodes = 4000): Point[] | null {
     const start = this.tileOf(from);
     let goal = this.tileOf(to);
@@ -281,15 +270,6 @@ export class NavGrid {
     return this.finishPath(from, to, start, goal, tiles);
   }
 
-  /**
-   * Smoothed waypoints for a tile path. A* only proves the tiles under the
-   * footprint's centre are open, but an off-centre footprint covers up to 2x2
-   * tiles, so going straight from `from` to the first tile, or from the last
-   * tile to `to`, can clip a wall corner and leave the creature stuck. Passing
-   * through the start and goal tile centres never can (the footprint stays
-   * inside tiles it already covers), so they bracket the path and smoothing
-   * drops them wherever a straight line is clear.
-   */
   protected finishPath(
     from: Point,
     to: Point,
@@ -364,14 +344,6 @@ export interface TileBits {
 /** Edge, in tiles, of the square a WorldNavGrid search may cover. */
 export const WORLD_NAV_WINDOW = 256;
 
-/**
- * The grid of a world (a map too large to hold a byte and 20 bytes of search scratch per tile: 2.2 GB for the
- * 10240 x 10240 continent). Collision is read from the world's bitset, and a path search works inside a window of
- * WORLD_NAV_WINDOW tiles centred between its two ends, with scratch the size of the window (1.3 MB). Tiles outside
- * the window count as walls for that search, and ends too far apart to share a window have no path. Inside the
- * window the search is NavGrid's own, step for step. Everything else (footprints, line of sight, smoothing, steps)
- * is inherited and reads the bitset through isBlockedTile.
- */
 export class WorldNavGrid extends NavGrid {
   private winG = new Float64Array(WORLD_NAV_WINDOW * WORLD_NAV_WINDOW);
   private winFrom = new Int32Array(WORLD_NAV_WINDOW * WORLD_NAV_WINDOW);
@@ -479,10 +451,6 @@ export class WorldNavGrid extends NavGrid {
 export class NavGridCache {
   private grids = new Map<string, { grid: NavGrid; checksum: number }>();
 
-  /**
-   * The grid of a world, over its collision bitset. Returns true if the grid was (re)built: the first time, and when
-   * the world's bitset is another one (the world was loaded again).
-   */
   useBits(map: string, bits: TileBits, width: number, height: number, tileW: number, tileH: number): boolean {
     const existing = this.grids.get(map)?.grid;
     if (existing instanceof WorldNavGrid && existing.bits === bits && existing.tileW === tileW && existing.tileH === tileH) return false;

@@ -1,13 +1,3 @@
-/**
- * Pose frame counters (measurement only): how many animation frames go out and how many repeat the pose the
- * receiver was already sent. Counting never changes a packet, its order or its timing. Logged every 60 s at
- * debug/trace level, like getStreamWriteStats in socket/transport.ts.
- *
- * Viewer poses go out two ways (socket/posedgram.ts): `poseOnly` counts the pose frames on the reliable stream (a
- * stream write each: the kind that stalled a node), `datagram` the pose datagrams sent with a change and
- * `datagramRepeats` the ones sent again after it. The log line holds the totals and, over the 60 s since the last
- * line, streamPoseFramesPerSec and datagramPoseSendsPerSec (first sends and repeats), so they show apart.
- */
 import log from "../modules/logger";
 
 const MAX_NAMES = 64;

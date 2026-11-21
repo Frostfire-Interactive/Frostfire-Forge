@@ -4,12 +4,6 @@ import { readFileSync } from "node:fs";
 import { sqlWrapper } from "../controllers/sqlescape";
 import { databaseModule, standInFor } from "./setup";
 
-// Friends, mail, bans, reports and noclip with many characters per account (Task 7), on an in-memory SQLite database
-// made by the engine's own SQLite setup. Every statement is turned into SQLite as the database worker turns it
-// (sqlWrapper), so what is checked is what the tables hold.
-//
-// Two accounts: acct_bob plays Bob and Robert, acct_amy plays Amy. Cid is a third account's character.
-
 let db = new Database(":memory:");
 
 function run(sql: string, params: any[] = []): any {
@@ -316,10 +310,6 @@ describe("fix round 1", () => {
   });
 });
 
-// socket/server.ts starts the server when imported, and the receiver (which the handlers import) imports it: the
-// handlers are run from their source, as cluster-playerhits-receiver.test.ts runs the receiver's, with the systems
-// they use given in (the real ones, on the SQLite database above) and the receiver's sending helpers taken from its
-// source too. What reaches each player's connection is what is checked.
 describe("the social packets", () => {
   const transpiler = new Bun.Transpiler({ loader: "ts" });
   const sourceOf = (file: string) => readFileSync(new URL(file, import.meta.url), "utf8").replace(/\r\n/g, "\n");

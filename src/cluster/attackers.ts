@@ -1,9 +1,3 @@
-// Who attacked whom, lately (spec §4). A player near a border may see more
-// players than the visible cap allows; a player who just hit them from across
-// the border must stay on their screen, the way a party member does. The
-// record is per node and in memory: each node keeps the attacks on its own
-// players, which is where that player's AOI is built.
-
 export const ATTACK_MEMORY_MS = 10_000;
 
 /** victim id -> attacker id -> when the attack landed (performance.now() time). */
@@ -18,8 +12,6 @@ export function recordAttack(attackerId: string | number, victimId: string | num
   let byAttacker = attacks.get(victim);
   if (!byAttacker) attacks.set(victim, (byAttacker = new Map()));
   byAttacker.set(attacker, now);
-  // Entries are otherwise dropped only when looked up, so a victim nobody looks at again would stay: once per
-  // memory period, a record sweeps out every attack older than the memory.
   if (now - lastSweep > ATTACK_MEMORY_MS) sweep(now);
 }
 

@@ -90,19 +90,10 @@ function parseArgs() {
                 break;
             case '--processes':
             case '--procs': {
-                // Fork the benchmark into N child processes, each driving an
-                // equal slice of <player count>. One Bun process tops out
-                // around a few thousand WT clients (its own event loop becomes
-                // the bottleneck, not the server); spreading the load across
-                // processes removes the client-side ceiling.
                 config.processes = Math.max(1, Math.min(32, parseInt(args[++i]) || 1));
                 break;
             }
             case '--shard': {
-                // "M/N": this instance is shard M of N. Splits `clients` evenly
-                // so several benchmark processes (or machines) can drive one
-                // server without any single Bun process being the client-side
-                // bottleneck. Each shard provisions and runs only its slice.
                 const spec = args[++i] || "1/1";
                 const [mStr, nStr] = spec.split("/");
                 const n = Math.max(1, parseInt(nStr) || 1);
@@ -177,10 +168,6 @@ const packet = {
 };
 
 interface LatencyStats {
-    // Server -> client one-way delivery, measured from server timestamps
-    // piggybacked on movement datagrams. There is no client reply anywhere in
-    // the latency path: TIME_SYNC was removed, and how fast a client answers
-    // is not something we measure.
     udpOneWaySamples: number[];
     jitterSamples: number[];
     offsets: Map<any, number>;
@@ -202,24 +189,9 @@ const latencyStats: LatencyStats = {
     udpExpectedFrames: 0,
 };
 
-// Connection ramp-up (TLS/QUIC handshakes, guest-account writes, map loads)
-// produces latency spikes that are not representative of steady-state. Samples
-// collected before this timestamp are excluded from all summary statistics.
 const LATENCY_WARMUP_MS = 10000;
 let latencyWarmupUntil = 0;
 
-// One-way latency measured from the server timestamps piggybacked on movement
-// datagrams. Nothing here requires the client to answer the server.
-//
-// The clock offset is self-calibrated from those same datagrams rather than
-// from SERVER_TIME, which is now sent only once at login and so cannot track
-// clock skew over a long run.
-//
-// The offset is a floor estimate: it assumes the single fastest observed
-// delivery was ~instant, so reported times are relative to the best observed
-// path. True absolute one-way time needs a round trip, which we deliberately
-// no longer do; what load testing needs is how delivery degrades under load,
-// and that is exactly what this captures.
 const MIN_OFFSET_SAMPLES_FOR_UDP = 5;
 
 // Feed a server timestamp into the per-client clock-offset estimate.
@@ -229,9 +201,6 @@ function recordClockOffset(client: any, serverSendTime: number): void {
     const rawOffset = clientRecvTime - serverSendTime;
 
     const previous = latencyStats.offsets.get(client);
-    // Keep the MINIMUM observed offset: the sample with the least network delay
-    // is closest to true clock skew. A rolling mean would drift upward under
-    // load, masking the very latency we are trying to measure.
     const offset = previous === undefined ? rawOffset : Math.min(previous, rawOffset);
 
     latencyStats.offsets.set(client, offset);
@@ -239,9 +208,6 @@ function recordClockOffset(client: any, serverSendTime: number): void {
 }
 
 function recordUdpLatency(client: any, serverSendTime: number): void {
-    // Every movement datagram also refines the clock offset. This must happen
-    // before the warm-up gate so the estimate is already settled by the time
-    // samples start being recorded.
     recordClockOffset(client, serverSendTime);
 
     // Skip connection warm-up like the stream metrics do
@@ -258,8 +224,6 @@ function recordUdpLatency(client: any, serverSendTime: number): void {
         latencyStats.udpOneWaySamples.shift();
     }
 
-    // Jitter: absolute change in one-way delivery between consecutive samples
-    // for the same client (previously derived from TIME_SYNC RTT).
     const prevOneWay = latencyStats.lastUdpOneWay.get(client);
     if (prevOneWay !== undefined) {
         latencyStats.jitterSamples.push(Math.abs(oneWay - prevOneWay));
@@ -288,8 +252,6 @@ function recordUdpBatchLatency(client: any, seq: number, serverSendTime: number)
 
 const movementStats = { starts: 0, aborts: 0, logouts: 0, abruptDisconnects: 0 };
 
-// Base session lifetime for simulated clients, set to the simulation span by
-// runSimulation (see the sessionUntil comment in startMovementSimulation).
 let simulationLifetimeBaseMs = 300000;
 
 
@@ -389,10 +351,6 @@ function drawProgress(current: number, total: number, activeConnections: number,
     process.stdout.write(`\r  ${chalk.bold('Progress:')} [${bar}] ${chalk.bold(percentage + '%')} ${timeDisplay} │ Clients: ${connectionStatus}${latencyDisplay}`);
 }
 
-// No keep-alive is sent. TIME_SYNC is gone, and the server treats an open QUIC
-// session as proof of life, so clients need not send anything to stay
-// connected. Latency comes entirely from server-pushed timestamps.
-
 const packetMixStats = { select: 0, target: 0, inspect: 0, chat: 0, mount: 0 };
 
 function startPacketMix(client: any, behavior: { position: { x: number; y: number } | null }) {
@@ -477,16 +435,9 @@ function startMovementSimulation(client: any, initialDelay: number = 0) {
         position: null as { x: number; y: number } | null,
         home: null as { x: number; y: number } | null,
         state: 'idle' as string,
-        // Session lifetimes scale with the simulation span (1-3x the duration).
-        // Short fixed lifetimes churn the population faster than the connection
-        // rate can replenish it, capping max concurrency below the target.
         sessionUntil: Date.now() + (simulationLifetimeBaseMs + Math.random() * simulationLifetimeBaseMs * 2),
     };
 
-    // Track own position from 0x02 MOVEXY echo datagrams (server echoes mover
-    // position every tick) and one-way UDP latency from the trailing server
-    // timestamps piggybacked on movement frames (0x02 echoes and 0x01 batches).
-    // SERVER_TIME also arrives as a datagram and supplies the clock offset.
     client.onDatagram((bytes: Uint8Array) => {
         if (bytes.length < 11) return;
 
@@ -520,9 +471,6 @@ function startMovementSimulation(client: any, initialDelay: number = 0) {
             return;
         }
 
-        // JSON datagram. SERVER_TIME is a 1Hz one-way push carrying the
-        // server's Date.now(); it is the clock reference for the one-way
-        // latency math, and needs no reply from us.
         if (bytes[0] === 0x7B) {
             try {
                 const message = JSON.parse(new TextDecoder().decode(bytes));
@@ -689,12 +637,6 @@ async function getAvailableServers(host: string, gatewayEnabled: boolean, gatewa
     return await cachedAvailableServers;
 }
 
-// Provision guest accounts up front via the gateway's bulk endpoint instead of
-// one /guest-login (≈15 serialised SQL round-trips) per client. At multi-thousand
-// client counts the per-request path saturates the gateway DB worker pool and
-// clients time out during login (1000 close). The bulk endpoint batches the
-// whole set into a handful of multi-row INSERTs; we request in chunks so a
-// single response stays a reasonable size.
 async function provisionGuestTokens(amount: number, host: string): Promise<string[]> {
     const secret = process.env.GATEWAY_GAME_SERVER_SECRET;
     if (!secret) {
@@ -752,10 +694,6 @@ async function createClients(amount: number, host: string, clientUrl: string, co
     const allClients: any[] = [];
     const loggedInClients: any[] = [];
 
-    // The wave settles only when every client attempt reaches a terminal
-    // state: LOAD_MAP received, closed before login, failed, or the login
-    // timeout fires. Resolving on connect alone would let the simulation
-    // overshoot its target while LOAD_MAP responses are still in flight.
     let resolveLoggedIn!: (clients: any[]) => void;
     const loginCompletion = new Promise<any[]>((resolve) => { resolveLoggedIn = resolve; });
 
@@ -833,8 +771,6 @@ async function createClients(amount: number, host: string, clientUrl: string, co
         const batchSize = 1;
         const batchDelay = config.rate > 0 ? Math.round(1000 / config.rate) : 300;
 
-        // Only as many clients as we have tokens for. All the settle/progress
-        // bookkeeping below is keyed off `amount`, so narrow it here.
         amount = Math.min(amount, guestTokens.length);
 
         for (let i = 0; i < amount; i++) {
@@ -947,9 +883,6 @@ async function createClients(amount: number, host: string, clientUrl: string, co
         return await loginCompletion;
 }
 
-// All latency figures describe SERVER -> CLIENT delivery. There is no RTT: the
-// engine no longer round-trips anything with the client, and how quickly a
-// client answers is not a property of server performance.
 function getLatencyStats() {
     const samples = latencyStats.udpOneWaySamples;
     const stats: any = {
@@ -1125,18 +1058,8 @@ function disconnectRandomClients(count: number): void {
 async function runSimulation(config: ReturnType<typeof parseArgs>) {
     const peakClients = config.clients;
 
-    // Fixed connection rate: bigger populations take longer to connect, the
-    // rate itself never scales with the total required.
     const connectionRate = config.rate > 0 ? config.rate : 25;
 
-    // The connection rate must cover three demands at the peak:
-    // 1. the curve's steepest segment (peak buildup: 30% of the peak over 10%
-    //    of the span -> 3.0 * peak / duration)
-    // 2. natural session expiry (avg lifetime = 2x the duration -> 0.5 *
-    //    peak / duration)
-    // 3. churn (0.2%/s of the active population)
-    // A 15% margin is applied so the demand never sits exactly at the cap
-    // (any pipeline hiccup then causes a shortfall that never recovers).
     const MAX_SEGMENT_SLOPE = 3.5;
     const CHURN_PER_SEC_FRACTION = 0.002;
     const RATE_MARGIN = 0.85;
@@ -1145,8 +1068,6 @@ async function runSimulation(config: ReturnType<typeof parseArgs>) {
     let durationStretched = false;
 
     if (sustainableRate <= 0) {
-        // Even churn alone exceeds the configured rate; the peak is unreachable
-        // at any duration.
         duration = config.durationSet ? config.duration : 300;
         log(`Warning: churn (${CHURN_PER_SEC_FRACTION * peakClients}/s) alone exceeds the connection rate (${connectionRate}/s) - the peak will not be reached`, 'warn');
     } else {
@@ -1194,9 +1115,6 @@ async function runSimulation(config: ReturnType<typeof parseArgs>) {
         if (stopped) return;
 
         const now = Date.now();
-        // Compensate for event-loop lag in the benchmark process itself: at
-        // thousands of sessions the 1s timer can fire late, and a lagged tick
-        // would otherwise spawn just one wave instead of one per missed second.
         const secondsSinceLastTick = Math.min(Math.max((now - lastTickAt) / 1000, 1), 5);
         lastTickAt = now;
 
@@ -1205,10 +1123,6 @@ async function runSimulation(config: ReturnType<typeof parseArgs>) {
         const { fraction } = simulateTargetFraction(t);
         const target = Math.max(0, Math.round(peakClients * fraction));
 
-        // The peak must be MAINTAINED for the whole peak phase: while the
-        // curve is at 100% (flat peak) or still rising, never tear down active
-        // clients - pending logins will settle into the gap on their own.
-        // Disconnects are only used to follow genuine curve declines.
         const isPeakPhase = fraction === 1;
         const isDeclining = fraction < lastTargetFraction;
         lastTargetFraction = fraction;
@@ -1217,19 +1131,12 @@ async function runSimulation(config: ReturnType<typeof parseArgs>) {
         if (active > maxConcurrent) maxConcurrent = active;
 
         if (!isPeakPhase) {
-            // Churn is a fixed 0.2%/s of the population - do NOT scale it by
-            // the tick lag (lag compensation is for the wave cap only).
             const churn = Math.max(1, Math.round(active * 0.002));
             disconnectRandomClients(Math.floor(Math.random() * (churn + 1)));
             const churnReconnects = Math.floor(Math.random() * (churn + 1));
             if (churnReconnects > 0) connectWave(Math.min(churnReconnects, Math.max(1, Math.floor(connectionRate / 2) * secondsSinceLastTick)), config);
         }
 
-        // Keep the login pipeline SATURATED without overshooting the target:
-        // in-flight logins (pendingConnects) count toward the target, so demand
-        // is the gap above active AND pending. Overshooting the peak was
-        // caused by requesting the full active-gap while logins were already
-        // in flight.
         const MAX_PENDING_CONNECTS = Math.max(connectionRate * 30, 300);
         const want = target - countActiveConnections() - pendingConnects;
         const roomInPipeline = Math.max(0, MAX_PENDING_CONNECTS - pendingConnects);
@@ -1238,9 +1145,6 @@ async function runSimulation(config: ReturnType<typeof parseArgs>) {
         if (want > 0 && roomInPipeline > 0) {
             connectWave(Math.min(want, roomInPipeline, waveCap), config);
         } else if (isDeclining || isPeakPhase) {
-            // Trim only the excess above the target (in-flight included) so
-            // the population settles exactly on the curve - including the
-            // flat peak, which must hold the target without overshoot.
             const excess = countActiveConnections() + pendingConnects - target;
             if (excess > 0) {
                 disconnectRandomClients(excess);
@@ -1490,8 +1394,6 @@ if (config.help) {
 
 const RESULT_MARKER = '##BENCHRESULT##';
 
-// Child (sharded) processes emit their raw stats on one line for the parent
-// orchestrator to aggregate. Only when actually running as a shard-of-many.
 function emitShardResult(latency: any, startedClients: number, connectedAtEnd: number) {
     if (config.shardCount <= 1) return;
     console.log(RESULT_MARKER + ' ' + JSON.stringify({

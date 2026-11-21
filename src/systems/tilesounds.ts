@@ -1,12 +1,3 @@
-/**
- * The footstep sounds the map editor sets on tiles (USER REQUEST 2026-10-19: "a separate tab that allows selecting
- * multiple tiles to share a sound (picked from asset server)").
- *
- * They are kept on the asset server, in one list for every map (its modules/tilesounds.ts: by tileset picture and tile
- * id, "" for no sound), which the game clients read from it and lay over the `footstep_sound` tile properties of their
- * map. A save comes here from the editor (SAVE_TILE_SOUNDS): checked, passed on to the asset server, and the list it
- * answers with sent to every player online (TILE_SOUNDS), so the change is heard at once without a map reload.
- */
 import { serverFetch } from "../modules/https_servers.ts";
 
 export type TileSounds = Record<string, Record<string, string>>;
@@ -21,10 +12,6 @@ export function mayEditTileSounds(perms: string[]): boolean {
   return perms.includes("server.admin") || perms.includes("server.*");
 }
 
-/**
- * A save as the editor sent it, made tidy (names in lower case and trimmed, each tile once, in order), or what is
- * wrong with it in words.
- */
 export function readTileSoundChanges(raw: unknown): { changes: TileSoundChange[] } | { error: string } {
   const list = (raw as any)?.changes;
   if (!Array.isArray(list) || list.length === 0) return { error: "Nothing to save." };

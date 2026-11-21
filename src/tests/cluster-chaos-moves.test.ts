@@ -47,8 +47,6 @@ test("an order that was sent at the start and is done now explains a commit that
   expect(ownerChanges(before, after, orders(order("a", "sent", "node-2")), orders(order("a", "done", "node-2"))).unexplained).toEqual([]);
 });
 
-// The check "none doubled, none lost" counts every creature of the world. `creatures` of a load report is the awake
-// ones only, and moves with the players, so the harness must not read it.
 test("the world's creatures are the nodes' creaturesTotal, never the awake count", () => {
   const loads = [{ creatures: 2, creaturesTotal: 40 }, { creatures: 0, creaturesTotal: 35 }, { creatures: 9, creaturesTotal: 25 }];
   expect(creatureTotal(loads)).toBe(100);

@@ -1,18 +1,10 @@
 import { expect, test, mock, beforeEach, afterAll } from "bun:test";
 import { databaseModule } from "./setup";
 
-// Visibility from the spatial grid, capped at MAX_VISIBLE_PLAYERS (nearest
-// first, party members and the selected target always in), block changes that
-// let an overflow-layer player rejoin a lower layer, and per-block layer
-// condensation. Uses the real AOI / index modules (only the database is
-// stubbed); each test gets its own map name because LayerManager has no reset.
 mock.module("../controllers/sqldatabase", () => databaseModule({
   default: async (_sql: string, _params?: any[]) => [],
 }));
 
-// A low visibility cap so a few dozen players overflow it. MAX_PLAYERS_PER_LAYER
-// (per block) and BLOCK_SIZE_PX stay at their defaults: the layer manager
-// singleton may already have been built by another test file.
 const CAP = 10;
 const aoiConfig: Record<string, any> = {
   DEFAULT_RADIUS: 1000,
@@ -107,8 +99,6 @@ function dist2(a: any, b: any): number {
   return dx * dx + dy * dy;
 }
 
-// Every forward edge is in the reverse index and every reverse edge is a
-// forward edge (the invariant movement fan-out relies on).
 function expectReverseIndexConsistent(ids: string[]): void {
   for (const id of ids) {
     const p = playerCache.get(id);
@@ -137,8 +127,6 @@ test("200 players in range: each sees the nearest MAX_VISIBLE_PLAYERS (within th
   const rand = lcg(42);
   const ids: string[] = [];
 
-  // Around a block corner so four blocks of 50 hold all 200 on one layer, all
-  // within 440px of the corner (so pairwise inside the 1000px radius).
   for (let i = 0; i < 200; i++) {
     const quadrant = i % 4;
     const angle = (quadrant * 90 + 5 + rand() * 80) * (Math.PI / 180);
@@ -154,9 +142,6 @@ test("200 players in range: each sees the nearest MAX_VISIBLE_PLAYERS (within th
   // Everyone moves once (an AOI update each).
   await updateAll(ids);
 
-  // Current members keep their place unless a newcomer is EXIT_HYSTERESIS
-  // (1.25) times nearer, so a set is the nearest N within that margin: no
-  // member is more than 1.25x farther than anyone left out.
   for (const id of ids) {
     const p = playerCache.get(id);
     expect(p.aoi.playersInAOI.size).toBe(CAP);
@@ -171,8 +156,6 @@ test("200 players in range: each sees the nearest MAX_VISIBLE_PLAYERS (within th
     expect(farthestMember).toBeLessThanOrEqual(nearestOutside * 1.25 * 1.25);
   }
 
-  // A viewer with no members yet gets exactly the nearest N. One player of
-  // block (1,1) logs off first so the newcomer fits on the same layer.
   const leaving = ids.shift()!;
   despawnPlayerFromAllAOI(playerCache.get(leaving), "disconnect");
   mapIndex.removePlayer(leaving);
@@ -370,9 +353,6 @@ test("condensation merges per block: a crowded layer_1 elsewhere does not block 
   ids.push("stuck");
   expect(playerCache.get("stuck").aoi.layerId).toBe(L2);
 
-  // Block (1,0): fill layer_1, overflow 5 onto layer_2, then let 45 of the
-  // layer_1 players there log off. Layer_1 still has 55 players in all, but
-  // only 5 in block (1,0).
   const leaving: string[] = [];
   for (let i = 0; i < 50; i++) {
     const id = `b${i}`;
@@ -416,8 +396,6 @@ test("a same-map jump out of range despawns the jumper for old neighbours at onc
   await loginPlayer(makePlayer("C", "Carol", map, 1660, 500));
   expect(playerCache.get("B").aoi.playersInAOI.has("A")).toBe(true);
 
-  // 1150px from B: out of range, but inside B's own exit band. The jump only
-  // reaches the jumper, so B must not keep a frozen A.
   neighbour.wt.sent.length = 0;
   await handleMapChangeAOI(a, map, { x: 1660, y: 540 });
 
@@ -432,8 +410,6 @@ test("an idle viewer at the cap gets a nearer newcomer swapped in for the farthe
   const map = `vistest${++mapSeq}`;
   const ids = ["V"];
   await loginPlayer(makePlayer("V", "Viewer", map, 500, 500));
-  // Ten neighbours 100..550px away fill V's set; the farthest is a party
-  // member, so the second farthest is the one to go.
   for (let i = 0; i < CAP; i++) {
     const id = `r${i}`;
     ids.push(id);
@@ -501,8 +477,6 @@ test("no second spawn is queued to a player who already sees the viewer", async 
 
 test("broadcasts reach who sees the source, not who the source sees", async () => {
   const map = `vistest${++mapSeq}`;
-  // Far apart so no visibility forms on its own; the asymmetric pair is set
-  // up by hand: S sees X (X does not see S), Y sees S (S does not see Y).
   const s = await loginPlayer(makePlayer("S", "Source", map, 500, 500));
   const x = makePlayer("X", "Seen", map, 5000, 500);
   const y = makePlayer("Y", "Watcher", map, 500, 5000);
@@ -531,8 +505,6 @@ test("an idle viewer the mover does not see back drops the mover once out of ran
   viewer.wt = recordingWt();
   await loginPlayer(viewer);
   await loginPlayer(makePlayer("P", "Mover", map, 600, 500));
-  // P's ten nearest are a cluster just past P, so V (100px) is left out of
-  // P's set; V sees P (100px) and the nine nearest of the cluster.
   const ids = ["V", "P"];
   for (let i = 0; i < CAP; i++) {
     const id = `k${i}`;

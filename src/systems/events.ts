@@ -84,8 +84,6 @@ export const Events = {
     // Achievements (systems/achievements) count these; plugins may listen too.
     GATHER_COMPLETED: "onGatherCompleted",
     COLLECTABLE_ADDED: "onCollectableAdded",
-    // Cutscenes (systems/cutsceneplayer.ts): a scene begins for a player, is over (finished, skipped or stopped), and a
-    // mark placed on its timeline is reached. Plugins may listen to tie the story to them.
     CUTSCENE_STARTED: "onCutsceneStarted",
     CUTSCENE_ENDED: "onCutsceneEnded",
     CUTSCENE_MARK: "onCutsceneMark",

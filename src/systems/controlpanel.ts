@@ -1,15 +1,3 @@
-/**
- * Server control panel: the admin window that stands in for the admin chat
- * commands and shows who is online and how the server is doing. It has no
- * powers of its own. Every control is one of the existing commands (or one of
- * the two admin packets), run by the receiver's own code under that command's
- * permission rule, which is checked here first and again by the command. What
- * this module adds is what a window needs and chat does not: the lists to
- * pick from, the state to show, a confirmation for what cannot be taken back,
- * and an answer to a request that arrives twice. For its dashboard it also
- * keeps, in memory only, a short history of what the server already measures
- * and the latest things admins did through it.
- */
 import assetCache from "../services/assetCache";
 import playerCache from "../services/playermanager";
 import query from "../controllers/sqldatabase";
@@ -67,10 +55,6 @@ const shown = (username: unknown): string => {
 
 // ------------------------------------------------------------------ bridge
 
-/**
- * What only the socket layer knows (its restart countdown, its counters, the
- * live worlds), registered by receiver.ts so this module does not import it.
- */
 export interface ControlPanelBridge {
   /** Whether /restart has a countdown running. */
   restartScheduled(): boolean;
@@ -80,12 +64,6 @@ export interface ControlPanelBridge {
   worlds(): Promise<Array<{ name: string; weather: string; showing: string; conditions: WeatherConditions | null; players: number }>>;
 }
 
-/**
- * The weather a world has now. What a world is set to is not always what is over it: "random" is whichever weather
- * the server settled on (`settled`, none until it has), and "weather_api" is the last reading of a real place
- * (`live`: what it looks like, and its values). `conditions` are the readings of the weather shown: of the table's
- * row (`rows`) for a weather set by name, and none for a clear sky or a name the table no longer has.
- */
 export function worldWeather(
   set: string,
   settled: { weather: string; weatherData: WeatherData | null } | undefined,
@@ -96,8 +74,6 @@ export function worldWeather(
   const read = (row: WeatherData | null | undefined): WeatherConditions | null => row
     ? { temperature: Number(row.temperature) || 0, humidity: Number(row.humidity) || 0, wind_speed: Number(row.wind_speed) || 0, wind_direction: String(row.wind_direction || "none"), precipitation: Number(row.precipitation) || 0 }
     : null;
-  // USER REPORT 2026-10-20 (the panel said "Sandstorm" for weather_api away from any desert): a dry reading with wind is
-  // told to the client as "sandstorm", which is only drawn in the desert zones; over the world it is a clear sky.
   if (weather === "weather_api") return { weather, showing: live.look === "sandstorm" ? "clear" : live.look, conditions: read(live.row) };
   if (weather === "random") return { weather, showing: settled?.weather || weather, conditions: read(settled?.weatherData) };
   if (weather === "clear") return { weather, showing: weather, conditions: null };
@@ -113,11 +89,6 @@ export function setControlPanelBridge(next: ControlPanelBridge | null): void {
   servePanelFrom(next ? { answer: nodeAnswer, activity: (entry) => keepActivity(entry as ControlPanelActivity) } : null);
 }
 
-/**
- * What the receiver is asked to run: an admin chat command with its arguments
- * already split (they are values, never chat text to parse), or one of the
- * two admin packets.
- */
 export type PanelRun = { command: string; args: string[] } | { packet: "NOCLIP" | "STEALTH" };
 /** `awaitReply`: the panel has no answer of its own, so a command that ended without a word is waited on. */
 export type PanelRunOptions = { awaitReply?: boolean };
@@ -127,11 +98,6 @@ export type RunCommand = (run: PanelRun, options?: PanelRunOptions) => Promise<s
 const NOTIFY_HEAD = new TextEncoder().encode('{"type":"NOTIFY",');
 const decoder = new TextDecoder();
 
-/**
- * The receiver hands over what it is sending to an admin while one of their
- * panel commands runs. The commands answer with notifications: their text is
- * the panel's answer too.
- */
 export function collectReplies(replies: string[] | undefined, packets: any[]): void {
   if (!replies) return;
   for (const packet of packets) {
@@ -161,18 +127,10 @@ const handlesReports = holds("admin.reports", "admin.*");
 const permissionMode = (...names: string[]): ((actor: any) => boolean) => (actor) =>
   holds("admin.permission", "admin.*")(actor) && holds(...names)(actor);
 
-/**
- * The panel replaces the in-game admin panel and opens for the same people:
- * admins. Each control inside it has its command's rule on top of that.
- */
 export function canUsePanel(actor: any): boolean {
   return !!actor?.username && !actor.isGuest && !!actor.isAdmin;
 }
 
-/**
- * Who the viewer may know is online. A stealthed player is shown to admins
- * only: the rule the receiver follows wherever it lists or spawns players.
- */
 export function canSee(viewer: any, other: any): boolean {
   return !other?.isStealth || !!viewer?.isAdmin || other === viewer;
 }
@@ -265,10 +223,6 @@ function allCreatures(figures: Array<Record<string, any> | null>): Record<string
   return merged;
 }
 
-/**
- * Everyone online and how each node of the region stands: this node's own, and what the others said. A node that did
- * not answer in time counts by its load report, which holds no names.
- */
 async function clusterView(viewer: any): Promise<{ players: ControlPanelPlayer[]; online: number; nodes: ControlPanelNode[]; creatures: Record<string, any> | null; worldCounts: Map<string, number> | null }> {
   const players = onlinePlayers(viewer);
   const self = clusterSelf();
@@ -330,13 +284,6 @@ export async function capabilities(viewer: any): Promise<Record<string, boolean>
 
 // ----------------------------------------------------------------- history
 
-/**
- * What the dashboard charts: a reading of what the server already measures,
- * taken on a timer and kept in memory only, so a restart starts it again from
- * nothing. One reading every 15 seconds for the last hour; for the last 24
- * hours, one row a minute holding the highest of that minute's four. That is
- * 1,680 rows of five numbers: about 66 KB, set aside once.
- */
 export const READING_EVERY_MS = 15000;
 /** An hour of readings. */
 export const RECENT_KEEP = 240;
@@ -495,11 +442,6 @@ function sinceOf(data: any): Since | null {
 const TOTALS_FOR_MS = 60000;
 let totals: { at: number; value: ControlPanelData["accounts"] } | null = null;
 
-/**
- * How many accounts there are and how many of them are banned: two counts the
- * accounts table already answers. Read when a panel opens, never on its
- * refreshes. Guest accounts are temporary and not counted.
- */
 async function accountTotals(): Promise<ControlPanelData["accounts"]> {
   if (totals && Date.now() - totals.at < TOTALS_FOR_MS) return totals.value;
   let value: ControlPanelData["accounts"] = null;
@@ -529,12 +471,6 @@ export function forgetHistory(): void {
   totals = null;
 }
 
-/**
- * Everything the panel shows, from what the server holds in memory: it is
- * asked for every few seconds. `full` adds what does not change while the
- * panel is open (the viewer's rights, the lists its controls pick from) and
- * the whole history; a refresh that says what it holds gets what is newer.
- */
 export async function buildData(viewer: any, full: boolean, since: Since | null = null): Promise<ControlPanelData> {
   const { players, online, nodes, creatures, worldCounts } = await clusterView(viewer);
   const map = normMap(viewer.location?.map);
@@ -705,11 +641,6 @@ function onPlayer(command: string, allowed: Rule, confirm = false): PanelAction 
   };
 }
 
-/**
- * NOCLIP and STEALTH flip what the admin has. The panel asks for on or off,
- * and the packet is only sent when that is not how things stand: a doubled
- * click would otherwise switch it on and straight back off.
- */
 function ownSwitch(packet: "NOCLIP" | "STEALTH", flag: "isNoclip" | "isStealth", label: string): PanelAction {
   return {
     command: packet,
@@ -772,10 +703,6 @@ const loot = (plan: (data: any) => string[] | { args: string[] }, confirm = fals
 
 const QUALITY = /^[a-z_]{1,32}$/;
 
-/**
- * Every control of the panel. The key is what the panel sends; `command` and
- * `allowed` are the chat command it stands for and that command's rule.
- */
 export const ACTIONS: Record<string, PanelAction> = {
   "self.noclip": ownSwitch("NOCLIP", "isNoclip", "Noclip"),
   "self.stealth": ownSwitch("STEALTH", "isStealth", "Stealth"),
@@ -811,8 +738,6 @@ export const ACTIONS: Record<string, PanelAction> = {
       const target = targetOf(data);
       if (!target) return [NO_TARGET];
       if (!(await player.findAccount(target))) return [NOT_FOUND];
-      // No duration is a mute until it is lifted. That is handed over as a word of its own, so a
-      // reason is never read as how long.
       const asked = typeof data?.duration === "string" ? data.duration.trim().toLowerCase() : "";
       if (asked && parseDuration(asked) === null) {
         return ["A mute lasts a number and a unit, like 30m, 2h or 7d, or is left empty to last until lifted."];
@@ -1095,11 +1020,6 @@ function withShownName(replies: string[], target: string | undefined): string[] 
 /** Request ids seen lately, by admin: `id of the connection:request id` to when it came in. */
 const seen = new Map<string, number>();
 
-/**
- * True for a request id this admin has already sent. Every click has its own
- * id, so a second arrival is the same click delivered twice and is not run
- * again. Remembered before anything is awaited: the two can arrive together.
- */
 function isRepeat(actor: any, requestId: string): boolean {
   const now = Date.now();
   for (const [key, at] of seen) {
@@ -1118,12 +1038,6 @@ export type PanelResult =
   | { kind: "results"; data: ControlPanelResults }
   | { kind: "result"; data: ControlPanelResult };
 
-/**
- * Dispatch for every CONTROL_PANEL_* packet. Who is asking is checked here on
- * every packet, and each action's own rule before anything is run, so no
- * caller reaches a command without both. `run` is the receiver running one
- * command for this admin.
- */
 export async function handlePanelPacket(actor: any, type: string, data: any, run: RunCommand): Promise<PanelResult> {
   const action = type === "CONTROL_PANEL_ACTION" ? String(data?.action ?? "") : type === "CONTROL_PANEL_QUERY" ? "query" : "load";
   const requestId = typeof data?.requestId === "string" && data.requestId ? data.requestId.slice(0, 64) : null;
@@ -1186,9 +1100,6 @@ export async function handlePanelPacket(actor: any, type: string, data: any, run
       return result(true, said, await fresh());
     };
 
-    // One command at a time for this admin (its answer is read off their
-    // connection), and one change at a time for whatever it changes: two
-    // admins, or this panel and the player editor, are ordered too.
     const mine = actorKey(actor);
     return await oneAtATime(mine, () => (plan.key === mine ? carryOut() : oneAtATime(plan.key, carryOut)));
   } catch (error) {

@@ -70,8 +70,6 @@ async function bare(deadConfirmMs = 2000, options: CoordinatorOptions = {}) {
   return { store, registry, coordinator, make, heard, tableOf, ownerOf, second, beat };
 }
 
-// As bare, with the coordinator leading and its first hold over, having seen every node's run live. From here c
-// stops beating: its beat runs out on the third pass.
 async function world(deadConfirmMs = 2000, options: CoordinatorOptions = {}) {
   const it = await bare(deadConfirmMs, options);
   await it.beat("a", "b", "c");
@@ -636,8 +634,6 @@ test("forgetRun keeps a new run that announces after its take", async () => {
 
 // I-C: the takeover's directory sweep clears only the dead run's logins; a login the new run takes meanwhile stays.
 
-// c's old run held carol and dave; its takeover comes due on the next pass. `boot` is the new run starting as
-// index.ts does it (optionally clearing what its last run left, then announce, beat) and taking carol's login.
 async function claimsDuringSweep() {
   const it = await world();
   const { store, registry } = it;
@@ -668,8 +664,6 @@ async function claimsDuringSweep() {
   return { ...it, boot, isSweeping: () => sweeping };
 }
 
-// The old run is ended, its other login is gone, and carol is held once: by the new run, where a second login of
-// hers elsewhere finds her and kicks her.
 async function expectNewClaimKept(it: Awaited<ReturnType<typeof claimsDuringSweep>>, entry: { nodeId: string; epoch: number }) {
   const { store, registry, ownerOf, second } = it;
   expect(JSON.parse((await store.get(deadKey("c")))!).startedAt).toBe(T0);
@@ -832,8 +826,6 @@ function outage(store: MemoryStore): () => void {
   return () => { for (const name of STORE_CALLS) delete (store as any)[name]; };
 }
 
-// The store is gone for 8 passes, long enough for every beat and the lock to run out. It comes back with no node
-// live: a and b beat at once, c is slow.
 async function afterOutage() {
   const it = await world();
   const back = outage(it.store);

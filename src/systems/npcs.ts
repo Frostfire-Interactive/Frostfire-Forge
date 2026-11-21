@@ -6,16 +6,8 @@ function toMysqlDatetime(ms: number): string {
   return new Date(ms).toISOString().slice(0, 19).replace("T", " ");
 }
 
-/**
- * NPCs placed by the maps themselves (particle emitters from a "Particles" object layer, see assetloader). They never
- * touch the database; list() appends them so every cache reload keeps them.
- */
 let mapNpcs: Npc[] = [];
 
-/**
- * Whether this server has read the npcs table. Until it has, list() reads it; after that list() answers the NPCs
- * held, which every write here keeps in step. Lowered when a write failed and the table could not be read again.
- */
 let loaded = false;
 
 /** The columns add() and update() write, in the order their statements name them. */
@@ -27,12 +19,6 @@ const COLUMNS = [
 ] as const;
 type Written = Record<(typeof COLUMNS)[number], unknown>;
 
-/**
- * What an NPC stocks, from its column (text, or already read by a JSON column) or from an NPC as
- * held: the entries that are an item's name and a whole price of 0 or more, or no price (null:
- * the item's own buy price). Anything else is no stock. Whether the items exist is not asked here (see vendors.readVendorItems for what an editor
- * sends).
- */
 function stockOf(stored: unknown): VendorItem[] {
   let list = stored;
   if (typeof stored === "string") {
@@ -54,10 +40,6 @@ function stockText(stock: unknown): string | null {
   return list.length > 0 ? JSON.stringify(list) : null;
 }
 
-/**
- * The most a sound NPC is heard from, in pixels. Players hold the NPCs of at least 2048 px around them (npcStreaming
- * windowAround: two 1024 px chunks each way), so a sound NPC is always loaded while a player is inside its radius.
- */
 const SOUND_RADIUS_MAX = 2048;
 
 /** How far a sound NPC is heard: whole pixels, 0 to SOUND_RADIUS_MAX. */
@@ -111,10 +93,6 @@ const FLAGS = new Set<string>(["hidden", "quest_giver", "innkeeper", "sound_npc"
 /** When a row was written, as its DATETIME column keeps it: to the second. */
 const writtenAt = (last_updated: string) => new Date(`${last_updated.replace(" ", "T")}Z`) as unknown as number;
 
-/**
- * The NPC a row holds once `written` has been written to it: every column but the flags keeps text (a statement
- * sends anything else as its text), and nothing where it was given nothing.
- */
 function asWritten(id: Nullable<number>, written: Written): Npc {
   const row: Record<string, unknown> = { id };
   for (const column of COLUMNS) {
@@ -150,12 +128,6 @@ async function load(): Promise<Npc[]> {
 // One write at a time: each changes the NPCs held and puts them back.
 let writing: Promise<unknown> = Promise.resolve();
 
-/**
- * A statement that changes the npcs table, then `change` made to the NPCs held (it is handed them and the statement's
- * answer; null when the answer does not say what the table now holds, and the table is read instead). A statement
- * that throws may still have been applied (a timeout, say), so the table is read again rather than the NPCs left as
- * they were; if it cannot be read either, the next list() reads it.
- */
 function write(sql: string, values: unknown[], change: (rows: Npc[], response: any) => Npc[] | null): Promise<any> {
   const work = async () => {
     let response;
@@ -234,8 +206,6 @@ const npcs = {
         sprite_hands, sprite_chest, sprite_feet, sprite_legs, sprite_weapon, vendor_items, innkeeper, sound_npc, sound, sound_radius)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       COLUMNS.map((column) => written[column]),
-      // The new NPC is what was written, under the id the database answered with. An NPC is addressed by its id:
-      // an answer without one leaves it unknown, and the table is read instead.
       (rows, response) => {
         const id = Number(response?.lastInsertRowid);
         return Number.isInteger(id) && id > 0 ? [...rows, asWritten(id, written)] : null;

@@ -17,11 +17,6 @@ function ranked(counts: Map<string, number>, top: number): Count[] {
   return [...counts].sort((a, b) => b[1] - a[1]).slice(0, top);
 }
 
-/**
- * Where the sampled time went in this project's code (`root`): `busiest` counts each sample at the innermost project
- * function on its stack (time in native code, such as JSON.parse or a file read, counts at the function that called
- * it), `from` at the outermost, the timer or handler that started the work.
- */
 export function placesOf(traces: SampledTrace[], root: string, top = 5): { samples: number; busiest: Count[]; from: Count[] } {
   const busiest = new Map<string, number>();
   const from = new Map<string, number>();
@@ -55,11 +50,6 @@ export type StallReporterOptions = {
   sample?: (windowMs: number) => Promise<SampledTrace[]>;
 };
 
-/**
- * Names the code that blocks the event loop. The loop probe tells it how late each of its timers fired (late); the
- * first block over the threshold starts a window in which every stack the thread runs is sampled, and at its end one
- * line says how often the loop was blocked in it and which functions the time went to.
- */
 export class StallReporter {
   private sampling = false;
   private lastWindow = -Infinity;

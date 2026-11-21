@@ -1,27 +1,6 @@
 import log from "../modules/logger";
 import { chooseNewer, type SavedSnapshot } from "./snapshots";
 
-// A login from the database after a crash (spec §7). The node that held the player saved them on its save interval
-// and wrote a snapshot every 5 s (snapshots.ts); a crash loses what happened since the last save. The login reads
-// the account's save stamp and the snapshot, and plays from the snapshot when chooseNewer picks it: newer than the
-// last fenced save, and from the owner epoch the database holds or a later one.
-//
-// The stamp is read before this login claims the owner epoch (the claim runs when the player is cached, presence.ts),
-// so it is the stamp of the node that held the player. The caller makes sure of the order (socket/receiver.ts).
-//
-// A snapshot at 0 health moves the player and leaves the row's stats: the player died after the last save, the death
-// was not saved, and a living player at 0 health is worse than one at the saved health. A snapshot on a map this
-// node does not have is not used. Nothing here is an item.
-//
-// Recovery never raises a stat above the row. The row's max_health and max_stamina are kept: a level-up or an admin
-// edit writes them straight to the row without moving saved_at, so they may be newer than the snapshot. Health and
-// stamina are held to the smaller of the snapshot's and the row's maximums. A snapshot whose maximums are 0 or less is
-// corrupt and not used at all.
-//
-// The same gap holds for the location: a warp or a revive that writes the row's map and position straight after the
-// snapshot does not move saved_at either, so recovery may put the player back at the snapshot's point (at most one
-// snapshot interval earlier). Dead rows are not recovered at all (the caller skips them).
-
 /** How long the reads may take before the login goes on from the row: a stalled store never holds a login. */
 export const RECOVERY_READ_MS = 1_000;
 

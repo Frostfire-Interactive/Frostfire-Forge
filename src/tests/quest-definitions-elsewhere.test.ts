@@ -1,10 +1,6 @@
 import { expect, mock, test } from "bun:test";
 import { databaseModule } from "./setup";
 
-// The quests and the NPCs that give and end them are held in memory on every node (systems/quests/definitions.ts).
-// A save in the quest or NPC editor on one node writes the shared "quests" list; in a cluster the other nodes are told
-// (services/assetCache.ts changedElsewhere) and read the definitions again, without writing the list back.
-
 let questRows: any[] = [{ id: 1, name: "First" }];
 let linkRows: any[] = [];
 let reads = 0;

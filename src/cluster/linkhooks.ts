@@ -2,11 +2,6 @@ import log from "../modules/logger";
 import type { LinkCalls } from "./linkcalls";
 import type { LinkSender } from "./linktransport";
 
-// Modules that work over the node links (the player and creature handoffs,
-// the forwarding table, the watch ticks) register here at load. startCluster
-// runs them once the links are attached, and undoes them at shutdown. Without
-// a cluster they never run.
-
 export interface LinkContext {
   calls: LinkCalls;
   links: LinkSender;

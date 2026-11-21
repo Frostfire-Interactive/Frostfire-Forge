@@ -1,16 +1,3 @@
-/**
- * Cutscenes: the scene documents of the cutscene and trailer tool (/cutsceneeditor, /cse). A scene is one JSON
- * document, the same everywhere: stored in the cutscenes table, sent to the editor, and sent (resolved) to the players
- * it is played to. This module holds the document's shape and its checks (readCutscene), the table and the cached list
- * of scenes (kept in step by every write, as systems/mounts.ts keeps the mounts), the editor's packets
- * (handleEditorPacket, as systems/mounteditor.ts answers its own) and the resolving of a document for a player. Playing
- * a scene to a player, holding them still and the triggers are systems/cutsceneplayer.ts.
- *
- * A scene is known by its name everywhere (the views of a once scene, a chain's `end.next`), so a saved scene keeps its
- * name: it is never renamed. Every field of a save is checked here and nothing the editor sends is stored as it came:
- * the document is built again from the fields that are known, so an unknown field is dropped, and the fields the server
- * fills in when it resolves a document (an actor's sprite layers, a weather's and a particle's data) are never stored.
- */
 import query from "../controllers/sqldatabase";
 import { serverFetch } from "../modules/https_servers";
 import log from "../modules/logger";
@@ -24,12 +11,6 @@ export { isHeld } from "./cutsceneheld";
 export const EDITOR_PERMISSIONS = ["tools.cutscene_editor", "tools.*", "server.admin", "server.*"];
 export const DENIED = "You don't have permission to use the cutscene editor.";
 
-/**
- * The most each field can hold. The editor is sent these and keeps to them; every one is checked again here. A stored
- * document is held under `docBytes`: the receiver takes a frame of webtransport.maxPayloadMB (1 MB when it is not set)
- * from an editor, and a save is the document in a frame of a few hundred bytes more, so a document under half of that
- * always arrives.
- */
 export const LIMITS = {
   nameMax: 64, descriptionMax: 500, mapMax: 128,
   durationMin: 0.5, durationMax: 600,
@@ -177,10 +158,6 @@ export const DEFAULT_SETTINGS: CutsceneSettings = {
 
 // ------------------------------------------------------------------ what the checks know
 
-/**
- * What there is to point a scene at. A document that names a map, an NPC, a weather, a particle, a sound, a quest or a
- * scene that is not here is refused; without this (a stored document being read again) only its shape is checked.
- */
 export interface Known {
   /** Lower case to as written. */
   maps: Map<string, string>;
@@ -266,10 +243,6 @@ export async function buildKnown(assets: AssetLists = assetServer): Promise<Know
 
 // -------------------------------------------------------------- permission
 
-/**
- * Admins, and anyone holding the editor's permission, from the permissions copied to the player at login, as the mount
- * editor asks (mounteditor.ts). Asked on every packet, and of every other player when they are told to reload.
- */
 export function canUseEditor(player: any): boolean {
   if (!player || player.isGuest) return false;
   if (player.isAdmin) return true;
@@ -683,12 +656,6 @@ function readEnd(c: Check, raw: unknown, ownName: string, known: Known | undefin
   return { teleport, next };
 }
 
-/**
- * The scene an editor sent, or which fields are wrong. `originalName` is the saved scene being changed, or null for a
- * new one; `existing` is every scene there is. Every field is checked and the document is built again from the ones
- * that are known: a field this does not know is dropped, a kind it does not know is refused, a number is refused unless
- * it is finite and inside its bounds. `known` (see Known) adds the check that what the scene points at is there.
- */
 export function readCutscene(raw: any, originalName: string | null, existing: Array<{ name: string }>, known?: Known): ReadResult {
   const c = new Check();
   const input = c.obj("doc", raw);
@@ -788,11 +755,6 @@ export async function readTable(): Promise<StoredCutscene[]> {
   return Array.from(rows, fromRow).filter((s): s is StoredCutscene => s !== null);
 }
 
-/**
- * Start-time safety step: makes the two tables on a database whose setup ran before they were added, then reads the
- * scenes into the cache (the first read, at the asset load, found no table). Safe on every start, and never throws:
- * without the tables there are no scenes, and a save is refused with the reason in the log.
- */
 export async function ensureCutsceneSchema(): Promise<boolean> {
   try {
     await query(CUTSCENES_TABLE[sqlite() ? "sqlite" : "mysql"]);
@@ -823,10 +785,6 @@ export async function findScene(name: unknown): Promise<StoredCutscene | undefin
   return (await allScenes()).find((s) => lower(s.name) === wanted);
 }
 
-/**
- * A statement that changes the cutscenes table. One that throws may still have been applied (a timeout, say), so the
- * table is read again: what is held is then what the database holds, not what it held before.
- */
 async function write(sql: string, values: any[]): Promise<any> {
   try {
     return await query(sql, values);
@@ -856,11 +814,6 @@ export async function saveScene(doc: CutsceneDoc, by: string, exists: boolean): 
   return stored;
 }
 
-/**
- * Deletes a scene, and the record of who has seen it: a scene made again under the name is new to everyone. The scenes
- * that went on to it end instead: readCutscene refuses a `next` that names no scene, so one left pointing here could
- * not be saved again until someone found out why. They are written as `by` changing them. Returns their names.
- */
 export async function removeScene(scene: { name: string }, by: string): Promise<string[]> {
   await write("DELETE FROM cutscenes WHERE name = ?", [scene.name]);
   try {
@@ -886,12 +839,6 @@ export async function removeScene(scene: { name: string }, by: string): Promise<
 
 // ----------------------------------------------------------------- resolving
 
-/**
- * The document with what the server fills in: an actor drawn as an NPC or from layers gets its sprite type and layers
- * (as an NPC is sent to the client, getNpcSpriteLayers), a weather clip the weather's values (what CHANGE_WEATHER
- * carries as weatherData) and a particle clip the particle. A reference that is gone is left without its data and
- * the client draws nothing for it. A copy: the cached scene is never changed.
- */
 export async function resolveDoc<T extends CutsceneDoc>(doc: T): Promise<T> {
   const out = structuredClone(doc);
   const [npcs, weather, particles] = await Promise.all([cached("npcs"), cached("weather"), cached("particles")]);

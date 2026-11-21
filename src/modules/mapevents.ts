@@ -23,13 +23,6 @@ export interface MapEventsDeps {
 const RETRY_FIRST_MS = 1000;
 const RETRY_MAX_MS = 30000;
 
-/**
- * Follows the asset server's map changes on one connection (/map-events): the asset server sends the maps changed
- * since this server's place, then each map saved and each world change as it is made. Nothing is asked while the
- * connection is open. When it ends (the asset server restarted, with new files maybe), it is made again from the place
- * reached, and the asset server sends only the maps that changed. A place it cannot answer from (another run, or
- * changes it no longer holds) is answered `full`: every map is compared once (fullCheck), which gives a new place.
- */
 export function followMapEvents(deps: MapEventsDeps): { stop(): void; done: Promise<void> } {
   const quietMs = deps.quietMs ?? 20000;
   let stopped = false;

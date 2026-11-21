@@ -3,13 +3,6 @@ import { packetManager } from "../socket/packet_manager";
 import { getNpcSpriteLayers } from "../modules/spriteSheetManager";
 import log from "../modules/logger";
 
-/**
- * NPCs are streamed by map chunk instead of all at once on map entry: a player holds the NPCs of the chunks around
- * them (the same chunk size and window the client's map loader uses, client map.ts), gets the NPCs of chunks coming
- * into that window as they move and an unload for the ones leaving it, and, when nearing a warp, the NPCs around the
- * arrival point on the destination map ahead of time (the client keeps those until that map is loaded).
- */
-
 /** Chunk size in tiles by tile size, as the client's map loader (client map.ts CHUNK_SIZE_CONFIG). */
 const CHUNK_SIZE_CONFIG: Record<number, number> = { 16: 64, 32: 32, 64: 16 };
 /** The client's chunk window: a 1920x1080 viewport plus one chunk of padding each side (client map.ts). */
@@ -51,11 +44,6 @@ export const streamSource: { cache: CacheLike; redis: () => boolean } = {
   redis: () => (process.env.CACHE?.toLowerCase() || "memory") === "redis",
 };
 
-// With CACHE=redis every assetCache.get is a Redis GET, a JSON.parse and a deep copy of the whole list, and a new
-// array each time. The NPC, particle, map property and spell lists are static content (definitions only, no per-player state), so a node
-// keeps its own copy: the same array until the list changes. It is read again when this process writes the list
-// (assetCache.onChange) and every STATIC_LIST_REFRESH_MS (a write by another node is not signalled). Readers only
-// read it. With CACHE=memory the cache already hands out the stored array, and it is read straight from there.
 interface Held { list: any[] | null; digest: string | null; loaded: boolean; dirty: boolean; version: number; loading: Promise<void> | null }
 const newHeld = (): Held => ({ list: null, digest: null, loaded: false, dirty: true, version: 0, loading: null });
 const newHeldAll = (): Record<ListKey, Held> => ({ npcs: newHeld(), particles: newHeld(), mapProperties: newHeld(), spells: newHeld() });
@@ -143,11 +131,6 @@ export function useStreamSource(cache: CacheLike, redis: () => boolean): void {
   attachListeners();
 }
 
-/**
- * A list for streaming: the held copy (the same array until the list changes). DEFER: it is not held yet or is out
- * of date, `mayWait` is false, and a read has been started; the caller tries again later instead of holding the
- * player's step on Redis.
- */
 async function staticList(key: ListKey, mayWait: boolean): Promise<any[] | null | typeof DEFER> {
   if (!streamSource.redis()) return ((await streamSource.cache.get(key)) as any[] | null) ?? null;
   const h = held[key];
@@ -236,11 +219,6 @@ function windowAround(g: { chunkPx: number; chunksX: number; chunksY: number }, 
 
 const chunkOf = (g: { chunkPx: number }, x: number, y: number) => `${Math.floor(x / g.chunkPx)},${Math.floor(y / g.chunkPx)}`;
 
-// The NPCs of each map by chunk, as places in the NPC list. A large world carries a particle NPC on every lantern and
-// crystal (some 190,000 on the 10240 x 10240 underworld), and going through the whole list each time a player
-// crosses a chunk border took milliseconds per player. Built per NPC list: the list is replaced whenever an NPC is
-// added, changed or removed (every write ends in assetCache.set("npcs", a new list)), never changed in place. With
-// CACHE=redis the list is the one held in this process (see staticList), so the same array comes back until it changes.
 const npcChunks = new WeakMap<Npc[], Map<string, Map<string, number[]>>>();
 
 function npcsIn(all: Npc[], map: string, g: { chunkPx: number }, keys: Set<string>): Npc[] {
@@ -266,12 +244,6 @@ function npcsIn(all: Npc[], map: string, g: { chunkPx: number }, keys: Set<strin
   return inChunks(all, chunks, keys);
 }
 
-/**
- * Every map's NPCs-by-chunk index in one pass over the list (what npcsIn builds for one map, for each map at once).
- * A pass per map went through a world's 265,000 NPCs 1,778 times at start-up, some 20 seconds before the node
- * registered with the Gateway. An index already built is kept. The pass gives the event loop a turn every
- * INDEX_SLICE NPCs: done at once, it held the loop for over a second (a map built meanwhile by npcsIn is kept).
- */
 const INDEX_SLICE = 20000;
 async function indexAllMaps(all: Npc[], geometries: Map<string, Geometry>): Promise<void> {
   let byMap = npcChunks.get(all);
@@ -355,14 +327,6 @@ function clientNpc(npc: Npc, findParticle: ParticleLookup): any {
   };
 }
 
-/**
- * Brings a player's NPCs up to date with the chunks round them: packets for the NPCs of chunks newly in range (one
- * LOAD_NPCS) and an UNLOAD_NPCS for those that left it. `reset`: the player has just entered the map (nothing held).
- * Cheap when the player has not changed chunk. Returns the packets to send (empty when nothing changed).
- * Without `reset` or `wait` (`wait`: a jump within the map, after which the player may stand still and nothing would
- * ask again), with CACHE=redis, it never waits on Redis: a map or list not held yet is read in the background and
- * the call returns nothing, to be asked again on the next scan (the player's chunk is not marked as done).
- */
 export async function syncNpcChunks(player: StreamPlayer, reset = false, wait = false): Promise<any[]> {
   const run = { gone: false };
   const runs = running.get(player.id) ?? new Set();
@@ -425,10 +389,6 @@ async function syncNow(player: StreamPlayer, reset: boolean, wait: boolean, run:
   return packets;
 }
 
-/**
- * The NPCs round a warp's arrival point on its destination map, sent ahead (the client holds them for that map until
- * it is loaded, and skips the ones it already has when the map's own NPCs arrive on entry).
- */
 export async function preloadNpcsAt(_player: StreamPlayer, map: string, x: number, y: number): Promise<any[]> {
   const g = await geometry(map);
   if (!g) return [];
@@ -444,38 +404,16 @@ export async function preloadNpcsAt(_player: StreamPlayer, map: string, x: numbe
   return packetManager.loadNpcs(npcs.map((n) => clientNpc(n, find)));
 }
 
-/**
- * The NPC list for a caller that only reads it (a login send, a lookup by id): the array this process holds, loaded
- * once (callers that come before it is held share one load) and as fresh as the stream's copy: read again after a
- * write made here, and every STATIC_LIST_REFRESH_MS for a write by another node. The same array comes back until the
- * list changes, so a caller must never change it or an NPC in it (sort, push, splice, set a property); one that does,
- * or that reads to write back, takes the list from assetCache. With CACHE=memory it is what the cache holds.
- * Without it every call is a Redis GET, a JSON.parse of the whole world's NPCs and a deep copy on the main thread.
- */
 export async function readNpcList(): Promise<Npc[]> {
   return ((await staticList("npcs", true)) as Npc[] | null) ?? [];
 }
 
-/**
- * A list for a caller that only reads it, on a per-tick, per-cast or per-login path: the array this process holds
- * (see readNpcList, which is this for "npcs"), or null when the cache has none. The same array comes back until the
- * list changes, so a caller must never change it or an object in it (sort, push, splice, set a property, hand an
- * object on to code that does); a caller that does, or that reads to write back, takes the list from assetCache.
- * With CACHE=memory it is what the cache holds, read on each call.
- */
 export async function readHeldList<T = any>(key: ListKey): Promise<T[] | null> {
   return ((await staticList(key, true)) as T[] | null) ?? null;
 }
 
 let warming: Promise<void> | null = null;
 
-/**
- * Loads, once and in the background, what the first player to reach a freshly started node would otherwise wait for:
- * the held NPC and particle lists (a parse of the whole world's lists), each map's chunk geometry and the NPCs-by-chunk
- * index of each map that has NPCs. Never throws: a step that fails is logged and the normal lazy load still works. It
- * shares the lists' and the maps' in-flight reads with a lazy caller, so nothing is read twice at once. A second call
- * while one runs returns the same promise.
- */
 export function warmStreamData(): Promise<void> {
   if (warming) return warming;
   const run = (async () => {
@@ -517,11 +455,6 @@ export function warmStreamData(): Promise<void> {
 /** How long start-up waits for the warm-up; it keeps running in the background after that. */
 export const WARM_START_CAP_MS = 30000;
 
-/**
- * Start-up's wait for the warm-up: returns when it is done or after `capMs`, whichever is first (a cache read can wait
- * a long time while Redis reconnects). On the cap a warning is logged and the warm-up goes on in the background; its
- * in-flight loads stay shared with lazy reads. Never throws.
- */
 export async function warmStreamDataWithin(capMs: number = WARM_START_CAP_MS): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const cap = new Promise<boolean>((resolve) => {

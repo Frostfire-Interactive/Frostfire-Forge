@@ -38,15 +38,9 @@ function walkSpeedOf(currentPlayer: any): number {
   return (currentPlayer.mounted || currentPlayer.isGhost ? BASE_SPEED * MOUNT_SPEED_MULTIPLIER : BASE_SPEED) * (currentPlayer.slowMultiplier || 1);
 }
 
-/**
- * One step of a walk in `direction` (the collisions are checked for it) by the offset (stepX, stepY) of a 30 Hz tick.
- * The player moves unless the step is blocked; a noclip player moves anyway. Returns what the step ran into.
- */
 function takeStep(currentPlayer: any, direction: string, stepX: number, stepY: number) {
   const tempPosition = { ...currentPlayer.location.position };
 
-  // At 30 Hz the move is the offset rounded to whole px, as it always was. At another TICK_RATE it covers the
-  // same px a second in smaller steps, the part of a px each leaves over carried to the next (_stepCarry).
   let moveX = scaledStep(stepX, currentPlayer._stepCarry?.x ?? 0);
   let moveY = scaledStep(stepY, currentPlayer._stepCarry?.y ?? 0);
   tempPosition.x = tempPosition.x + moveX.move;
@@ -98,14 +92,6 @@ function takeStep(currentPlayer: any, direction: string, stepX: number, stepY: n
   return { collision, isColliding };
 }
 
-/**
- * Walks a resumed handoff arrival through the steps the client took in the gap before this node took over (arrival.ts
- * gapPlanOf; receiver.ts runs it before HANDOFF_DONE): a tick's step each, in its direction, with no echo, pose or
- * mover, the way the client walked them. A blocked step is not taken, and a warp is not walked into: the walk that goes
- * on takes it. The player is left facing the way they last stepped (a cast's facing stays), in their spatial grid cell.
- * `from`: the steps start there, not where the player is (a later report walks the gap again from where the arrival
- * stood, applyLateGap). Returns whether they moved.
- */
 export async function replayGapSteps(currentPlayer: any, steps: readonly string[], from?: { x: number; y: number; direction: string }): Promise<boolean> {
   if (steps.length === 0 && !from) return false;
   await player.preloadMapCollision(currentPlayer.location.map);
@@ -159,9 +145,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
   switch (type) {
 
       case "HANDOFF_GAP": {
-        // A change of key the client made in a resumed handoff's gap after AUTH, with the whole gap so far (arrival.ts
-        // gapUpdateOf). The login reads the newest it has; one that comes after it walked the gap is walked again from
-        // where the arrival stood (applyLateGap). Before the player is in the cache (the login runs), there is none.
         const update = gapUpdateOf(data);
         if (!update) return;
         if (wt.data?.gapApplied) return applyLateGap(wt, update);
@@ -172,11 +155,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
       case "MOVEXY": {
         if (!currentPlayer) return;
 
-        // MOVEXY is dispatched fire-and-forget (PROCESS_IMMEDIATELY, no await in
-        // server.ts) so multiple handlers for one connection interleave across
-        // their await points. Stamp this invocation with a monotonic generation;
-        // a newer MOVEXY bumps past it, marking any suspended older handler stale
-        // so it won't (re)register the player as moving after a later "abort".
         const moveSeq = ++currentPlayer._moveSeq;
 
         await player.preloadMapCollision(currentPlayer.location.map);
@@ -192,9 +170,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         // The first MOVEXY of a resumed handoff walk takes what it makes up (receiver.ts); any other drops it.
         const resumeCatchUp = wt.data?.resumeCatchUp;
         if (resumeCatchUp) wt.data.resumeCatchUp = undefined;
-        // A stop or a turn handled before the resumed walk took its first step: the walk's steps up to now are taken
-        // first, as the walk would have taken them, so the player stops or turns where the client walked them to. The
-        // client is told where that is (a stop echoes nothing; a turn's first echo is from there).
         const missed = resumeCatchUp && direction !== resumeCatchUp.walk
           ? resumeCatchUpSteps(resumeCatchUp, resumeCatchUp.walk, Date.now(), TICK_MS) + 1
           : 0;
@@ -210,15 +185,11 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           return;
         }
 
-        // Corpses awaiting release cannot move. Ghosts can (mounted speed),
-        // except during the release cinematic's pending teleport window.
         if (currentPlayer.isDead || currentPlayer.ghostTeleportPending) {
           await forceStopPlayerMovement(currentPlayer);
           return;
         }
 
-        // A newer MOVEXY (another direction, or an "abort") arrived while this
-        // handler was awaiting above - it is now authoritative. Drop this one.
         if (currentPlayer._moveSeq !== moveSeq) {
           return;
         }
@@ -232,16 +203,10 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         // Turning is new input too: a warp may take the player again.
         if (currentPlayer._warpHold && currentPlayer._warpHold !== direction) currentPlayer._warpHold = undefined;
 
-        // Stunned players cannot move. stunnedUntil is an epoch timestamp
-        // (Date.now()-based), so it must be compared against Date.now().
         if (currentPlayer.stunnedUntil && currentPlayer.stunnedUntil > Date.now()) {
           return;
         }
 
-        // Mid-cast (a can_move spell; the rest were interrupted above) the key
-        // changes where the caster walks, not where they face: they stay turned
-        // toward the target until restoreWalkingFacing runs at cast end. A cast
-        // on self has no target to face, so the caster turns as usual.
         const facing = currentPlayer.casting && !currentPlayer.castOnSelf
           ? currentPlayer.location.position.direction || direction
           : direction;
@@ -286,25 +251,16 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
             return;
           }
 
-          // A newer MOVEXY superseded the packet that registered this callback
-          // (e.g. an "abort" that raced past this handler). Stop rather than
-          // keep stepping - the client believes it has stopped.
           if (currentPlayer._moveSeq !== moveSeq) {
             await forceStopPlayerMovement(currentPlayer);
             return;
           }
 
-          // Safety net: if a stun landed mid-movement and the stun handler's
-          // force-stop somehow didn't unregister us, halt here rather than
-          // waiting for a client ABORT that may never arrive.
           if (spellEffects.isStunned(currentPlayer)) {
             await forceStopPlayerMovement(currentPlayer);
             return;
           }
 
-          // Offsets are derived from a shared static unit table (see
-          // DIRECTION_UNIT_OFFSETS) rather than rebuilding a 9-object literal
-          // on every tick of every moving player.
           const directionOffsets = getDirectionOffsets(walkSpeedOf(currentPlayer));
 
           // This tick's offset, as a 30 Hz tick takes it (scaledStep below makes it this tick's move).
@@ -410,10 +366,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
                 y: number;
               };
 
-              // A warp sets its traveller down in front of the way back (a house's door, its room's door; a
-              // cave's shaft, its mine door). Someone still holding the key they came in on would walk straight
-              // back through. So the way they were walking does not take them through a warp again until they
-              // let go of the key or turn (cleared at the top of this handler): until then a warp is a wall.
               if (currentPlayer._warpHold === direction) {
                 return;
               }
@@ -428,9 +380,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
 
               const currentMap = currentPlayer.location.map;
 
-              // Saved as standing where the warp leads, or the warp is not taken. A row the database did not
-              // change is not a refusal by itself: the account may already be saved there (see arriveAt). Read as
-              // one, it left a player who came back inside by their home item unable to walk out the door.
               const arrived = await player.arriveAt(
                 currentPlayer.id,
                 warp.map.replace(".json", ""),
@@ -477,13 +426,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
 
           bumpStateRevision();
 
-          // Check for nearby warps and preload their destination maps.
-          // Throttled: a player moves at most ~8px per tick and the trigger
-          // radius is 100px, so scanning every warp on the map (plus a linear
-          // mapPropertiesCache lookup and a Set allocation) on EVERY tick of
-          // EVERY moving player was wasted work. Every 8th tick still leaves
-          // ~35px of slack before the radius could be crossed unnoticed.
-          // Kept in time (WARP_SCAN_MS, 8 ticks at 30 Hz) so the slack is the same at any TICK_RATE.
           const warpScanNow = performance.now();
           if (currentPlayer._warpScanAt === undefined) currentPlayer._warpScanAt = warpScanNow;
           const shouldScanWarps = cadenceDue(warpScanNow - currentPlayer._warpScanAt, WARP_SCAN_MS, TICK_MS);
@@ -507,8 +449,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
             for (const warp of playerMapProperties.warps) {
               const warpX = warp.position?.x || warp.x;
               const warpY = warp.position?.y || warp.y;
-              // Squared compare: Math.hypot is markedly slower and the actual
-              // distance is never used, only the threshold test.
               const warpDx = currentPlayer.location.position.x - warpX;
               const warpDy = currentPlayer.location.position.y - warpY;
               const distanceSq = warpDx * warpDx + warpDy * warpDy;
@@ -618,9 +558,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
             if (npcPackets.length) sendPacket(wt, npcPackets);
           }
 
-          // The spatial grid follows every step, not only AOI updates, so grid
-          // queries (AOI candidates, aggro, position sends) never lag a player
-          // by more than one tick. Only does work when the 512 px cell changes.
           if (AOI_CONFIG.USE_SPATIAL_GRID && spatialGrid.hasPlayer(currentPlayer.id)) {
             spatialGrid.updatePlayer(
               currentPlayer.id,
@@ -632,9 +569,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
 
           // Every AOI_UPDATE_MS of walking (10 ticks at 30 Hz), whatever the TICK_RATE.
           if (gameLoop.isAOIUpdateDue(currentPlayer.id) && shouldUpdateAOI(currentPlayer)) {
-            // NOTE: timing lives inside updatePlayerAOI (see [profile:aoi]).
-            // Wrapping the await here would charge this callback for every
-            // other mover's work that runs while it's suspended.
             if (PROFILE) prof.aoiUpdateCount++;
             await updatePlayerAOI(currentPlayer, spawnBatchQueue, despawnBatchQueue);
           }
@@ -651,15 +585,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           };
 
           if (wt.readyState === 1) {
-            // Direct self-echo, every tick, as a datagram (binary moveXY, 0x02).
-            // It is the client's only source for its own position - it ignores
-            // its entry in the batches below. A lost echo is just a skipped
-            // step: the client interpolates across it using the send time
-            // each packet carries, and drops any that arrive out of order.
-            // Other players learn about this mover via the batched flush below.
-            // A handoff catch-up's steps are taken at once: only the last is echoed. The client places that one
-            // on the walk it predicted through the handoff; a burst of points all sent in the same instant would
-            // read as the first of them arriving late and hold the draw back.
             if (!muteEcho) sendPacket(wt, packetManager.moveXY(movementData));
 
             const layerId = currentPlayer.aoi?.layerId || layerManager.getPlayerLayer(currentPlayer.id);
@@ -673,17 +598,10 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           if (PROFILE) prof.moveCbCount++;
         };
 
-        // Final staleness check: if an "abort" (or newer direction) landed while
-        // we were building the callback, that newer handler owns the movement
-        // state now - don't (re)register from this stale one.
         if (currentPlayer._moveSeq !== moveSeq) {
           break;
         }
 
-        // This handler is the newest and about to register the mover. A tick of the older mover that ran while this one
-        // awaited above ended in forceStopPlayerMovement (its MOVEXY was superseded), which cleared `moving` and sent an
-        // idle pose; a registered mover with `moving` false would show idle to the player and to viewers while they
-        // walk. Put both back.
         if (recoverResumedWalk(currentPlayer, wt.data?.walkRecoverUntil, Date.now())) {
           await sendPositionAnimation(
             wt,
@@ -702,8 +620,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         gameLoop.registerMovingPlayer(currentPlayer.id, movePlayer);
 
         if (!wasAlreadyMoving) {
-          // A resumed handoff walk takes the steps of the ticks it stood still between the nodes at once. Each is a
-          // step as any other (collisions, warps); a stop or a newer MOVEXY ends them. Only the last one is echoed.
           const catchUp = resumeCatchUpSteps(resumeCatchUp, direction, Date.now(), TICK_MS);
           try {
             muteEcho = catchUp > 0;

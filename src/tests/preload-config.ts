@@ -1,15 +1,3 @@
-// The stand-ins for the generated config files (see preload.ts, which loads this for every test file).
-//
-// The files under src/config are generated when the server starts and are not
-// checked in, so a fresh checkout (a CI machine) has none. Some of the engine's
-// modules import them, and a test file that loads one of those, however
-// indirectly, cannot be loaded there. So every test file is given the same
-// stand-ins, whichever file runs first and whether or not the real files
-// are on disk: a test never depends on what this machine's config happens to
-// say.
-//
-// A process a test starts (a fixture, the coordinator, validate_config) is not a test run, so bunfig.toml's preload
-// does not reach it: it is started with `--preload` on this file, which needs nothing but the stand-ins.
 import { mock } from "bun:test";
 
 const settings = { creatures: {} };

@@ -1,17 +1,10 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { characterDatabaseModule as databaseModule } from "./setup";
 
-// Generated at server start (`bun create-config`) and gitignored, so CI has
-// no copy on disk. Mock the values instead of requiring the file.
 mock.module("../config/settings.json", () => ({
   default: { creatures: {} },
   creatures: {},
 }));
-
-// ------------------------------------------------------------ fake database
-// The mute, ignore, report and friends systems are the real ones, and so is
-// the player system that says which accounts there are. Their tables are held
-// here, and understand the statements those systems send.
 
 type Row = Record<string, any>;
 let accounts: Row[];

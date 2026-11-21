@@ -29,16 +29,9 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           if (bareMap(mirror.location?.map) === bareMap(currentPlayer.location.map)) players.push(mirror);
         }
 
-        // Taps from touch devices get a wider pick area: a fingertip is far
-        // less precise than a cursor. Where players overlap under the click,
-        // the one the client draws on top wins; otherwise the nearest.
         const pickRange = (data as any)?.touch === true ? 49 : 35;
         const pickX = Math.floor(Number(location.x));
         const pickY = Math.floor(Number(location.y));
-        // Corpses cannot be targeted (despawned for observers). Ghosts can be
-        // targeted and interacted with, except while their graveyard teleport
-        // is still pending (not rendered anywhere yet). Stealthed players are
-        // drawn for admins only. None of them can be the one on top.
         const shown = players.filter(
           (p) => !p.isDead && !(p.isGhost && p.ghostTeleportPending) && !(p.isStealth && !currentPlayer.isAdmin)
         );
@@ -66,17 +59,11 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
       case "TARGETCLOSEST": {
         if (!currentPlayer) return;
 
-        // Tab-target reach = AOI radius: you can target anyone you can actually
-        // see rendered, even if no spell can reach them. Spell range is enforced
-        // separately at cast time ("Target is out of range"), so a wider select
-        // range never lets you hit something you couldn't before.
         const TARGETING_RANGE = (AOI_CONFIG as any).DEFAULT_RADIUS ?? 1000;
         const CONE_ANGLE = 90; // 90 degree cone (45 degrees on each side of facing direction)
 
         const _tcT0 = PROFILE ? performance.now() : 0;
 
-        // Get all players on the same map
-        // Players of neighbouring nodes (mirrors) in reach can be targeted too.
         const playersInRange = withMirrors(
           wt,
           TARGETING_RANGE,
@@ -149,8 +136,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         if (currentPlayer) {
           const targetId = (data as any)?.id;
 
-          // A player of a neighbouring node is inspected where they are: that node sends the answer (cells-inspect).
-          // That is a message to another node, so a client cannot ask without limit; the inspect of a player here is left as it was.
           if (targetId && !playerCache.get(targetId) && mirrorPlayers.has(String(targetId)) && isQuestRateLimited(`inspect:${currentPlayer.id}`)) break;
           if (await inspectOnOwner(currentPlayer, targetId)) break;
           const found = targetId
@@ -160,8 +145,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           const targetPlayer = found && found !== currentPlayer && found.isStealth && !currentPlayer.isAdmin ? null : found;
 
           if (targetPlayer) {
-            // Their whole inventory to themselves and to admins. Anyone else gets only the rows of
-            // what they wear, which is all the inspect window draws (each slot's icon and tooltip).
             const whole = targetPlayer === currentPlayer || targetPlayer.id === currentPlayer.id || currentPlayer.isAdmin;
             sendPacket(wt, packetManager.inspectPlayer(inspectPlayerData(targetPlayer, whole)));
           }

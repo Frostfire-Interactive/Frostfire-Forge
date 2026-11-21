@@ -1,7 +1,3 @@
-// Who a line of chat goes to. Every channel asks here before it sends, so a
-// mute and an ignore are each decided in one place, and the lines a report
-// attaches are kept in one place.
-
 import log from "../modules/logger";
 import ignores from "./ignores";
 import mutes from "./mutes";
@@ -27,9 +23,6 @@ export const TEXT_KEPT = 500;
 /** Old lines are looked for once in this many lines. */
 export const PRUNE_EVERY = 200;
 
-// Each player's latest lines, oldest first. Held here only: they are written
-// to the database when a report attaches them, and let go once the player has
-// said nothing for a while.
 const lines = new Map<string, ChatLine[]>();
 let sincePrune = 0;
 /** When it was last said that the mutes and ignore lists could not be read. */
@@ -37,12 +30,6 @@ let lastFailure = -Infinity;
 
 const lower = (username: string) => String(username ?? "").toLowerCase();
 
-/**
- * The players a line from `sender` goes to, of the `recipients` it was meant
- * for (their sender left out by the caller): nobody when the sender is muted,
- * otherwise everyone who does not ignore them. The sender is shown their own
- * line either way, and is told of neither. The line is kept for a report.
- */
 export async function audience(sender: string, channel: ChatChannel, text: string, recipients: string[], now = Date.now()): Promise<{ muted: boolean; recipients: string[] }> {
   let muted = false;
   let reached = recipients;
@@ -50,8 +37,6 @@ export async function audience(sender: string, channel: ChatChannel, text: strin
     muted = await mutes.isMuted(sender, now);
     reached = muted ? [] : await ignores.notIgnoring(sender, recipients);
   } catch (error) {
-    // Mutes or ignore lists that cannot be read (a database set up before they were added, say)
-    // hold nothing back: chat goes on. Said once a minute at most, not once a line.
     if (now - lastFailure >= 60_000) {
       lastFailure = now;
       log.error(`Mutes and ignore lists could not be read, so chat is not being held back by them: ${error}`);

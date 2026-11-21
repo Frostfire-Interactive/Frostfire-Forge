@@ -3,11 +3,6 @@ import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
 import { AuthDispatcher, LOST_WORKER_ERROR, authWorkerEnv, type AuthAssets, type AuthJob } from "../socket/authdispatch";
 
-// The auth-worker pool's dispatch (socket/authdispatch.ts) with fake workers: every login job goes to the worker
-// with the fewest in flight, every worker's answer reaches the one handler (a replacement's too), a worker that
-// dies fails its jobs once and at once, a token is never in flight on two workers, and a list that changed reaches
-// every worker and the ones started later.
-
 class FakeWorker extends EventEmitter {
   posted: any[] = [];
   terminated = 0;

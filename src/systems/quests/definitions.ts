@@ -168,8 +168,6 @@ export async function list(): Promise<Quest[]> {
   return quests;
 }
 
-// Cluster mode: a save on another node of the region (the quest or NPC editor) wrote the shared list. This node reads
-// the definitions again for what it holds of them, and leaves the list as that node wrote it.
 assetCache.onChange("quests", (elsewhere) => {
   if (!elsewhere) return;
   read()
@@ -184,8 +182,6 @@ assetCache.onChange("quests", (elsewhere) => {
 export function find(id: number): Quest | undefined {
   return syncMirror.find((q) => q.id === Number(id));
 }
-
-export const findSync = find;
 
 // assetCache is async-only; keep a module-level mirror for sync reads.
 let syncMirror: Quest[] = [];

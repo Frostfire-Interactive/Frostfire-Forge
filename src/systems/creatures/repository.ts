@@ -142,8 +142,6 @@ export function normalizeSpawn(row: any): CreatureSpawn {
 }
 
 export function normalizePatrolPath(row: any): CreaturePatrolPath {
-  // Database rows carry points_json (a JSON string); editor saves carry points
-  // (an array). Accept both, or every editor save would wipe the path to [].
   const raw = Array.isArray(row?.points) ? row.points : json<any[]>(row.points_json, []);
   const points: CreaturePatrolPoint[] = Array.isArray(raw)
     ? raw
@@ -246,8 +244,6 @@ async function read(table: string): Promise<any[] | null> {
     const rows = await query<any>(`SELECT * FROM ${table}`);
     return Array.isArray(rows) ? rows : [];
   } catch (error) {
-    // An existing database that predates the creature tables must not stop
-    // the server from booting; the setup script creates them.
     log.warn(`Could not read ${table} (run the database setup script): ${error}`);
     return null;
   }
@@ -264,17 +260,8 @@ const TABLES = {
 } as const;
 type TableKey = keyof typeof TABLES;
 
-/**
- * Whether this process holds every creature table as the database has it: loadIntoCache has read them all. A script
- * run without the server never has, and neither has a server whose database lacks one of them or could not be read
- * again after a write that failed; there, each list is read from the database when it is asked for.
- */
 let loaded = false;
 
-/**
- * The rows of one table: what loadIntoCache holds of it, without the database. The list handed out is the caller's
- * own. Until every table is held, it is read from the database, an unreadable table being an empty one.
- */
 async function list<T>(key: TableKey): Promise<T[]> {
   if (loaded) {
     const held = await assetCache.get(CACHE_KEYS[key]);
@@ -283,12 +270,6 @@ async function list<T>(key: TableKey): Promise<T[]> {
   return ((await read(TABLES[key].table)) ?? []).map(TABLES[key].normalize as (row: any) => T);
 }
 
-/**
- * A statement that changes a creature table. What is held follows when the caller loads the tables again
- * (loadIntoCache), as the editor does after each change. A statement that throws may still have been applied (a
- * timeout, say), and its caller loads nothing: so the tables are read again here. One that cannot be read keeps
- * what was held of it, and the lists are read from the database until the tables are next loaded.
- */
 async function write(sql: string, values: any[]): Promise<any> {
   try {
     return await query(sql, values);
@@ -379,10 +360,6 @@ const repository = {
     await write("DELETE FROM creature_spawn_pools WHERE id = ?", [id]);
   },
 
-  /**
-   * Load every creature table into assetCache: the one place they are read from the database while the server
-   * runs. Startup does it, and the editor after each change it makes.
-   */
   async loadIntoCache(): Promise<void> {
     const keys = Object.keys(TABLES) as TableKey[];
     const rows = await Promise.all(keys.map((key) => read(TABLES[key].table)));

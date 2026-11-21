@@ -21,8 +21,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
 
       case "CHAT": {
         if (!currentPlayer) return;
-        // Corpses cannot talk. Ghost speech comes out as spirit-tongue
-        // (except admins, who speak normally). Applied after decryption below.
         if (currentPlayer.isDead) return;
         const ghostSpeak = currentPlayer.isGhost && !currentPlayer.isAdmin;
         if (currentPlayer.isGuest) {
@@ -39,8 +37,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         const message = messageData?.message;
         const mode = messageData?.mode;
 
-        // A line is text, or in decrypt mode the bytes of one RSA block: anything
-        // else (an array of text, a huge object) would skip the length cap.
         if (message != null && (mode === "decrypt" ? !isCiphertext(message) : typeof message !== "string")) return;
         if (typeof message === "string" && message.length > MAX_CHAT_LENGTH) {
           sendPacket(wt, packetManager.notify({ message: `Message too long (max ${MAX_CHAT_LENGTH} characters).` }));
@@ -95,8 +91,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           decryptedMessage = message;
         }
 
-        // Ghosts (non-admin) speak only in spirit-tongue: random short
-        // O-words, deliberately unrelated to the real message's length.
         if (ghostSpeak) {
           decryptedMessage = generateGhostSpeak();
         }
@@ -110,8 +104,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
 
         sendMessageToPlayer(wt, sentMessage, sentLinks);
 
-        // Who hears a line is who can see the speaker: on a big map that is the
-        // crowd nearby, not every player on it.
         let playersInMap = findPlayersWithTargetInAOI(currentPlayer.id).filter((p) => p.id !== wt.data.id);
 
         if (currentPlayer.isStealth) {
@@ -119,16 +111,11 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           playersInMap = playersInMap.filter((p) => p.isAdmin);
         }
 
-        // A muted player's line stops here, shown to them alone, and a player
-        // who ignores them is left out. Neither is told.
         const said = await chatAudience(currentPlayer.username, "say", decryptedMessage as string, playersInMap.map((p) => p.username));
         if (said.muted) return;
         const hearing = new Set(said.recipients);
         playersInMap = playersInMap.filter((p) => hearing.has(p.username));
 
-        // Cluster mode: listeners across a block border hear the line too, even when no one here does (so
-        // before the return below). Their node sends it as written: translation needs the listener's
-        // language, which only their node knows.
         forwardFromPlayer(
           currentPlayer,
           () => packetManager.chat({ id: wt.data.id, message: sentMessage, username: currentPlayer.username, ...(sentLinks.length > 0 ? { links: sentLinks } : {}) }),
@@ -140,15 +127,9 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
 
         if (playersInMap.length === 0) return;
 
-        // Link tokens go through the translator as placeholders and are put back after, so a link
-        // is never translated; a translation that lost one is dropped for the line as sent.
         const protectedLine = protectLinks(sentMessage, sentLinks);
 
-        // Every listener is sent to at once, so the translation is shared from the moment it starts: one API call
-        // per language, however many listeners read it.
         const lineIn = language.perLanguage(async (target) => {
-          // A translator that throws must not cost the recipient the line: they get it as sent,
-          // links included (this runs once per language, so it logs once per language).
           if (target === currentPlayer.language) return sentMessage;
           try {
             const languages = { source_language: currentPlayer.language, target_languages: target };

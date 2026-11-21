@@ -1,15 +1,10 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 import { databaseModule } from "./setup";
 
-// Generated at server start (`bun create-config`) and gitignored, so CI has
-// no copy on disk. Mock the values instead of requiring the file.
 mock.module("../config/settings.json", () => ({
   default: { creatures: {} },
   creatures: {},
 }));
-
-// ------------------------------------------------------------ fake database
-// One accounts table, with the statements a login sends.
 
 type Row = Record<string, any>;
 let accounts: Row[];

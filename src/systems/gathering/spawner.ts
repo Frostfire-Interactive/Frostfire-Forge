@@ -1,7 +1,3 @@
-// Keeps every gathering area filled with nodes, on every layer of its map (an overflow layer only while it has players
-// in the area's block), as the creature spawner keeps its spawn points (creatures/spawner.ts). Each area on each layer
-// is a slot: its standing nodes, and when each missing one is due. A gathered node is taken out at once (before anything is awaited, so no one else can take it) and its slot
-// gets a respawn time; a node whose item could not be given is put back and that respawn cancelled.
 import log from "../../modules/logger";
 import { logNoIds, nextEntityId } from "../../cluster/entityids";
 import { isBaseLayer } from "../../services/layermanager";
@@ -25,18 +21,7 @@ export const EMPTY_BLOCK_DESPAWN_MS = 60_000;
 export interface SpawnerHooks {
   onSpawn?(node: GatherNode): void;
   onDespawn?(node: GatherNode): void;
-  /**
-   * How many players of a layer stand in the block holding (x, y). Without it
-   * every layer is filled everywhere; with it an area on an overflow layer has
-   * nodes only while its block has players of that layer.
-   */
   playersInBlock?(layerId: string, x: number, y: number): number;
-  /**
-   * Cluster mode: whether this node fills at (x, y) of the map (its block is
-   * this node's; or no one's, once the start grace is over). Absent: always.
-   * Nodes already standing in a block another node takes are left alone
-   * (phase 7 moves them).
-   */
   spawnsHere?(map: string, x: number, y: number): boolean;
 }
 
@@ -245,12 +230,6 @@ export class GatherSpawner {
     return true;
   }
 
-  /**
-   * Whether a slot fills: always on layer 1; on an overflow layer only while the
-   * area's block has a player of that layer. Once the block has stood empty for
-   * EMPTY_BLOCK_DESPAWN_MS its nodes are removed (no rewards) and are due again
-   * at once, so they come back when a player does.
-   */
   private hasPlayers(slot: Slot, now: number): boolean {
     const playersInBlock = this.hooks.playersInBlock;
     if (!playersInBlock || isBaseLayer(slot.layerId)) return true;

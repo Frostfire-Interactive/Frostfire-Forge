@@ -1,11 +1,3 @@
-/**
- * Achievements: players earn them by doing things in the game (killing creatures, completing quests, gathering,
- * looting, collecting mounts and more), counted from the engine's events (systems/events.ts) from the moment this
- * shipped: nothing done before is counted. Earning one shows a popup, tells the party and the guild, and can give an
- * item and a mount. Admins make them with the achievement editor (/achievements). There are no titles and no points.
- * Design: docs/superpowers/specs/2026-10-17-achievements-design.md.
- */
-
 /** The lists a target is picked from in the editor. */
 export type PickList = "creatures" | "quests" | "items" | "mounts" | "maps" | "spells";
 /** Whether a criterion has a target: none, one that may be left as "any" (null), or one it must have. */
@@ -87,19 +79,6 @@ export interface Deed {
   target: string | number | null;
   /** How much it adds; for `level`, the level reached. */
   amount: number;
-}
-
-/** What the earner's popup is sent (ACHIEVEMENT_EARNED). */
-export interface EarnedView {
-  id: number;
-  name: string;
-  description: string;
-  icon: string | null;
-  rewardItem: string | null;
-  rewardQuantity: number;
-  rewardMount: string | null;
-  /** The item did not fit in the bags and was mailed. */
-  mailed: boolean;
 }
 
 /** One line of a player's achievements window (ACHIEVEMENTS). */

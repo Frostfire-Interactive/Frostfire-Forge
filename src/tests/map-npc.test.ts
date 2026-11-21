@@ -10,9 +10,6 @@ const { cannotSetHome, isInnkeeper } = await import("../systems/homes");
 const { default: npcs } = await import("../systems/npcs");
 const { npcForClient } = await import("../systems/npcStreaming");
 
-// An NPC a map places itself: a point of type "npc" on an object layer, as the map generator writes an inn's keeper
-// into the room of one house of every town.
-
 const keeper = (more: Record<string, unknown> = {}) => ({
   height: 0, id: 9, name: "Ashfield Inn", point: true, rotation: 0, type: "npc", visible: true, width: 0, x: 344, y: 288,
   properties: [

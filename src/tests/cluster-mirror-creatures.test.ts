@@ -10,8 +10,6 @@ mock.module("../controllers/sqldatabase", () => databaseModule({
   },
 }));
 
-// Generated at server start (`bun create-config`) and gitignored, so CI has
-// no copy on disk. Mock the values instead of requiring the file.
 mock.module("../config/settings.json", () => ({
   default: { creatures: {} },
   creatures: {},
@@ -522,16 +520,12 @@ test("a data change refreshes local creatures only", async () => {
     expect(creatures.getCreature(777900)?.remote).toBe(true);
   } finally {
     kind.despawn(777900, "left");
-    // The creature module is shared by the files of a run that is not --parallel, and it was read from a database with no
-    // tables: the Wolf this file set is read again, as it was before.
     tableRows.creature_templates = [{ id: 1, name: "Wolf", level_min: 5, level_max: 5, sprite_type: "none" }];
     await creatures.applyDataChange({});
     delete tableRows.creature_templates;
   }
 });
 
-// A corpse's loot stays with its owner node, but who may loot it is part of its shown state: a loot owner of this node
-// who comes into view of a neighbouring node's corpse after the kill is shown it as lootable (and nobody else is).
 test("a mirror corpse is shown lootable to its loot owner here, and to nobody else", () => {
   const kind = (creatures as any).creatureGhostKind;
   const owner = addViewer("cv3", 300, 300);

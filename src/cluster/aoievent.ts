@@ -6,11 +6,6 @@ import type { LinkSender } from "./linktransport";
 import { mirrorByUsername } from "./mirrors";
 import { MIRROR_KEEP_PX, MIRROR_RADIUS_PX, nodesWithin, type Owners } from "./strip";
 
-// aoiEvent (spec §6): something seen by everyone within `radius` of a point,
-// such as a line of say chat. Local players in range get it here; neighbours
-// whose blocks fall inside the radius get it over the node link and deliver it
-// to their own players in range.
-
 /** The largest radius a neighbour's AOI_EVENT is delivered with here. */
 const MAX_REMOTE_RADIUS_PX = MIRROR_KEEP_PX * 2;
 
@@ -42,12 +37,6 @@ export function aoiEvent(map: string, layerId: string | null, x: number, y: numb
   forwardAoiEvent(map, layerId, x, y, radius, packets, options);
 }
 
-/**
- * Only the neighbours' part, for callers that already sent to their own players (say chat translates per listener).
- * `speaker` is the username of whoever the event is heard from (chat only): the neighbour holds back from it the
- * listeners who ignore them, and keeps the ones that can see them. `hidden` and `who` say that the one it comes from
- * is stealthed or vanished, and their username: the neighbour sends it only to its listeners who may see them.
- */
 export function forwardAoiEvent(map: string, layerId: string | null, x: number, y: number, radius: number, packets: Uint8Array[], options: ForwardOptions = {}): void {
   if (!state || packets.length === 0) return;
   const bare = map.replace(/\.json$/, "");
@@ -59,11 +48,6 @@ export function forwardAoiEvent(map: string, layerId: string | null, x: number, 
   for (const peer of peers) if (state.links.isUp(peer)) state.links.send(peer, "AOI_EVENT", message);
 }
 
-/**
- * forwardAoiEvent from where a player stands, for what their node sends the players around them (chat, typing).
- * A stealthed player is seen by admins only and a vanished one by admins and their party: the neighbour is told
- * which, and applies the same rule to its own listeners. The packets are built only when there are links to send them on.
- */
 export function forwardFromPlayer(player: any, packets: () => Uint8Array[], options: { bestEffort?: boolean; speaker?: string } = {}): void {
   if (!state) return;
   const position = player.location.position;
@@ -96,8 +80,6 @@ function deliverLocal(map: string, layerId: string | null, x: number, y: number,
     return;
   }
 
-  // A line heard across a border: hearing matches seeing (when the speaker's mirror is here), and the
-  // listener's ignore list holds it back. The speaker's node has already applied the mute.
   const mirror = mirrorByUsername(speaker);
   if (mirror) {
     const viewers = new Set(findPlayersWithTargetInAOI(mirror.id).map((p) => String(p.id)));

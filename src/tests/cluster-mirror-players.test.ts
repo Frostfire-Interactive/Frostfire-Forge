@@ -2,16 +2,10 @@ import { expect, test, mock, beforeEach, afterEach, describe } from "bun:test";
 import { databaseModule } from "./setup";
 import { receiverSource } from "./receiver-source";
 
-// Players mirrored from a neighbouring node (cluster mode, phase 4): the players
-// ghost kind, and the AOI paths that read a mirror like a local player. Uses the
-// real AOI / index modules (only the database is stubbed); each test gets its
-// own map name because LayerManager has no reset.
 mock.module("../controllers/sqldatabase", () => databaseModule({
   default: async (_sql: string, _params?: any[]) => [],
 }));
 
-// MAX_PLAYERS_PER_LAYER (per block) and BLOCK_SIZE_PX stay at their defaults:
-// the layer manager singleton may already have been built by another test file.
 const aoiConfig: Record<string, any> = {
   DEFAULT_RADIUS: 1000,
   UPDATE_THRESHOLD: 100,
@@ -614,7 +608,8 @@ describe("the receiver's cluster wiring (read from its source: receiver.ts canno
     new Function(`"use strict";\n${transpiler.transformSync(`function make({ ${names.join(", ")} }: any) { ${code} }`)}\nreturn make;`)();
 
   // forwardFromPlayer (aoievent.ts) owns the cluster-off, stealth and vanish rules; these check what each handler hands it.
-  const chatStart = "// Cluster mode: listeners across a block border";
+  const chatAt = receiver.indexOf("() => packetManager.chat({ id: wt.data.id, message: sentMessage");
+  const chatStart = receiver.slice(receiver.lastIndexOf("forwardFromPlayer(", chatAt), chatAt);
   const chat = withNames(
     ["currentPlayer", "forwardFromPlayer", "packetManager", "wt", "sentMessage", "sentLinks"],
     cut(chatStart, /listener\.emit\(Events\.PLAYER_CHAT/),

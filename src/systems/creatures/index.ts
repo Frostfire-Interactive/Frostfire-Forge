@@ -190,10 +190,6 @@ function sendTapStates(creature: CreatureInstance): void {
   }
 }
 
-/**
- * Sends to the creature's viewers here and, in cluster mode, to its mirrors' viewers on neighbouring nodes. Takes the
- * id (the combat-text callback has no instance); relay is given the registry's number, as the kind's candidates are.
- */
 function toViewers(id: number, packets: any[], bestEffort = false): void {
   sync.sendToViewers(id, (wt) => (bestEffort ? sendBestEffort : send)(wt, packets));
   if (!registry.get(id)?.remote) ghosts.relay("creature", id, packets, bestEffort);
@@ -202,10 +198,6 @@ function toViewers(id: number, packets: any[], bestEffort = false): void {
 /** Creatures whose health changed this tick; flushed once per tick. */
 const healthDirty = new Set<number>();
 
-/**
- * What a creature here does to a player another node owns: sent to that node, which applies it (spec §4).
- * `map` and `layerId` are the creature's own, so the target's node can check they are the player's.
- */
 type CreatureOnPlayer = {
   kind: "damage" | "daze" | "spell";
   creatureId: number;
@@ -242,20 +234,12 @@ export const combat = new CreatureCombatSystem(registry, {
   spawn: (id) => spawner.getSpawn(id),
   patrol: (spawn) => (spawn?.patrol_path_id != null ? patrolPaths.get(spawn.patrol_path_id) : undefined),
   grid: (map) => navGrids.get(map),
-  // A player of a neighbouring node, mirrored here, can be aggroed and fought like a local one; what a creature
-  // does to it is sent to its owner (onMirroredPlayer).
   getPlayer: (id) => toPlayerUnit(id, entityById(id)),
   playersNear: (map, x, y, radius) => {
-    // aoi.ts only maintains the spatial grid when USE_SPATIAL_GRID is on, and
-    // aoi.json is never regenerated once it exists, so an older config can have
-    // it off. Fall back to the map index then, or aggro scans see nobody.
-    // Grid cells lag real positions by the AOI update threshold; pad by that.
     const ids = AOI_CONFIG.USE_SPATIAL_GRID
       ? spatialGrid.getPlayersInRadius(x, y, radius + GRID_LAG_PAD_PX, map)
       : mapIndex.getPlayersOnMap(map);
     const out: PlayerUnit[] = [];
-    // The grid holds mirrored players too (phase 4); the map index holds only this node's, so with no grid
-    // the mirrors come from their own store.
     for (const id of ids) {
       const unit = toPlayerUnit(id, entityById(id));
       if (unit && unit.map === map && Math.hypot(unit.x - x, unit.y - y) <= radius) out.push(unit);
@@ -329,8 +313,6 @@ export const combat = new CreatureCombatSystem(registry, {
     if (!owner) return;
     void sendEffect(owner, { op: "creature_hit", target: creature.id, body: hit })
       .then((result) => {
-        // A swing the owner turned away (or never heard) would be sent again every swing: the auto-attack ends.
-        // A spell or a zone tick is not an auto-attack, and a refusal of one changes nothing here.
         if (hit.spell || combat.autoAttackTarget(hit.attackerId) !== creature.id) return;
         const gone = !result || result.outcome === "missing" || (result.outcome === "refused" && ["layer", "attacker", "dead"].includes(String(result.reason)));
         if (gone) combat.stopAutoAttack(hit.attackerId, true);
@@ -415,15 +397,11 @@ export const spawner = new CreatureSpawner(registry, {
     healthDirty.delete(instance.id);
     sync.onDespawn(instance);
   },
-  // A creature whose spawn slot is on another node left the world here: its home frees and respawns the slot
-  // (CREATURE_DIED, cluster/creaturehandoff.ts). Only a creature handed over here is foreign, so only cluster mode calls it.
   onForeignGone: (instance, home, opts) => creatureHandoff.died(instance.id, instance.templateId, home, opts),
   playersInBlock: (layerId, x, y) => layerManager.countInBlock(layerId, blockOf(x, y)),
   spawnsHere,
 });
 
-// Cluster mode: spawn points skipped for another node's block are looked at again when the block table changes,
-// and the load report counts the creatures. Outside cluster mode neither is ever called.
 onBlocksChanged(() => spawner.reviewOwnership(Date.now()));
 /** The ids of the awake creatures: observed by a player, or in combat. The ones tickCreatures ticks. */
 function awakeIds(): Set<number> {
@@ -432,11 +410,6 @@ function awakeIds(): Set<number> {
   return ids;
 }
 
-/**
- * The creatures the load report counts: this node's own awake ones (observed, or in combat: the ones tickCreatures
- * ticks), never mirrors. A dormant creature costs no tick, and it stays on the node when its block moves away, so
- * counting it made a node's load answer to nothing the rebalancer did (spec §2: "active creatures").
- */
 export function* reportedCreatures(): IterableIterator<CreatureInstance> {
   for (const id of awakeIds()) {
     const creature = registry.get(id);
@@ -461,8 +434,6 @@ function flushHealth(): void {
   healthDirty.clear();
 }
 
-// The spell a player_hit from a neighbouring node names is looked up here, as a creature's spell is: in this
-// node's own map, which refreshSpells keeps current, so no hit reads the asset cache.
 setSpellLookup((id) => spellsById.get(id));
 
 /** The abilities of each template, as the cache holds them (a creature's spells are looked up here). */
@@ -482,8 +453,6 @@ let lastParticleList: Array<Record<string, unknown>> | null = null;
 
 /** Spells are editable at runtime; keep a synchronous id lookup for the tick loop. */
 export async function refreshSpells(): Promise<void> {
-  // The held lists (npcStreaming): read only here, and the same arrays come back until they change, so a second
-  // with nothing changed costs no Redis read and no rebuild. With CACHE=memory the lists are rebuilt as always.
   const list = ((await readHeldList<SpellData>("spells")) || []) as SpellData[];
   const particles = ((await readHeldList<Record<string, unknown>>("particles")) || []) as Array<Record<string, unknown>>;
   if (streamSource.redis() && list === lastSpellList && particles === lastParticleList) return;
@@ -624,11 +593,6 @@ export interface CreatureDataChange {
   patrolPathIds?: number[];
 }
 
-/**
- * Apply an editor change: reload data, spawn new spawn points, remove deleted
- * ones, and respawn only the creatures the change affects. Creatures that are
- * fighting finish their fight first.
- */
 export async function applyDataChange(change: CreatureDataChange): Promise<void> {
   await repository.loadIntoCache();
   const data = await buildSpawnerData();
@@ -656,10 +620,6 @@ export async function applyDataChange(change: CreatureDataChange): Promise<void>
   log.info(`Creature data updated: ${refreshed} creature(s) refreshed, ${localCreatureCount()} live`);
 }
 
-/**
- * A change made in the editor here: this node takes it, and the region's other nodes are told (cluster mode), as each
- * spawns and runs the creatures of its own blocks.
- */
 async function dataChanged(change: CreatureDataChange): Promise<void> {
   await applyDataChange(change);
   void tellPeers("creature-data", change);
@@ -671,8 +631,6 @@ function creatureChangeOf(news: any): Required<CreatureDataChange> {
   return { templateIds: ids(news?.templateIds), spawnIds: ids(news?.spawnIds), patrolPathIds: ids(news?.patrolPathIds) };
 }
 
-// Cluster mode: a creature editor save on another node of the region. The tables are read again here, and this node's
-// own creatures the change touches respawn.
 onPeerNews("creature-data", async (news) => {
   await applyDataChange(creatureChangeOf(news));
 });
@@ -719,10 +677,6 @@ function percentile(sorted: number[], p: number): number {
   return sorted[index];
 }
 
-/**
- * Creature system health: tick cost and how much of the world is awake.
- * Read by the load test through the game server's /creature-stats route.
- */
 export function stats(): Record<string, unknown> {
   const samples = Array.from(tickSamples.slice(0, tickSampleCount)).sort((a, b) => a - b);
   const observedIds = [...sync.observedIds()];
@@ -783,8 +737,6 @@ export function resetStats(): void {
 
 /** One creature tick. Exported for the tests, which run it without the global FIXED_UPDATE event. */
 export function tickCreatures(now: number): void {
-  // Creatures that someone can see, plus anything mid-fight/evade/flee (which
-  // must finish even if every observer walked away).
   const ids = awakeIds();
 
   const ticked: CreatureInstance[] = [];
@@ -803,9 +755,6 @@ export function tickCreatures(now: number): void {
     ticked.push(creature);
   }
   tickedCreatures += ticked.length;
-  // Cluster mode (cells phase 6): a creature that walked into another node's block is handed to that node, at most
-  // HANDOFFS_PER_TICK a tick. `ticked` holds this node's own creatures only at this point. handoffCtx is null
-  // outside cluster mode, so this never runs there.
   if (handoffCtx) watchHandoffs(ticked, handoffCtx);
   if (handoffCtx && foreignSweepDue(now)) sweepForeign(now, handoffCtx);
   if (movedMirrors.size > 0) {
@@ -826,15 +775,6 @@ function foreignSweepDue(now: number): boolean {
   return now >= nextForeignSweepAt || now < nextForeignSweepAt - FOREIGN_SWEEP_MS;
 }
 
-/**
- * Cluster mode: a block that moved out leaves its creatures here, foreign (spawner.exportSlots), for the handoff watch
- * to move. The watch sees only the creatures ticked, and one nobody observes and nobody fights is never ticked, so it
- * would stay live here for good. Once a second the foreign creatures go through the same watch (its cap, its
- * cooldown, its isUp check). One that was ticked this tick may be offered twice: handOff sets creature.handoff before
- * its first await, and the watch skips such a creature, so the second offer starts nothing. The spawner's foreign set
- * is the pending set: exportSlots fills it, dropForeign and despawn empty it, and a creature whose target is down
- * stays in it for the next pass.
- */
 function sweepForeign(now: number, ctx: LinkContext): void {
   nextForeignSweepAt = now + FOREIGN_SWEEP_MS;
   if (spawner.foreignCount() === 0) return;
@@ -882,8 +822,6 @@ export function getTemplate(id: number): CreatureTemplate | undefined {
 export function isTargetableBy(player: any, creature: CreatureInstance): boolean {
   // A mirror is targetable: what is done to it is sent to its owner (spec §4).
   if (!player?.location || creature.state === AIState.DEAD) return false;
-  // GM stealth is meant to be non-interactive: an invisible admin cannot be
-  // seen or hit, so they cannot attack, cast on or tab-target creatures either.
   if (player.isStealth) return false;
   if (normMap(player.location.map) !== creature.map) return false;
   return creature.layerId === null || creature.layerId === layerManager.getPlayerLayer(player.id);
@@ -933,11 +871,6 @@ export function hasLineOfSight(player: any, creature: CreatureInstance): boolean
   return grid.lineOfSight(pos, creature);
 }
 
-/**
- * Player spell effects that act on creature threat. Taunt is resolved when a
- * spell lands on a creature (applySpellToCreature); these handle self-cast
- * threat drops that affect every creature the caster is fighting.
- */
 function registerPlayerThreatEffects(): void {
   registerHostileEffectType("taunt");
   registerSpellEffect("taunt", () => {});
@@ -961,10 +894,6 @@ function registerPlayerThreatEffects(): void {
 /** How far from a player a creature fighting them may be: its threat changes go to the owners of mirrors in it. */
 const THREAT_FORWARD_RADIUS_PX = (AOI_CONFIG as any).DEFAULT_RADIUS || 1000;
 
-/**
- * Sends a player's threat change to every node that owns a mirrored creature in combat near the player.
- * Each owner applies it to its own creatures; this node already applied it to its own.
- */
 function forwardThreat(player: any, op: ThreatOp): Promise<Array<EffectResult | null>> {
   const pos = player?.location?.position;
   if (player?.remote || !pos || ghosts.mirrorCount() === 0) return Promise.resolve([]);
@@ -977,9 +906,6 @@ function forwardThreat(player: any, op: ThreatOp): Promise<Array<EffectResult | 
   const target = op.kind === "heal" ? op.targetId : op.playerId;
   return Promise.all([...owners].map((owner) => sendEffect(owner, { op: "creature_threat", target, body: op })));
 }
-
-// Actions across a border (spec §4), run here for the node that holds the mirror. They are reached only
-// through the links, so never with the cluster off.
 
 /** The range of a threat spell's value (spelleditor.ts, the "threat" effect): -100 clears the caster's threat, 1000 is the most it adds. */
 const THREAT_PERCENT_MIN = -100;
@@ -997,10 +923,6 @@ function clampedTo(value: unknown, most: number): number {
   return Math.min(n, Number.isFinite(most) && most >= 0 ? most : 0);
 }
 
-/**
- * The spell a mirrored creature of a neighbouring node casts at a player here: this node's copy of it, when it is one
- * of the abilities of the creature's template. A spell that is not is not a spell that creature has.
- */
 function creatureSpell(creatureId: number, sent: SpellData | undefined): SpellData | undefined {
   const creature = registry.get(creatureId);
   const spellId = Number(sent?.id);
@@ -1092,12 +1014,6 @@ const debugViewers = new Set<string>();
 
 export const editorViewerIds = (): string[] => [...editorViewers];
 
-/**
- * The player's client has dropped every creature (it loaded a map, even the
- * same one again): forget what they were sent so the next sync pass sends
- * everything around them afresh. Otherwise the server would think they still
- * have those creatures and they would stay invisible.
- */
 export function resyncPlayer(playerId: string): void {
   sync.forget(playerId);
 }
@@ -1144,10 +1060,6 @@ export interface EditorResult {
 const fail = (errors: string[]): EditorResult => ({ kind: "result", ok: false, errors });
 const done = (id?: number): EditorResult => ({ kind: "result", ok: true, errors: [], id });
 
-/**
- * Handle one editor packet. Validation runs first; a successful write reloads
- * every creature from the database so the world matches the editor.
- */
 export async function handleEditorPacket(player: any, type: string, data: any): Promise<EditorResult> {
   if (!canUseEditor(player)) return fail(["You do not have permission to use the creature editor."]);
   const id = Number(data?.id) || 0;
@@ -1189,8 +1101,6 @@ export async function handleEditorPacket(player: any, type: string, data: any): 
       return done(id);
     }
     case "CREATURE_EDITOR_SAVE_ABILITIES": {
-      // A creature's full ability list, saved as one: added, changed and
-      // removed abilities all go through together or not at all (validation).
       const templateId = Number(data?.template_id) || 0;
       const plan = planAbilitySet(
         templateId,
@@ -1363,8 +1273,6 @@ export async function init(): Promise<void> {
     try {
       const now = Date.now();
       tick++;
-      // Each phase is timed separately: the periodic ones (layers, AOI refresh)
-      // are the usual cause of a tick spiking well past the others.
       let mark = started;
       const phase = (name: PhaseName) => {
         const at = performance.now();
@@ -1379,8 +1287,6 @@ export async function init(): Promise<void> {
       phase("spawner");
       tickCreatures(now);
       phase("ai");
-      // One slice of players per tick: every player is still refreshed every
-      // SYNC_EVERY_TICKS, but the cost is spread instead of spiking.
       sync.refresh(tick % SYNC_EVERY_TICKS, SYNC_EVERY_TICKS);
       phase("sync");
       if (tick % DEBUG_EVERY_TICKS === 0) {
@@ -1399,8 +1305,6 @@ export async function init(): Promise<void> {
   // Ground AoE zones (e.g. blizzard-style spells) tick on creatures inside them.
   setCreatureZoneHandler((zone, caster) => {
     const now = Date.now();
-    // A zone laid down before its caster went into GM stealth stops hurting
-    // creatures once they are hidden, same as every other attack path.
     if (caster?.isStealth) return;
     const sourceId = String(caster?.id ?? zone.casterId);
     const casterLayer = caster?.id ? layerManager.getPlayerLayer(caster.id) : null;
@@ -1484,10 +1388,6 @@ export default {
   resetStats,
 };
 
-// Cluster mode: creatures this node owns are mirrored to neighbouring nodes near a border, and their creatures are
-// mirrored here. A mirror sits in the shared registry with `remote: true` so the grid and CreatureSync show it to the
-// players here with no special case; every writer above skips it.
-
 /** Stands in for a mirror's path: CreatureSync only asks whether a creature is moving. */
 const MIRROR_MOVING: CreatureMoveState = { path: [], index: 0, speed: 0, stuckTicks: 0 };
 /** Mirrors moved since the last tick; tickCreatures flushes them with the local moves. */
@@ -1526,10 +1426,6 @@ function creatureShown(c: CreatureInstance) {
   };
 }
 
-/**
- * Copies the shown fields onto a mirror. A GHOST_STATE change set only names what changed (null clears a field);
- * a GHOST_SPAWN sent again is the whole record, so a field it leaves out goes back to its default.
- */
 function applyMirror(c: CreatureInstance, r: any, whole: boolean): void {
   if (whole || "health" in r) c.health = Number(r.health) || 0;
   if (whole || "maxHealth" in r) c.maxHealth = Number(r.maxHealth) || 0;
@@ -1620,11 +1516,6 @@ function removeMirror(c: CreatureInstance): void {
 const finiteOr = (value: unknown, fallback: number): number => (typeof value === "number" && Number.isFinite(value) ? value : fallback);
 const AI_STATES: ReadonlySet<string> = new Set(Object.values(AIState));
 
-/**
- * A live creature as it travels to another node (cluster/creaturehandoff.ts): every field, the threat table as JSON
- * and the ability timers as entries. Its path and cast stay here (a casting creature is never handed off, and a path
- * is planned again there). `remote`, `handoff` and `mirrorAuras` are this node's own bookkeeping.
- */
 export function serializeCreature(c: CreatureInstance): SerializedCreature {
   return {
     id: c.id, templateId: c.templateId, spawnId: c.spawnId, poolId: c.poolId,
@@ -1676,14 +1567,6 @@ function arrivedAuras(r: any): CreatureAuras {
   return base;
 }
 
-/**
- * A creature handed over to this node becomes live here (cluster/creaturehandoff.ts). `home` is the node that owns
- * its spawn slot; null when this node does. The mirror this node showed of it gives up its place with no despawn,
- * so its viewers keep the entry; the creature is announced when there was no mirror, or when the mirror differs in
- * map, layer or template (the client treats that as a new creature). False, with nothing changed, when a live copy
- * is already here, the record is not a living creature of a known template, or the spawner refuses it. The caller
- * (onCommit) logs the loss by name and the home respawns the slot.
- */
 function arriveCreature(s: SerializedCreature, home: string | null): boolean {
   const r: any = s;
   if (!mirrorRecordOk(r) || !r.combat || typeof r.combat !== "object" || !r.auras || typeof r.auras !== "object") return false;
@@ -1747,8 +1630,6 @@ function arriveCreature(s: SerializedCreature, home: string | null): boolean {
         .map((e: any) => [Number(e[0]), { ...e[1], fired: e[1].fired === true }]),
     ),
   };
-  // The spawner takes the mirror out of the registry itself and puts the creature in its place; it refuses before
-  // changing anything, so the mirror is left alone then. Only after it said yes is the mirror's bookkeeping settled.
   if (!spawner.adopt(instance, home, { announce: !existing })) return false;
   if (existing) {
     movedMirrors.delete(existing);
@@ -1766,10 +1647,6 @@ function arriveCreature(s: SerializedCreature, home: string | null): boolean {
   return true;
 }
 
-/**
- * The creature was handed to `to` (cluster/creaturehandoff.ts): this node keeps it as a mirror of the copy there, in
- * place, so its viewers here see no change. Its slot and its mirrors elsewhere were already handed over.
- */
 function creatureToMirror(c: CreatureInstance, to: string): void {
   if (c.remote) return;
   // Together and first: the copy is a mirror from here on, and counted as one, whatever fails below.
@@ -1789,13 +1666,6 @@ export function handoffPaused(ctx: LinkContext): boolean {
   return ctx.store?.isUp?.() === false;
 }
 
-/**
- * Cluster mode: hands the creatures that walked into another node's block to that node, at most HANDOFFS_PER_TICK a
- * call, and none while the store is down (the pause is read once). A tick calls it for the creatures it ticked, and
- * once a second more for the foreign ones (sweepForeign), so a sweep tick can start up to twice that. `ticked` holds
- * this node's own creatures. The
- * checks here only spare a call: handOff makes them again.
- */
 export function watchHandoffs(
   ticked: Iterable<CreatureInstance>,
   ctx: LinkContext,
@@ -1940,9 +1810,6 @@ ghosts.register(creatureGhostKind);
 // Ghosts.touch does nothing while the ghosts are not attached (cluster off), so this costs a branch per move.
 registry.onMoved = (c) => { if (!c.remote) ghosts.touch("creature", c.id); };
 
-// A node that died (cells phase 7, Task 13): the away slots it held respawn here, and creatures here whose home it
-// was are dropped (their home's blocks went to other nodes, which spawn their own). The slots this node sent it in a
-// block move are forgotten with them (Task 15).
 usePeerDeathHandlers({
   releaseAwayHeldBy: (peer) => spawner.releaseAwayHeldBy(peer, Date.now()),
   dropForeignFrom: (home) => {
@@ -1964,9 +1831,6 @@ let undoSlots: (() => void) | null = null;
 export function attachCreatureHandoff(ctx: LinkContext): () => void {
   creatureHandoff.start(creatureHandoffDeps(ctx));
   handoffCtx = ctx;
-  // Phase 7: a block's spawn slots go with it when it moves to another node (Task 15). The spawner itself is the
-  // part's spawner, so a move lost at the deadline can drop or despawn what it took out. A later attach owns the
-  // part: the earlier one is taken off first, since a second part of one name is refused.
   undoSlots?.();
   const undo = registerCreatureSlots({
     self: ctx.self,

@@ -1,18 +1,10 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { characterDatabaseModule as databaseModule } from "./setup";
 
-// Generated at server start (`bun create-config`) and gitignored, so CI has
-// no copy on disk. Mock the values instead of requiring the file.
 mock.module("../config/settings.json", () => ({
   default: { creatures: {} },
   creatures: {},
 }));
-
-// ------------------------------------------------------------ fake database
-// The statements the friends system sends, run against in-memory tables, and
-// the read the player system makes of an account. A statement it does not
-// know is an error, so a read that is not a cache filling itself fails the
-// test that made it.
 
 type Row = Record<string, any>;
 let friendsTable: Row[];

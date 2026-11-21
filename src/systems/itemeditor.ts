@@ -1,8 +1,3 @@
-/**
- * Item editor: validation and CRUD for the admin item editor window.
- * Items are keyed by name, so a rename creates a new row - the editor sends the
- * original name along with a save so a rename can update in place instead.
- */
 import query from "../controllers/sqldatabase";
 import assetCache from "../services/assetCache";
 import log from "../modules/logger";
@@ -25,10 +20,6 @@ export const ITEM_SLOTS: ItemSlot[] = [
   "belt", "pants", "boots", "ring_1", "ring_2", "trinket_1", "trinket_2", "weapon", "bag",
 ];
 
-/**
- * The slots whose item is drawn on its wearer, and which of the asset server's sprite sheet slots
- * its sheet is listed under. An item in any other slot is not drawn, so it has no sheet.
- */
 export const DRAWN_SLOTS: Partial<Record<ItemSlot, string>> = {
   helmet: "helmet", shoulderguards: "shoulderguards", necklace: "neck", gloves: "hands",
   chestplate: "chest", boots: "feet", pants: "legs", weapon: "weapon",
@@ -80,10 +71,6 @@ export interface ItemSearchResult {
   truncated: number;
 }
 
-/**
- * Name search over the cached items. An empty query returns nothing rather than
- * everything: the editor is for finding a known item, not browsing the table.
- */
 export async function searchItems(rawQuery: unknown, exactName?: string | null): Promise<ItemSearchResult> {
   const query = String(rawQuery ?? "").trim().toLowerCase();
   const all = ((await assetCache.get("items")) || []) as Item[];
@@ -149,8 +136,6 @@ export function normalizeItem(input: any): Item {
     attack_speed_ms: num(input?.attack_speed_ms),
     // What a vendor pays for one, in copper: one unless the item says otherwise. Nothing (0) is an item vendors do not buy.
     sell_price: num(input?.sell_price) ?? 1,
-    // What a vendor charges for one, in copper, where the NPC sets no price of its own: when none is sent, a few times
-    // what a vendor pays for it.
     buy_price: num(input?.buy_price) ?? (num(input?.sell_price) ?? 1) * BUY_PRICE_MARKUP,
     restore_health: restores ? num(input?.restore_health) ?? 0 : 0,
     restore_stamina: restores ? num(input?.restore_stamina) ?? 0 : 0,
@@ -161,10 +146,6 @@ export function normalizeItem(input: any): Item {
   };
 }
 
-/**
- * What is wrong with an item an editor sent. `homeItem` is the name of the item that is the home
- * item now, when there is one: no other item can become it.
- */
 export function validateItem(input: any, existingNames: Set<string>, originalName: string | null, homeItem: string | null = null): string[] {
   const errors: string[] = [];
   const item = normalizeItem(input);
@@ -233,10 +214,6 @@ const values = (item: Item) => [
   item.soulbound ? 1 : 0, item.sprite_sheet ?? null,
 ];
 
-/**
- * The cached item list changed. The login workers build a player's inventory
- * from their own copy of the list, so hand them the new one.
- */
 async function itemsChanged(): Promise<void> {
   try {
     await refreshAuthItems();
@@ -245,12 +222,6 @@ async function itemsChanged(): Promise<void> {
   }
 }
 
-/**
- * A statement that changes the items table. One that throws may still have
- * been applied (a timeout, say), so the table is read again and the login
- * workers are handed what it holds: the items held are then the database's,
- * not what they were before.
- */
 async function write(sql: string, params: any[]): Promise<void> {
   try {
     await query(sql, params);
@@ -285,8 +256,6 @@ export async function saveItem(input: any, originalName: string | null): Promise
     );
   }
 
-  // A new list, not the held one changed in place: what is worked out from the list held (each item's sprite sheet) is
-  // kept until the list is replaced.
   const items = [...(((await assetCache.get("items")) || []) as Item[])];
   const index = items.findIndex(isRow);
   if (index === -1) items.push(item);

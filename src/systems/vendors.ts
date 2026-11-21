@@ -1,15 +1,3 @@
-// Buying from and selling to an NPC.
-//
-// An NPC with something in stock is a vendor. What it stocks is the NPC's own
-// (`vendor_items`, set in the NPC editor). What a vendor charges for an item is
-// the item's buy price (`buy_price`, set in the item editor), unless the NPC
-// sets a price of its own for it; what a vendor pays for an item is the item's
-// sell price (`sell_price`). Stock never runs out. Every deal is one batch: the
-// coins and the items are written together, or neither is.
-//
-// What a player sold can be bought back for what they were paid, from a short
-// list kept here in memory until they leave.
-
 import assetCache from "../services/assetCache";
 import { atomically } from "../services/batch";
 import log from "../modules/logger";
@@ -70,20 +58,10 @@ export function buyPriceOf(item: Pick<Item, "buy_price"> | null | undefined): nu
   return Number.isFinite(price) ? Math.max(0, Math.trunc(price)) : 0;
 }
 
-/**
- * What one of an item costs at a vendor: the NPC's own price for it, or else the item's buy price,
- * and never less than a vendor pays for the item. Sold for less, it could be bought and sold back
- * for more, over and over: coins from nowhere. A quest item is never bought, so it can cost
- * anything, or nothing.
- */
 export function priceAt(entry: VendorItem, item: Item): number {
   return Math.max(entry.price ?? buyPriceOf(item), item.type === "quest" ? 0 : sellPriceOf(item));
 }
 
-/**
- * A vendor's stock as an editor sent it, checked against the names of the items there are: the
- * entries to keep, and what was wrong with the ones left out.
- */
 export function readVendorItems(input: unknown, itemNames: string[]): { items: VendorItem[]; errors: string[] } {
   if (input === undefined || input === null || input === "") return { items: [], errors: [] };
   if (!Array.isArray(input)) return { items: [], errors: ["A vendor's stock is a list of items and prices."] };
@@ -152,10 +130,6 @@ export function cannotShop(player: Shopper, npc: Npc | null | undefined): string
   return null;
 }
 
-/**
- * Whether a player has a slot for an item: more of something they hold takes none, and anything
- * else takes one. Counted as a quest's rewards are (see quests/rewards).
- */
 export async function hasRoomFor(username: string, item: string): Promise<boolean> {
   const rows = (await inventory.get(username)) as any[];
   if (rows.some((row) => lower(row.item ?? row.name) === lower(item))) return true;
@@ -176,11 +150,6 @@ async function deal(username: string, work: () => Promise<VendorAnswer>): Promis
   }
 }
 
-/**
- * The player pays `cost` copper and is given the items, as one batch. `still` is asked inside the
- * batch, where nothing else of the player's changes: whether what is being bought is still there
- * to buy. `kept` runs once the batch is written, before anything else of the player's can.
- */
 async function purchase(username: string, item: string, quantity: number, cost: number, still?: () => boolean, kept?: () => void): Promise<VendorAnswer> {
   if (!(await hasRoomFor(username, item))) return refuse("Your bags are full.");
   return deal(username, async () => {
@@ -215,10 +184,6 @@ const vendors = {
     if (!entry || !definition) return refuse("They do not sell that.");
     return purchase(lower(username), definition.name, quantity as number, priceAt(entry, definition) * (quantity as number));
   },
-  /**
-   * A player sells an item for its sell price: `quantity` of it, or all they have spare. What is
-   * worn or in a bag slot stays with them.
-   */
   async sell(username: string, itemName: string, quantity?: unknown): Promise<VendorAnswer> {
     const name = lower(username);
     if (quantity !== undefined && !wholeFromOne(quantity, 2147483647)) return refuse(AMOUNT);

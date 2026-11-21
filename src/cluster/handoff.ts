@@ -4,20 +4,6 @@ import type { Ghosts } from "./ghosts";
 import type { LinkCalls } from "./linkcalls";
 import { PlayerLockBusy, type PlayerLocks } from "./playerlock";
 
-// Moving a player to the node that owns the block they walked into (spec §5).
-// The old node (A) asks the new node (B) to take the player (HANDOFF) while
-// the player keeps walking. B parks the snapshot as an arrival under the
-// ticket token. On a yes, A drains the player (their moves are dropped from
-// there, the mover is unregistered, packets in flight finish), takes the
-// player's cluster lock (after the drain: a batch of the player's own that was
-// running takes the same lock and must not wait on the handoff's) and gives the player up in one synchronous step (snapshot taken, mirrors
-// handed over, player released, a mirror kept, forwarding started, commit
-// cast), saves, and sends the client a SWITCH with the ticket. A handoff that
-// is refused before the drain never stopped the player. The client reconnects
-// to B, which gives it the same id and logs it in from the arrival without a
-// map load. A step that has started always finishes, so a player is live on
-// one node or, after a lost link, on none: never on two.
-
 export const HANDOFF_ACK_MS = 2_000;
 export const DRAIN_MS = 2_000;
 /** How soon a handoff is tried again after a refusal that will not change on its own (no ticket, a full node, a lost answer). */
@@ -33,9 +19,6 @@ export const PREPARE_MS = 10_000;
 export const ARRIVAL_TTL_MS = 30_000;
 export const RECENT_MS = 30_000;
 
-// What a peer's HANDOFF may carry. The peer is a cluster node (the links are
-// authenticated), so these only keep a broken node from filling this one.
-/** The most arrivals parked at once. */
 export const MAX_ARRIVALS = 1_000;
 /** The longest username, map name or direction in a snapshot. */
 export const MAX_TEXT = 128;
@@ -47,10 +30,6 @@ export const MAX_STATE_BYTES = 64 * 1024;
 /** How often the cooldown and "recently" tables are swept. */
 const SWEEP_MS = 5_000;
 
-/**
- * An expected give-up before the release (for example, the player's packets did not drain in time): the handoff is
- * refused and tried again soon, said at info and not as an error.
- */
 export class HandoffGiveUp extends Error {
   constructor(message: string) {
     super(message);
@@ -84,10 +63,6 @@ export interface NodeAddress { nodeId: string; publicHost: string; port: number;
 export type HandoffReply = { ok: boolean; reason?: string };
 export type HandoffResult = "switched" | "refused" | "gone" | "busy";
 
-/**
- * Takes the player's cluster lock (playerlock.ts) for a handoff: answers its release, or null when another writer
- * holds it or the store failed. Never rejects.
- */
 export type HandoffLock = (characterId: number) => Promise<(() => Promise<void>) | null>;
 
 /** The cluster lock key of character `characterId` (playerlock.ts): one writer per character, never per account. */
@@ -108,10 +83,6 @@ export function snapshotIdentity(p: any): Pick<PlayerSnapshot, "id" | "username"
   };
 }
 
-/**
- * The HandoffLock over a PlayerLocks: withLocks with waitMs 0, held open until the release is called. A busy lock is
- * the normal answer while a trade or a mail on another node writes the player; any other failure is logged.
- */
 export function holdPlayerLock(locks: Pick<PlayerLocks, "withLocks">, characterId: number): Promise<(() => Promise<void>) | null> {
   const key = characterLockKey(characterId);
   return new Promise((answer) => {
@@ -140,27 +111,9 @@ export interface HandoffDeps {
   /** The local player with this id, or null. */
   player(id: string): any | null;
   playerByUsername(username: string): any | null;
-  /**
-   * Stop the player's movement and wait (at most `ms`) until the packets it sent before are handled. Throw HandoffGiveUp
-   * to give up quietly. Called after the target said yes (the player walks until then), except for a warp, which
-   * drains first.
-   */
   drain(player: any, ms: number): Promise<void>;
-  /**
-   * Whether the player may still go, asked once they are drained: the reason they may not (they started a trade or a
-   * cast while the answer was awaited), or null. The refusal is tried again soon.
-   */
   recheck?(player: any, target: string): string | null;
-  /**
-   * A drained player stays here (the handoff was refused or failed before the release): undo what the drain did to
-   * their movement, so the client is not left walking a player the server no longer moves.
-   */
   undrain?(player: any): void | Promise<void>;
-  /**
-   * The player is stopped for a handoff that keeps their walk (not a warp): called right before the drain. From here
-   * this node sends them no more steps, so their client walks them on by itself (HANDOFF_BEGIN) until the new node has
-   * them; told at the SWITCH, it drew the player standing through the drain and the save first.
-   */
   begin?(player: any): void;
   /** A begun player stays here (the handoff was given up after begin): their client stops walking them on. Called before undrain. */
   stay?(player: any): void;
@@ -178,15 +131,7 @@ export interface HandoffDeps {
   sendSwitch(player: any, node: NodeAddress, ticket: SwitchTicket, resume: boolean): Promise<void>;
   /** Pass calls and deliveries for the player on to `to` for a while (Task 8). */
   forward(playerId: string, username: string, to: string): void;
-  /**
-   * Tells the player's client which node it will be sent to, so it can open a session there before the SWITCH (null: drop
-   * the one it opened). Carries the node's address only: no ticket, nothing of the player.
-   */
   prepare?(player: any, node: NodeAddress | null): void;
-  /**
-   * The old node's save of the player arriving with this ticket has landed (HANDOFF_SAVED): their rows may be read
-   * for the login now, before the client gets here (socket/loginprefetch.ts).
-   */
   saved?(token: string, who: { username: string; characterId: number; accountId: number }): void;
   /** How long A waits for the HANDOFF answer: HANDOFF_ACK_MS unless a test sets it. */
   ackMs?: number;
@@ -324,10 +269,6 @@ export class PlayerHandoff {
     this.undo.push(deps.calls.onCast("HANDOFF_SAVED", (body, from) => this.onSaved(body, from)));
   }
 
-  /**
-   * Stop answering. A handoff already running finishes with the deps it started with (a step that has started
-   * always finishes); `idle()` waits for it, so a shutdown does not exit between a release and its save.
-   */
   stop(): void {
     for (const undo of this.undo.splice(0)) undo();
     this.deps = null;
@@ -357,11 +298,6 @@ export class PlayerHandoff {
     return at !== undefined && !!this.deps && this.deps.now() < at;
   }
 
-  /**
-   * The player walks toward a border to `target`: their client is told the node's address, once per PREPARE_MS and
-   * target, and opens a session there ahead of the SWITCH. Nothing about the player leaves this node. Answers whether
-   * a prepare was sent.
-   */
   prepare(player: any, target: string): boolean {
     const deps = this.deps;
     const username = String(player?.username ?? "");
@@ -453,8 +389,6 @@ export class PlayerHandoff {
       await deps.drain(player, DRAIN_MS);
       mark("drained");
     };
-    // A trade, mail or purchase on another node may be writing this player's rows: the handoff waits for its turn
-    // (tried again soon) instead of saving here while it lands. Answers how the handoff ends, or null to go on.
     const takeLock = async (): Promise<HandoffResult | null> => {
       if (lock) {
         unlock = await lock(characterId);
@@ -467,8 +401,6 @@ export class PlayerHandoff {
       mark("locked");
       return null;
     };
-    // Before the player is stopped: a busy lock (a write for this player on another node) refuses now, while they walk.
-    // The lock is taken and let go at once; the real one is taken after the drain.
     const peekLock = async (): Promise<HandoffResult | null> => {
       if (!lock) return null;
       const free = await lock(characterId);
@@ -521,8 +453,6 @@ export class PlayerHandoff {
             return "gone";
           }
           await drain();
-          // The lock is taken after the drain: a batch of the player's own that was running takes the same lock and
-          // must finish first (the drain waits for it), so the handoff cannot hold the lock while it waits.
           const stopped = await takeLock();
           if (stopped) return stopped;
         }
@@ -541,9 +471,6 @@ export class PlayerHandoff {
         deps.calls.cast(target, "HANDOFF_ABORT", { username, token });
         return "gone";
       }
-      // From here to the commit nothing awaits: no scan, packet or tick sees the player half moved. The last move is
-      // applied (the player is drained), so the snapshot is where they stand. Until the release the player is still
-      // only here, so a failure gives up the handoff and keeps them.
       let snapshot: PlayerSnapshot;
       try {
         snapshot = deps.snapshot(player);
@@ -572,8 +499,6 @@ export class PlayerHandoff {
           log.error(`Handoff of ${username} to ${target}: forwarding not started: ${error}`);
         }
       } catch (error) {
-        // If the mirrors were handed over already, the peers file theirs under the target until they expire, and
-        // this node tracks the player again at its next scan.
         log.warn(`Handoff of ${username} to ${target} given up before the release, so the player stays here: ${error}`);
         return this.refused(deps, session, username, target, token, `failed before the release: ${error}`, t0, false);
       }
@@ -624,8 +549,6 @@ export class PlayerHandoff {
       session.leaving.delete(username);
       if (switched) this.prepared.delete(username);
       if (!switched && drained) player.handoff = false;
-      // Kept here after the drain: their movement is put right. A player who left ("gone") is not touched, and
-      // neither is one who was never drained (the handoff was refused first and they never stopped).
       if (!switched && begun && deps.stay && deps.player(id) === player) {
         try {
           deps.stay(player);
@@ -664,19 +587,11 @@ export class PlayerHandoff {
     return { snapshot, resume: arrival.snapshot.id === id && !arrival.fullLoad, committedAt: arrival.committedAt };
   }
 
-  /**
-   * The character a connection with this ticket arrives as, committed or not: its AUTH logs in that character, never
-   * the account's active character read again. Null when the ticket brings no live arrival.
-   */
   arrivingCharacter(token: string): { characterId: number; accountId: number } | null {
     const arrival = token ? this.liveArrival(token) : null;
     return arrival ? { characterId: arrival.snapshot.characterId, accountId: arrival.snapshot.accountId } : null;
   }
 
-  /**
-   * The new node reached `step` for the player who came with this ticket (marks are kept per handoff, so this costs
-   * one push). A ticket that is not a handoff's, or a step already marked, is ignored.
-   */
   landed(token: string, step: LandingStep): void {
     const deps = this.deps;
     if (!deps || !token) return;
@@ -702,10 +617,6 @@ export class PlayerHandoff {
     sayCrossing(arrival.snapshot.username, arrival.from, this.deps!.self, arrival.marks);
   }
 
-  /**
-   * The player came from `from` less than HANDOFF_DWELL_MS ago: the watch does not hand them back unless they stand
-   * well inside the block they were handed from (handoffwatch.ts).
-   */
   dwellingFrom(username: string, from: string): boolean {
     const at = this.arrivedAt.get(username);
     if (at === undefined || !this.deps || this.arrivedFrom.get(username) !== from) return false;
@@ -758,11 +669,6 @@ export class PlayerHandoff {
     }
   }
 
-  /**
-   * Gives up the handoff: the arrival parked on the target is aborted, and the next try is set (TRANSIENT_RETRY_MS for a
-   * reason that clears in a moment, RETRY_AFTER_MS for the rest). Every refusal is said at info with the player, the
-   * target, the reason and the time since the handoff started, once per player and reason in REFUSAL_LOG_MS.
-   */
   private refused(deps: HandoffDeps, session: Session, username: string, target: string, token: string, why: string, t0: number, transient: boolean): HandoffResult {
     if (token) {
       try {
@@ -773,8 +679,6 @@ export class PlayerHandoff {
     }
     const retryMs = transient ? TRANSIENT_RETRY_MS : RETRY_AFTER_MS;
     const now = deps.now();
-    // A refusal that will not clear soon: the client drops the session it opened for this handoff (the entry stays, so
-    // it is not prepared again before PREPARE_MS). One that clears in a moment keeps it for the next try.
     if (!transient && this.prepared.has(username)) {
       const walker = deps.playerByUsername(username);
       if (walker) {
@@ -786,9 +690,6 @@ export class PlayerHandoff {
       }
     }
     session.retryAt.set(username, now + retryMs);
-    // A snapshot the target finds malformed, or a target that is full, will not change on its own: say so out loud. A
-    // snapshot too big for the link will not either, and is tried again every RETRY_AFTER_MS: said out loud once per
-    // player, until a handoff of theirs is done.
     let loud = why === "malformed" || why === "full";
     if (why === "too-big") {
       loud = !session.tooBig.has(username);
@@ -871,8 +772,6 @@ export class PlayerHandoff {
     if (!deps || !arrival || arrival.from !== from) return;
     arrival.committed = true;
     arrival.committedAt = deps.now();
-    // The final snapshot replaces the first only for the same player. Its position is taken only where this node
-    // owns the block, as checked for the first; elsewhere the player arrives at the first snapshot's point.
     const snapshot = validSnapshot(body?.snapshot);
     if (!snapshot || snapshot.id !== arrival.snapshot.id || snapshot.username !== arrival.snapshot.username
       || snapshot.characterId !== arrival.snapshot.characterId || snapshot.accountId !== arrival.snapshot.accountId) return;

@@ -5,10 +5,6 @@ import { LaneWriter, LinkFrameReader, WebTransportLinks, type WebTransportLinksO
 import { encodeFrame } from "../socket/framing";
 import { generateLocalCertificate } from "../utility/local_cert";
 
-// Real QUIC on localhost. Ports are high and random. When UDP cannot be bound at all (a CI box
-// without it), the socket tests are skipped, and bun reports them as skipped. Only a failed bind
-// counts: any other error fails the test. Set REQUIRE_UDP=1 to make a skip a failure.
-
 const until = async (check: () => boolean, ms = 5000) => {
   const deadline = Date.now() + ms;
   while (!check()) {
@@ -140,8 +136,6 @@ udpTest("a pinned link carries frames and datagrams both ways", async () => {
   expect(channel.sendDatagram(new Uint8Array(1201))).toBe(false);
   expect(channel.sendDatagram(new Uint8Array(1200))).toBe(true);
 
-  // Starting again swaps the handlers. closed fires once on each end, the closing one included,
-  // and the closer's own comes on a later tick.
   let serverClosed = "";
   let serverClosedCount = 0;
   serverEnd.start({ frame: () => {}, datagram: () => {}, closed: (reason) => { serverClosed = reason || "closed"; serverClosedCount++; } });
@@ -166,8 +160,6 @@ udpTest("a channel that ended before start reports it when started", async () =>
   channel.send(new Uint8Array([1]));
   await until(() => accepted.length === 1);
   channel.close("gone");
-  // The server end has noticed once its session is closed. Waiting only reads: a probe that sent a frame
-  // could fail a write and end the channel with its own reason before the peer's arrives.
   await until(() => (accepted[0] as any).done === true);
   const reasons: string[] = [];
   const frames: number[] = [];

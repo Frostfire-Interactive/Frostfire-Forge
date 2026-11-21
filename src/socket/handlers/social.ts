@@ -219,8 +219,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
               }
             }
           }
-          // Vanish: former party members can no longer see the vanished player
-          // Local: a vanished player is only ever spawned for the party members on this node (INVITATION_RESPONSE).
           if (currentPlayer.isVanished) {
             for (const member of (result as string[])) {
               const session_id = await player.getSessionIdByUsername(member);
@@ -775,8 +773,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         );
         const notFound = () => sendPacket(wt, packetManager.notify({ message: "Invitation not found or has already been processed" }));
 
-        // A trade request stays on the asker's cached player. With a cluster, the asker may be a player of a
-        // neighbouring node: their node holds the invitation, and answers it (cluster/tradelink.ts).
         if (action.toUpperCase() === "TRADE_REQUEST") {
           const inviter = playerCache.get(originator);
           if (!inviter) {
@@ -811,8 +807,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           break;
         }
 
-        // Party, guild and friend invitations (cluster/invitations.ts): the inviter may be on another node, and
-        // is reached by name. Taking one spends it, so of two answers only one finds it.
         const invite = await invitations.take(authorization);
         // Without a cluster an inviter who left took their invitations along: they are said to be gone, as before.
         const inviterOnline = invite ? await isOnline(invite.originatorName) : clusterEnabled() || !!playerCache.get(originator);
@@ -937,8 +931,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
                   await syncPartyLayers(partyLeader, updatedPartyMembers as string[], playerCache, sendAnimationTo);
                 }
 
-                // Vanish: spawn all vanished party members to all other online party members
-                // Local: a spawn is built from the cached player and queued for players on this node.
                 for (const memberUsername of (updatedPartyMembers as string[])) {
                   const memberSessionId = await player.getSessionIdByUsername(memberUsername);
                   const memberPlayer = memberSessionId && playerCache.get(memberSessionId);
@@ -1009,8 +1001,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
                   await syncPartyLayers(inviterName.toLowerCase(), updatedPartyMembers as string[], playerCache, sendAnimationTo);
                 }
 
-                // Vanish: spawn all vanished party members to all other online party members
-                // Local: a spawn is built from the cached player and queued for players on this node.
                 for (const memberUsername of (updatedPartyMembers as string[])) {
                   const memberSessionId = await player.getSessionIdByUsername(memberUsername);
                   const memberPlayer = memberSessionId && playerCache.get(memberSessionId);

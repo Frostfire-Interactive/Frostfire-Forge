@@ -2,21 +2,6 @@ import crypto from "crypto";
 import log from "../modules/logger";
 import type { ClusterStore } from "./store";
 
-// Messages between nodes that are few and small: social packets, commands to
-// a player on another node, world broadcasts. Heavy traffic between
-// neighbours (mirrors, handoffs) goes on node links instead (phase 4).
-//
-// Every envelope is signed with the bus key (clusterkeys.ts), which only the
-// nodes and the coordinator hold: anything else that can reach Redis cannot
-// send a command. An envelope is { kind, from, to, data, ts, nonce, sig }. The
-// signature covers the other six, serialized with sorted keys. `to` is the
-// node the envelope was sent to, or "*" for the world channel: an envelope
-// copied onto another node's channel is not for that node. A receiver drops,
-// before any handler sees it, an envelope whose signature is missing or wrong,
-// whose `to` is not the channel it came on, whose ts is more than 10 s from its
-// own clock or from before the bus started, or whose nonce it has already taken
-// within that window.
-
 export const WORLD_CHANNEL = "cells:world";
 export const nodeChannel = (nodeId: string) => `cells:node:${nodeId}`;
 
@@ -24,11 +9,6 @@ export const nodeChannel = (nodeId: string) => `cells:node:${nodeId}`;
 export const BUS_WINDOW_MS = 10_000;
 /** The `to` of an envelope sent on the world channel. */
 export const WORLD_TARGET = "*";
-/**
- * How far before this bus started an envelope's ts may be. The nonce set starts empty, so a restarted node would
- * take a copy of an envelope it already took; one sent before it started is refused instead. Smaller than the window:
- * a fence as wide as the window would refuse nothing it does not already refuse. Synced clocks (NTP) are well inside.
- */
 export const BUS_START_SKEW_MS = 2_000;
 /** The most nonces kept. Pruning by age keeps far fewer at the bus's rate; this only bounds a burst. */
 export const BUS_NONCES_MAX = 100_000;
@@ -68,10 +48,6 @@ export function busSignature(key: string, { kind, from, to, data, ts, nonce }: S
   return crypto.createHmac("sha256", key).update(`cells-bus:${canonicalJson({ kind, from, to, data, ts, nonce })}`).digest("hex");
 }
 
-/**
- * The message to publish: the envelope, signed. `to` is the target node's id, or WORLD_TARGET on the world channel.
- * The fields are signed as a receiver will parse them.
- */
 export function sealEnvelope(key: string, from: string, to: string, kind: string, data: unknown, ts: number): string {
   const nonce = crypto.randomBytes(16).toString("hex");
   // Through JSON first, so what is signed is exactly what the receiver gets back (no undefined, no toJSON, no Map).
@@ -157,10 +133,6 @@ export class ClusterBus {
     return this.store.publish(WORLD_CHANNEL, sealEnvelope(this.key, this.nodeId, WORLD_TARGET, kind, data, this.now()));
   }
 
-  /**
-   * The envelope when it is signed, sent to the channel it came on, fresh and new; null (and a warning, at most one
-   * per DROP_LOG_MS) otherwise.
-   */
   private open(message: string, channel: string): { kind: string; from: string; data: unknown } | null {
     let envelope: any = null;
     try {

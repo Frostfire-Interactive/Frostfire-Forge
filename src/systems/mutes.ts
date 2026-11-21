@@ -12,12 +12,6 @@ export interface Mute {
   expires_at: number | null;
 }
 
-// Every mute. A mute is the account's: a character named is muted with every
-// other character of its account, and the table is kept by the account's
-// username (each method below is given a character's name and asks which
-// account it is). Whether a player is muted is asked on every line of chat, and is
-// answered from these rows: a change below is written to the database and then
-// to them, and a write the database does not answer has them read again.
 const rows = tableCache<Mute>("mutes", async () => {
   const result = (await query("SELECT username, muted_by, reason, created_at, expires_at FROM mutes", [])) as any[];
   return (result || []).map((row) => ({
@@ -43,11 +37,6 @@ export function parseDuration(text: string | null | undefined): number | null {
   return Number.isSafeInteger(length) && length > 0 ? length : null;
 }
 
-/**
- * Runs one write. When the database does not answer it the mutes are read
- * again: a statement that timed out may still have been applied, so what is
- * held can be trusted no longer. The failure is still thrown.
- */
 async function writing<T>(write: () => Promise<T>): Promise<T> {
   try {
     return await write();

@@ -1,25 +1,3 @@
-/**
- * A viewer's copy of a pose change as a binary datagram (the Gateway's core/posepacket.ts reads the same layout).
- *
- *   [u8 0x05][u16 count, little endian] then per pose, 9 bytes and the state:
- *   [u32 id][u32 revision][u8 n][n bytes, the animation state in UTF-8, e.g. "walk_down"]
- *
- * It carries what the SPRITE_SHEET_POSE stream packet carries ({ id, animationState }) and the pose revision of the
- * animated player (socket/posedgram.ts): a client applies a pose only if its revision is newer than the one it shows,
- * so a datagram that arrives late, twice or out of order can never put an older pose back.
- *
- * A pose is state, not an event, and a datagram can be lost: the server sends the current pose again twice after each
- * change (PoseRepeater). Anything a client needs to see a player for the first time (the full sheets, the pose on
- * spawn, on entering the view, at a landing) stays on the reliable stream.
- *
- * Widths: the id is a player id (a decimal number, at most 0xffffffff, as in the movement datagrams), the revision a
- * counter of the player's pose changes and the state at most 255 bytes. A pose outside that (a non-numeric id, a
- * revision past u32, a longer state) has no record: encodePoseRecord gives null and the caller sends it as the
- * SPRITE_SHEET_POSE stream packet, so what the client is told never differs.
- *
- * The datagram header is its own byte: 0x01 and 0x02 are movement, 0x04 creature moves, and JSON starts with "{".
- */
-
 export const POSE_DATAGRAM_HEADER = 0x05;
 export const POSE_DATAGRAM_HEADER_BYTES = 3;
 /** The bytes of a record before its state. */
@@ -48,10 +26,6 @@ export function encodePoseRecord(id: string | number, revision: number, state: s
   return record;
 }
 
-/**
- * Datagrams of whole records, none longer than `maxBytes` and in the order given. A record that does not fit a
- * datagram of its own is left out (none is, at the sizes in use: a record is at most 264 bytes).
- */
 export function packPoseRecords(records: readonly Uint8Array[], maxBytes: number): Uint8Array[] {
   const out: Uint8Array[] = [];
   let group: Uint8Array[] = [];

@@ -1,13 +1,3 @@
-/**
- * Footprints (USER REQUEST 2026-10-20: "a section in the editor to be able to add footsteps on certain tiles": visible
- * footprints, with their colour and darkness, how long they stay, and their style).
- *
- * The map editor's Footprints tab gives tiles of a tileset the prints players leave on them: a style (boot prints, bare
- * feet, holes in deep snow), a colour, how dark they are, and how many seconds they take to fade. Kept as the fishable
- * tiles are (systems/fishing): by tileset picture (the image's file name without its extension, in lower case) and tile
- * id, in one list for every map, as rows of tile_footprints. They are only drawn, so every player is sent the whole list
- * (TILE_FOOTPRINTS) at login and after every save.
- */
 import query from "../controllers/sqldatabase";
 import log from "../modules/logger";
 import { tableCache } from "../services/datacache";

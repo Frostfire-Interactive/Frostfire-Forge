@@ -142,11 +142,6 @@ export interface AuraPayload {
   stacks: number;
 }
 
-/**
- * An aura with its absolute expiry instead of the time left, and no icon: what a creature's mirror is kept with. It
- * changes only when the auras do, not as time passes, so the ghost scan sends it only then.
- * `expiresAt` is absolute: cluster nodes need NTP-synced clocks, or a mirrored timer is off by the clock skew.
- */
 export type AuraState = Omit<AuraPayload, "icon" | "remainingMs"> & { expiresAt: number };
 
 export function aurasState(auras: CreatureAuras, now: number): AuraState[] {

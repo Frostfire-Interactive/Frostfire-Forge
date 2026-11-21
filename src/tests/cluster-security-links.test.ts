@@ -22,9 +22,6 @@ import { PRE_HELLO_PER_SOURCE, PreHelloGate, STREAM_WAIT_MS, WebTransportLinks, 
 import log from "../modules/logger";
 import { generateLocalCertificate } from "../utility/local_cert";
 
-// Security review S1: H2 (a cluster secret of its own, split by HKDF, and no replacing a live link), H1 (signed bus
-// envelopes) and M1 (the link listener's limits before the hello). Every secret here is a made-up test value.
-
 const CLUSTER_SECRET = "security-test-cluster-secret-0123456789abcdef";
 // Stands in for GATEWAY_GAME_SERVER_SECRET: the key client tickets keep, which must not open a node link.
 const GATEWAY_SECRET = "security-test-gateway-secret-0123456789abcdef";
@@ -558,8 +555,6 @@ test("the coordinator signs with the bus key of the same secret, and refuses to 
   const source = readFileSync(join(import.meta.dir, "..", "cluster", "coordinator-main.ts"), "utf8");
   expect(source).toContain("keys = requireClusterKeys();");
   expect(source).toContain("keys.bus)");
-  // Run it with no secret, from a directory with no .env file, so nothing fills the secret in.
-  // --preload: the process is not a test run, so bunfig.toml's preload (stand-ins for the generated config files, absent on a fresh checkout) does not reach it.
   const proc = Bun.spawn([process.execPath, "--preload", join(import.meta.dir, "preload-config.ts"), join(import.meta.dir, "..", "cluster", "coordinator-main.ts")], {
     cwd: tmpdir(),
     env: { PATH: process.env.PATH ?? "", SystemRoot: process.env.SystemRoot ?? "", REDIS_URL: "redis://127.0.0.1:1", REGION_ID: "test", CLUSTER_LINK_SECRET: "" },

@@ -1,19 +1,3 @@
-/**
- * Reverse of every player's `aoi.playersInAOI` set.
- *
- * `playersInAOI` on player P answers "which players can P see". This index
- * answers the inverse - "which players can see X" (i.e. which players have X in
- * their `playersInAOI`) - in O(1) instead of an O(all players) cache scan.
- *
- * That scan (`findPlayersWithTargetInAOI`) ran once per regenerating player
- * every SERVER_TICK, making the tick O(n^2); at ~2500 players a single tick
- * stopped fitting in its 1s budget and the whole event loop backed up.
- *
- * The index is only correct if EVERY mutation of a `playersInAOI` set is
- * mirrored here. All mutations live in aoi.ts; the helpers below are the only
- * supported way to change a set so the two stay in lockstep.
- */
-
 // viewedId -> set of viewerIds that currently have viewedId in their AOI.
 const viewers = new Map<string, Set<string>>();
 
@@ -40,11 +24,6 @@ export function removeViewer(viewedId: number | string, viewerId: number | strin
   if (set.size === 0) viewers.delete(key(viewedId));
 }
 
-/**
- * Replace `viewerId`'s entire visible set. `oldViewed` / `newViewed` are the
- * ids `viewerId` could see before and can see now; this reindexes only the
- * difference.
- */
 export function replaceVisibleSet(
   viewerId: number | string,
   oldViewed: Iterable<number | string>,

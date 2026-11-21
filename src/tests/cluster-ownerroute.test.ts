@@ -13,9 +13,6 @@ const { MAX_REPORT_BLOCKS, MAX_REPORT_NODES, NO_OWNER, REPORT_ALPHABET, decodeBl
 type BlockReport = import("../cluster/blockreport").BlockReport;
 type MapBlocks = import("../cluster/blocks").MapBlocks;
 
-// The Gateway is told who owns which block (POST /blocks) so a login can go straight to the owner of its saved point.
-// The same report, 3 x 2 blocks row by row, is the fixture of the Gateway's own test (src/modules/ownerroute.test.ts).
-//   row 0: node-1 node-2 (none)    row 1: node-2 node-1 node-1
 const FIXTURE: BlockReport = { map: "overworld", epoch: 7, blockPx: 4096, blocksX: 3, blocksY: 2, nodes: ["node-1", "node-2"], owners: "01.100" };
 const FIXTURE_TABLE: MapBlocks = {
   epoch: 7,

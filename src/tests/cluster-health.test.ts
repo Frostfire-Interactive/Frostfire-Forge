@@ -621,8 +621,6 @@ test("a claim that lost the entry to a third node between its read and its swap 
   const stop = trackPresence(directory, (previous, username) => { displaced.push([previous.nodeId, previous.playerId, username]); }, { health, storeHoldMs: 1_000 });
   const original = MemoryStore.prototype.incrBy;
   let failing: ReturnType<typeof spyOn> | null = null;
-  // Node c takes the entry after b read it. Then b's swap is refused and b reads again; the set update after its
-  // second swap fails once with the store down.
   const racing = spyOn(store, "incrBy").mockImplementationOnce((async (key: string, by: number) => {
     await new PlayerDirectory(store, "c").claim("Hero", "55", "main");
     failing = spyOn(store, "removeFromSet").mockImplementationOnce((async () => {

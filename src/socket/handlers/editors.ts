@@ -118,10 +118,6 @@ onPeerNews("tile-data", (news) => {
   }
 });
 
-/**
- * The editors that tell their other open copies of a save, so they ask for the list again: the packet, and who may
- * have the editor open. The lists are cached per process and shared by the nodes of a cluster through the cache.
- */
 const editorNudges = {
   creature: {
     packet: (by: string) => packetManager.creatureEditorUpdated({ by }),
@@ -183,10 +179,6 @@ onPeerNews("mailboxes", (news) => {
 
 type ChunkAt = { chunkX: number; chunkY: number };
 
-/**
- * The zones of a map saved in the map editor, put on this node's copy of it (the next LOAD_MAP sends them) and sent
- * to every player on it here, the saver too: their zone text and music follow the new outlines at once.
- */
 async function zonesSavedHere(mapName: string, zones: MapZone[]): Promise<void> {
   const file = `${mapName.replace(".json", "")}.json`;
   const world = getWorldMap(mapName);
@@ -197,18 +189,8 @@ async function zonesSavedHere(mapName: string, zones: MapZone[]): Promise<void> 
   for (const p of filterPlayersByMap(mapName)) sendPacket(p.wt, update);
 }
 
-/**
- * A world saved in the map editor: the chunks the asset server changed, and the graveyards, warps and zones saved with
- * them. `mapName` is the editor's name of it, which keys its unsaved edits.
- */
 type WorldSave = { world: string; mapName: string; changed: ChunkAt[]; graveyards?: any[]; warps?: any[]; zones?: MapZone[] };
 
-/**
- * A world saved in the map editor, which the asset server now holds: this node fetches its new collision and no-pvp
- * bits and takes its graveyards, warps and zones, its unsaved edits are dropped, and its players on it but the saver
- * (`exceptId`), who already shows the edits, fetch the changed chunks again. All of them, the saver too, are sent the
- * new zones. A world this node does not hold is left alone.
- */
 async function worldSavedHere(save: WorldSave, exceptId?: unknown): Promise<void> {
   const world = getWorldMap(save.world);
   if (!world) return;
@@ -230,13 +212,6 @@ async function worldSavedHere(save: WorldSave, exceptId?: unknown): Promise<void
   for (const other of filterPlayersByMap(save.world)) if (other.id !== exceptId) sendPacket(other.wt, update);
 }
 
-/**
- * Marks a map editor save of a map or world as under way, here and (cluster mode) on the other nodes of the region,
- * before anything is written: the asset server's word of the save, which can come before the save has finished, is
- * left to it (modules/mapsaves.ts). `tell` sends the region the save's news ("world-saved" or "map-saved"), which ends
- * the mark on each node once that node has taken the save in; `end` ends it here, and on the other nodes when no news
- * was sent ("map-not-saved").
- */
 async function startSaveHere(name: string): Promise<{ tell: (news: string, data: unknown) => void; end: (saved: boolean) => void }> {
   const map = name.replace(/\.json$/, "");
   const end = startMapSave(map);
@@ -254,11 +229,6 @@ async function startSaveHere(name: string): Promise<{ tell: (news: string, data:
   };
 }
 
-/**
- * Cluster mode: the map editor saves under way on other nodes, by node and map, oldest first. Each is marked here
- * (modules/mapsaves.ts) from its saver's word that it is under way until its news of how it ended; one whose news never
- * comes is ended as not saved after SAVE_ELSEWHERE_MS.
- */
 const savesElsewhere = new Map<string, Array<{ end: (saved: boolean) => void; timer: ReturnType<typeof setTimeout> }>>();
 const SAVE_ELSEWHERE_MS = 60_000;
 const saveKey = (from: unknown, map: string) => `${String(from)} ${map.replace(/\.json$/, "")}`;
@@ -312,11 +282,6 @@ onPeerNews("world-saved", async (news, from) => {
 /** A plain map saved in the map editor, as its players are shown it: the move of its origin in px when it grew left or up, its size in tiles, and the saved chunks. */
 type MapSaveView = { shiftX: number; shiftY: number; width: number; height: number; chunks: ChunkAt[] };
 
-/**
- * Shows a plain map's save to this node's players on it. One that grew left or up moved its origin: they all move with
- * it and are re-synced. Otherwise all take its new bounds (which drops trimmed-away chunks), and all but the saver
- * (`exceptId`), who already shows the edits, fetch the saved chunks again.
- */
 function showMapSaveHere(map: string, view: MapSaveView, exceptId?: unknown): void {
   const onMap = filterPlayersByMap(map);
   const { shiftX, shiftY, width, height } = view;
@@ -337,11 +302,6 @@ function showMapSaveHere(map: string, view: MapSaveView, exceptId?: unknown): vo
   for (const p of onMap) if (p.id !== exceptId) sendPacket(p.wt, update);
 }
 
-/**
- * Cluster mode: a plain map saved in the map editor on another node, which the asset server now holds. This node's
- * copy of the map file is brought up to date from it and the map read again, so that a reload here keeps the save; its
- * unsaved edits are dropped, and its players on it are shown the save.
- */
 async function mapSavedElsewhere(mapName: string, view: MapSaveView, zones?: MapZone[]): Promise<void> {
   await syncMapFromAssetServer(mapName);
   await reloadMap(mapName);
@@ -351,10 +311,6 @@ async function mapSavedElsewhere(mapName: string, view: MapSaveView, zones?: Map
   if (zones) await zonesSavedHere(mapName, zones);
 }
 
-/**
- * Cluster mode: a map made in the map editor, here or on another node, and loaded here, joins the region's maps (its
- * size published for the coordinator to split, its block table kept here). Nothing outside cluster mode.
- */
 async function mapJoinsCluster(name: string): Promise<void> {
   const props = mapPropertiesCache.find((m: any) => m.name === `${name}.json`);
   if (!props) return;
@@ -392,10 +348,6 @@ function tileEditsHere(map: string, relay: { senderId: unknown; mapName: unknown
   for (const p of targets) sendPacket(p.wt, packet);
 }
 
-/**
- * Cluster mode: live tile edits on another node. While an editor is open on the map here they are kept too, as their
- * node keeps them, for an editor that opens here before the map is saved; with none open, none here would drop them.
- */
 onPeerNews("editor-tile-edit", (news) => {
   const map = news?.map;
   const edits = news?.edits;
@@ -431,8 +383,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
   switch (type) {
 
       case "EDITOR_TILE_EDIT": {
-        // Relay live tile edits from one admin/editor to other admins editing the
-        // same map so concurrent editors stay in sync (no save-time clobbering).
         if (!currentPlayer || !currentPlayer.isAdmin) return;
         const editData = data as any;
         if (!editData || !Array.isArray(editData.edits)) return;
@@ -468,8 +418,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
       case "EDITOR_OPEN": {
         if (!currentPlayer) return;
         const mapName = currentPlayer.location.map;
-        // Live sync between editors is for admins. Anyone else who may open the editor (tools.tile_editor) still
-        // has to be answered: their editor waits for this before it opens, and waited for good without it.
         if (!currentPlayer.isAdmin) {
           sendPacket(wt, packetManager.editorSyncReady({ mapName }));
           break;
@@ -500,9 +448,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
 
       case "EDITOR_CLOSE": {
         if (!currentPlayer || !currentPlayer.isAdmin) return;
-        // Every map this connection edits, not only the one the player is on: an editor that closes because its
-        // player walked through a warp says so once the player is already on the next map, and the map it was
-        // editing would keep them as an editor, and its unsaved edits, until they left the game.
         for (const [mapName, editors] of activeEditorsByMap.entries()) {
           if (!editors.delete(wt.data.id)) continue;
           if (editors.size === 0) {
@@ -685,8 +630,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
       case "WEATHER_EDITOR_SAVE":
       case "WEATHER_EDITOR_DELETE": {
         if (!currentPlayer) return;
-        // The handler checks permission first, on every one of these. A change is shown by it to the players
-        // of each world that shows that weather, and its answer carries the weathers as they then stand.
         const result = await weatherEditor.handleEditorPacket(currentPlayer, type, data);
         if (result.kind === "data") {
           sendPacket(wt, packetManager.weatherEditorData(result.data));
@@ -730,8 +673,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
       case "LOOT_EDITOR_REMOVE_ITEM":
       case "LOOT_EDITOR_UPDATE_ITEM": {
         if (!currentPlayer) return;
-        // The handler checks permission first, on every one of these, and its
-        // answer says whether the change was made and how the tables now stand.
         const result = await lootEditor.handleEditorPacket(currentPlayer, type, data);
         sendPacket(wt, packetManager.lootEditorResult({ ...result, action: type }));
         break;
@@ -760,8 +701,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
       case "CONTROL_PANEL_QUERY":
       case "CONTROL_PANEL_ACTION": {
         if (!currentPlayer) return;
-        // The handler checks who is asking first, on every one of these. An
-        // action is one of the admin commands: it is run by this receiver.
         const result = await controlPanel.handlePanelPacket(currentPlayer, type, data, (run, options) => runForControlPanel(wt, run, options));
         if (result.kind === "data") {
           sendPacket(wt, packetManager.controlPanelData(result.data));
@@ -782,8 +721,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         break;
       }
 
-      // The "Cluster Nodes" overlay (F2 menu), open to any logged-in player: who owns which block of the map. Read-only, from memory; at
-      // most one answer a second per connection, and a request over the rate gets none.
       case "CLUSTER_DEBUG": {
         if (!currentPlayer) return;
         if (!debugRateLimit.allow(wt)) return;
@@ -820,8 +757,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
       }
 
       case "CREATE_MAP": {
-        // The map editor's New map (systems/mapcreate.ts): made blank on the asset server, taken in here, then the
-        // admin who asked is warped onto it (where /warp would put them: a world's spawn, a map's middle)
         if (!currentPlayer) return;
         const refuse = (message: string) => {
           sendPacket(wt, packetManager.notify({ message }));
@@ -937,9 +872,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
 
         const saveData = data as unknown as { mapName: string, chunks: any[], graveyards?: any, warps?: any, zones?: unknown };
 
-        // A world (modules/worldmaps.ts) holds no tiles here: the asset server writes the edited chunks into the
-        // world's packs, then this server fetches the new collision and no-pvp bits. Its size is fixed, and its
-        // warps and graveyards come from the map generator.
         if (typeof saveData?.mapName === "string" && getWorldMap(saveData.mapName)) {
           const worldName = saveData.mapName.replace(".json", "");
           // The asset server tells every node of the save too (/map-events): it is not taken in a second time
@@ -1015,8 +947,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         const saving = typeof saveData?.mapName === "string" ? await startSaveHere(saveData.mapName) : null;
         let saved = false;
         try {
-          // The zones are checked against the size the map will have after this save, before anything is written. A
-          // list, an empty one too, is always saved: an empty list removes every zone.
           const planned = ((await assetCache.get("maps")) as MapData[] | null)?.find((m: any) => m.name === saveData.mapName)?.data;
           const plannedSize = sizeAfterSave(planned ?? {}, (saveData as any).bounds);
           const zoneSave = zonesForSave(saveData.zones, plannedSize.width, plannedSize.height);
@@ -1106,8 +1036,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           let rebaseResult: { shiftX: number; shiftY: number; width: number; height: number } | null = null;
 
           if (mapIndex !== -1) {
-            // Update actual map layers with chunk data (growing / re-basing the
-            // origin for infinite-map expansion; empty expansion is trimmed away).
             const mapData = cachedMaps[mapIndex].data;
             rebaseResult = applyChunksWithRebase(mapData, saveData.chunks, (saveData as any).bounds);
 
@@ -1160,9 +1088,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
             log.warn(`Failed to save chunks to disk locally: ${diskError}`);
           }
 
-          // and made the asset server's copy, which this node then holds. The asset server's word of the save
-          // (/map-events), which can come before this, is left to the save (startSaveHere above): the map is not
-          // loaded again for its players, and the editor stays open
           try {
             await syncMapFromAssetServer(saveData.mapName);
           } catch (syncError) {
@@ -1183,9 +1108,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
             message: `Map saved successfully! ${saveData.chunks.length} chunks updated.`
           }));
 
-          // Shown to everyone on the map, on every node of the region (cluster mode). The SERVER-computed shift is
-          // used (empty expansion is trimmed away, so the real shift may be 0 even if the client claimed a negative
-          // expansion), and the persisted dims (what a reload will show), so live matches reload.
           const updatedMapData = cachedMaps[mapIndex]?.data;
           const tw = updatedMapData?.tilewidth || 32;
           const th = updatedMapData?.tileheight || 32;
@@ -1299,8 +1221,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         break;
       }
 
-      // Renames a particle and every NPC / spell / mount reference to it (particles.rename), and the in-memory lists
-      // of the maps' particle NPCs (their map files still name the old particle until edited)
       case "RENAME_PARTICLE": {
         if (!currentPlayer) return;
 

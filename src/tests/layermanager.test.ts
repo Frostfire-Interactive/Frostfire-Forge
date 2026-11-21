@@ -1,8 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { LayerManager, MAX_PLAYERS_PER_LAYER, blockOf } from "../services/layermanager";
 
-// Small cap and 100 px blocks keep the arithmetic readable; the first and
-// last tests use the real defaults (MAX_PLAYERS_PER_LAYER per block, from config/aoi.json; 4096 px blocks).
 const make = () => new LayerManager({ maxPlayersPerBlock: 3, blockSizePx: 100 });
 
 // x positions inside block 0 and block 1 for the 100 px blocks above
@@ -169,8 +167,6 @@ describe("updatePlayerBlock", () => {
     fill(lm, "main", B, 3, "q");     // layer_1 full in B
     fill(lm, "main", B, 3, "r");     // layer_2 full in B; layer_3 has room in B
     expect(lm.getPlayerLayer("b0")).toBe("main:layer_2");
-    // b0 (layer_2) walks into B: layer_1 and layer_2 are full there and only
-    // layer_3 has room. Walking in never moves a player up: b0 stays.
     expect(lm.updatePlayerBlock("b0", B, 0)).toBeNull();
     expect(lm.getPlayerLayer("b0")).toBe("main:layer_2");
     expect(lm.countInBlock("main:layer_2", blockOf(B, 0, 100))).toBe(4);

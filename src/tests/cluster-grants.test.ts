@@ -254,8 +254,6 @@ test("the owner's write that fails before anything is sent parks the grant again
   try {
     const id = (await h.owner.park(bones()))!;
     await wait(35);
-    // Guard: nothingWritten in Grants.write. Logged lost here, the items would be gone though nothing was written.
-    // Parked again under the same id (security review Important 3): two park lines for it, and no other id.
     const parkedIds = informed.map((line) => /^Hand-over (\S+) \(LOOT_TAKE\) parked/.exec(line)?.[1]).filter(Boolean);
     expect(parkedIds).toEqual([id, id]);
     expect(JSON.parse((await h.store.get(grantKey(id)))!)).toMatchObject({ ...bones(), id, owner: "b" });
@@ -744,9 +742,6 @@ test("the engine's grant writer is giveGrant once it has loaded", () => {
   grants.setWriter(previous);
 });
 
-// Cells phase 7, Task 21: the owner's checks wait while its node may not act as owner, and a run that is over has its
-// grants adopted by one other node.
-
 const { GRANT_ADOPT_TRIES, grantAdoptKey, runGrantsKey } = await import("../cluster/grants");
 
 /** A Grants of node `self`, run `run`, over `store`, whose recover action is recorded (and answered `online`). */
@@ -926,8 +921,6 @@ test("an adoption still reading when the node stops and attaches again with the 
   expect(b.written).toEqual([]);
 });
 
-// Security review H1: a grant record binds its id and the run that parked it, so a record listed or copied elsewhere
-// is not adopted there (the store seals it as well: storeseal.ts).
 test("a parked grant names its id, its owner and its run", async () => {
   const store = new MemoryStore();
   const dead = node(store, "a", 5, { mayAct: () => false });

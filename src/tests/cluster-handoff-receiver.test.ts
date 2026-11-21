@@ -4,10 +4,6 @@ import { receiverSource } from "./receiver-source";
 import { revivePlayer } from "../socket/revive";
 import { LoginPrefetch } from "../socket/loginprefetch";
 
-// Cells phase 6, Task 14: the arrival side of a player handoff (socket/arrival.ts) and its wiring in the receiver.
-// The receiver cannot be imported by a test (it imports the server, which starts it): its wiring is read from its
-// source, and the few pieces that decide something are cut out of it and run with the names they use handed in.
-
 mock.module("../controllers/sqldatabase", () => databaseModule({ default: async () => [] }));
 
 const cooldownManager = (await import("../services/cooldownmanager")).default;
@@ -332,10 +328,6 @@ test("adminMoveOf checks every field a remote summon brings, and refuses a bad o
 
 // ------------------------------------------------------------------ receiver.ts wiring (read from its source)
 
-/**
- * The source with its whole-line comments taken out, so that a check of the code's text is not met by a comment
- * that quotes it. A trailing comment stays: it cannot be told from a string that holds "//" without parsing.
- */
 function stripComments(text: string): string {
   const kept: string[] = [];
   let inBlock = false;
@@ -406,8 +398,6 @@ test("the login takes the arrival before the login switch, seeds it before the c
   const login = body("if (await classes.characterRequired(playerData.characterClass))", LOGIN_END);
   const take = login.indexOf("playerHandoff.takeArrival(");
   expect(take).toBeGreaterThan(0);
-  // The name given is the one the database gave for the ticket's account.
-  // Guard (review M4.2): taken only with the cluster on; a single node never takes one.
   expect(login).toContain('const arrival = clusterEnabled()\n      ? playerHandoff.takeArrival(String(wt.data?.ticketToken ?? ""), playerData.username, String(wt.data.id), playerData.characterId)\n      : null;');
   // Guard (review M4.3, M4.4): an arrival's death and corpse are the ones it brought, never the rows'.
   expect(login).toContain("const loginDeadState = arrivalState ? arrivalState.deadState : Number(playerData.isDead) || 0;");
@@ -440,8 +430,6 @@ test("the login takes the arrival before the login switch, seeds it before the c
   expect(login).toContain("mount_type: mount.mount_type,");
 });
 
-// The client walks the handoff gap and paces the draw after HANDOFF_DONE at the speed the node steps: the spawn the
-// player gets of themselves says whether they are mounted, and shows the mount sheet only then.
 test("the self spawn carries the mounted state, and the mount sheet only while mounted", () => {
   const login = body("if (await classes.characterRequired(playerData.characterClass))", LOGIN_END);
   const spawn = login.slice(login.indexOf("const spawnDataForAll = {"), login.indexOf("sendPacket(wt, packetManager.spawnPlayer(spawnDataForAll));"));

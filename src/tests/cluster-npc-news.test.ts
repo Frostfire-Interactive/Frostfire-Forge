@@ -1,11 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { receiverSource } from "./receiver-source";
 
-// Cluster mode: an NPC added, saved, moved or deleted in the editor on one node is shown to the players of its map on
-// every node of the region (peer news "npc"), and their map markers are sent again when it touched an inn or a shop.
-// The list itself is shared (the "npcs" cache key), and the other nodes are told it was written (services/assetCache.ts).
-// receiver.ts cannot be imported: these read its source.
-
 const receiver = receiverSource();
 const transpiler = new Bun.Transpiler({ loader: "ts" });
 

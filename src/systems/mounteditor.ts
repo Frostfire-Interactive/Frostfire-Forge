@@ -1,13 +1,3 @@
-/**
- * Mount editor: what the admin mount editor window (/mounteditor) asks for. Mounts are few, so the window is sent
- * every one of them and searches them itself, as the achievement editor does (achievements/editor.ts). Every field
- * of a save is checked here and written through systems/mounts.ts, which keeps the cached list in step; the login
- * workers are then handed the new list, since they build a player's collection from their own copy of it.
- *
- * A mount is known by its name everywhere (players' collections, achievement rewards), so a saved mount
- * keeps its name: it is never renamed. What it looks like when ridden is the sprite sheet mount_<name> on the asset
- * server (spritesheets/mounts/<name>.png); the editor says whether that sheet is there.
- */
 import query from "../controllers/sqldatabase";
 import log from "../modules/logger";
 import assetCache from "../services/assetCache";
@@ -24,11 +14,6 @@ export interface AssetLists {
   spriteSheets(): Promise<Record<string, SpriteSheetOption[]>>;
 }
 
-/**
- * The asset server's lists, as the other editors ask for them. Loaded when first asked for. The sheets are asked for
- * afresh each time: a mount's sheet is added to the asset server after the mount is made, and the editor says whether
- * it is there.
- */
 const assetServer: AssetLists = {
   icons: async () => (await import("./creatures/editor")).listIcons(),
   spriteSheets: async () => (await import("./creatures/editor")).listSpriteSheets(true),
@@ -45,10 +30,6 @@ export const sheetOf = (name: string) => `mount_${name.toLowerCase()}`;
 
 // -------------------------------------------------------------- permission
 
-/**
- * Admins, and anyone holding the editor's permission, from the permissions copied to the player at login, as the
- * item editor asks (itemeditor.ts). Asked on every packet, and of every other player when they are told to reload.
- */
 export function canUseEditor(player: any): boolean {
   if (!player || player.isGuest) return false;
   if (player.isAdmin) return true;
@@ -75,10 +56,6 @@ export interface MountInput {
 
 export type ReadResult = { ok: true; mount: MountInput } | { ok: false; errors: string[]; fields: Record<string, string> };
 
-/**
- * The mount an editor sent, or which fields are wrong. `originalName` is the saved mount being changed, or null for a
- * new one; `existing` is every mount there is.
- */
 export function readMount(raw: any, originalName: string | null, existing: Mount[]): ReadResult {
   const fields: Record<string, string> = {};
 
@@ -143,10 +120,6 @@ export async function buildEditorData(assets: AssetLists = assetServer): Promise
   };
 }
 
-/**
- * The mount list changed. The login workers build a player's collection from their own copy of the list, and leave
- * out a mount they do not know, so hand them the new one.
- */
 async function mountsChanged(): Promise<void> {
   try {
     await refreshAuthMounts();

@@ -124,8 +124,6 @@ function randomRings(seed: number, count: number): number[][][] {
   return rings;
 }
 
-// The rings are small and drawn on a tight grid, so many of them have needle-thin parts no cut in whole tiles can follow.
-// A cut may then come back null, but a cut that comes back always keeps the rules.
 test("cuts of random rings are whole tiles, keep out of or inside the other ring and never meet", () => {
   let pairs = 0, cuts = 0, refused = 0;
   for (const seed of [1, 7]) {

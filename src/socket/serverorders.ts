@@ -1,10 +1,6 @@
 import type { ServerOrder } from "../cluster/index";
 import { followWhitelist } from "../services/whitelist";
 
-// What an admin orders of the whole server: a restart, a shutdown. In a cluster each runs on every node of the region:
-// the node that was asked does its part and tells the others, and a node that starts later joins what is under way
-// (cluster/index.ts sendServerOrder, serverOrdersKept).
-
 export const RESTART_DELAY_MS = 15 * 60000;
 const NOTICE_MINUTES = 15;
 const NOTICE_SECONDS = 30;

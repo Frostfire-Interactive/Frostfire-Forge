@@ -1,20 +1,3 @@
-// How the coordinator lays a map's blocks out among nodes when the map has no
-// table yet: the blocks are walked in a snake (a column down, the next column
-// back up, along the longer side of the grid) and cut into runs, one run per
-// node, each run holding its share of the total weight. Neighbours in the walk
-// are neighbours on the map, so every run is one connected area and a node's
-// border with the next stays about one line of blocks long. With equal weights
-// the runs differ by at most one block (64 blocks among 3 nodes: 21, 22, 21),
-// where cutting whole columns gave 24, 20, 20.
-// Pure: the same inputs (in any order of node ids) give the same split. It is
-// only used for a map that has no table; a block already in a table is never moved by it.
-
-/**
- * Block key `"${bx},${by}"` to node id. `weight` (per block, default 1) is what the
- * runs are balanced by; a negative or non-number weight counts as 0. With more
- * nodes than blocks some nodes get none; with weights, a node whose share falls
- * inside one heavy block may get none either.
- */
 export function splitBlocks(
   blocksX: number,
   blocksY: number,

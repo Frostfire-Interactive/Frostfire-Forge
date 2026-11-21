@@ -6,17 +6,6 @@ import {
   requeueDespawnEntry,
 } from "../socket/batch_queue_utils";
 
-// Regression tests for the simultaneous-login invisibility race.
-//
-// `flushSpawnBatches` (receiver.ts) awaits sprite/animation lookups per
-// receiver. A second player logging in during that await queues a spawn into
-// the same per-receiver Map the flush is holding. The old flush then deleted
-// the entry (or cleared it to re-queue only its own stale remainder),
-// dropping the newly arrived spawn. The existing player never got the spawn
-// packet, so its client never created the entity and ignored every later
-// movement/stats update for it - exactly one side going blind, only sometimes
-// (it needs the 50ms flush timer to fire between the two logins' writes).
-
 function spawn(id: string): any {
   return { id, username: `player_${id}` };
 }
@@ -31,8 +20,6 @@ describe("spawn batch claim/requeue (simultaneous-login race)", () => {
     const claimed = claimBatchEntry(queue, "A");
     expect(claimed?.size).toBe(1);
 
-    // While the flush awaits sprite data, player C logs in: updatePlayerAOI
-    // queues C's spawn for A via the usual get-or-create pattern.
     await Promise.resolve(); // simulate the await window
     if (!queue.has("A")) queue.set("A", new Map());
     queue.get("A")!.set("C", spawn("C"));
@@ -127,8 +114,6 @@ describe("despawn batch claim/requeue", () => {
   });
 
   test("old blanket-clear pattern drops backpressured despawns", () => {
-    // Documents the second bug: `continue` on backpressure followed by a
-    // blanket `despawnBatchQueue.clear()` at the end of the flush.
     const queue = new Map<string, Set<string>>();
     queue.set("A", new Set(["B"]));
 

@@ -1,11 +1,6 @@
 import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
 import { characterDatabaseModule } from "./setup";
 
-// ------------------------------------------------------------ fake database
-// The statements the spell system sends about what players have learned, run
-// against an in-memory table. A statement it does not know is an error, so a
-// read that is not the cache filling itself fails the test that made it.
-
 type Row = Record<string, any>;
 let learnedTable: Row[];
 /** Every statement sent, with its values, in order. */

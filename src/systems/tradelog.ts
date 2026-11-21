@@ -50,9 +50,6 @@ const fromRow = (row: any): TradeRecord => ({
   created_at: Number(row.created_at),
 });
 
-// The latest trades, which is what the staff look through. Reads are answered
-// from these rows; a trade is written to the database with the swap itself, and
-// then added to them.
 const rows = tableCache<TradeRecord>("trade_log", async () =>
   (((await query(`SELECT ${COLUMNS} FROM trade_log ORDER BY id DESC LIMIT ?`, [TRADES_KEPT])) as any[]) || []).map(fromRow)
 );
@@ -72,14 +69,8 @@ async function remember(record: TradeRecord) {
 }
 
 const tradeLog = {
-  /**
-   * Adds a completed trade to `batch` (see services/batch), so it is written with the swap or not
-   * at all. The record handed back has its id once the batch is kept.
-   */
   write(batch: Batch, trade: Omit<TradeRecord, "id">): TradeRecord {
     const record: TradeRecord = { ...trade, id: 0, player_a: lower(trade.player_a), player_b: lower(trade.player_b) };
-    // The row is player A's character's, and names both characters by id as well as by the names they traded under.
-    // The ids are the database's to look up, in the statement itself, so the trade is added to the batch as it stands.
     batch.add({
       sql: "INSERT INTO trade_log (player_a, player_b, character_id, player_a_id, player_b_id, a_gave, b_gave, created_at) VALUES (?, ?, "
         + `${CHARACTER_ID}, ${CHARACTER_ID}, ${CHARACTER_ID}, ?, ?, ?)`,

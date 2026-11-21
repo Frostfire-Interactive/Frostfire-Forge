@@ -476,8 +476,6 @@ test("the old owner's hold is counted from the start of the order, not from the 
     const o = await p.order();
     p.linkB.blackhole = true;
     const before = clock;
-    // Guard: the deadline (preflight C5). The spawner holds a moving block's slots for OUTGOING_KEEP_MS from the
-    // collect; a deadline counted from the end of the call would hold the parts past it.
     expect(await p.a.run(o.id)).toBe("lost");
     expect(clock - before).toBe(11_000);
   } finally {
@@ -539,8 +537,6 @@ test("a block given away is released when the old owner's table shows it back on
   // b was committed and taken over at once; this node's cache missed b's version and reads the refill to itself.
   view = { ...HELD, epoch: 7 };
   expect(p.a.givenAway("main", 1, 0)).toBe(true);
-  // Guard: any owner at a higher epoch ends it (task 20 re-review Q2). A rule that wants another owner keeps the
-  // block empty for good here.
   view = { nodeId: "a", epoch: 9, since: clock };
   expect(p.a.givenAway("main", 1, 0)).toBe(false);
 });
@@ -591,8 +587,6 @@ test("a block lost at the deadline is released once its order is read back abort
     // Guard: the abort ends it (task 20 review I1): b never took the block in.
     await p.a.review();
     expect(p.a.givenAway("main", 1, 0)).toBe(false);
-    // Guard: lostAborted (task 20 re-review N1). The parts put back what other nodes still hold of the block, in
-    // reverse, with the data collect took; else the old owner spawns slots whose creatures other nodes hold.
     expect(p.A.lostAborted).toEqual([{ part: "objects", data: { loot: 3 } }, { part: "slots", data: [1, 2] }]);
     // Once only.
     await p.a.review();
@@ -623,8 +617,6 @@ test("a new order for a block still given away is aborted with nothing taken out
     // The coordinator aborts the lost order and orders the block again before this node reviews it.
     await p.orders.swap(first.id, "sending", "aborted");
     const second = await p.order();
-    // Guard: run refuses a block still given away (task 20 fix round 3). Without it the second export replaces the
-    // lost move's data, and its abort puts back nothing other nodes hold.
     expect(await p.a.run(second.id)).toBe("skipped");
     expect(await stateOf(p.orders, second.id)).toBe("aborted");
     expect((await p.orders.get(second.id) as any).reason).toBe("held");
@@ -667,14 +659,10 @@ test("at boot, the blocks of open orders that name this node as the old owner ar
     handle: () => () => {},
   };
   const mover = new BlockMover({ self: "a", orders, calls, ownerOf: () => HELD, parts: () => [] });
-  // Guard: the seed (task 20 review I1, P3). A restarted old owner whose table still names it must not spawn a
-  // block whose slots the new owner may hold.
   expect(await mover.seed()).toBe(3);
   expect([1, 2, 3, 4, 5].map((bx) => mover.givenAway("main", bx, 0))).toEqual([true, true, false, false, true]);
   await orders.swap(sending.id, "sending", "aborted");
   await orders.swap(rolledBack.id, "sending", "aborted");
-  // Guard (secfix A round 1): the last run may have sent the parts. Until b says it did not take the order in, the
-  // block stays given away; an aborted record may be an earlier revision written back.
   await mover.review();
   expect(asked.sort()).toEqual([`BLOCK_MOVE_HELD ${rolledBack.id}`, `BLOCK_MOVE_HELD ${sending.id}`].sort());
   expect([1, 2, 5].map((bx) => mover.givenAway("main", bx, 0))).toEqual([true, true, true]);
@@ -734,8 +722,6 @@ test("the new owner takes a block in only if its own table gives it to the old o
   const o = await p.order();
   const sending = (await p.orders.swap(o.id, "ordered", "sending"))!;
   const body = { order: sending, parts: { slots: [1, 2] } };
-  // Guard: the new owner's own check (task 20 review M2). A block taken over since, or one its table does not know
-  // at that epoch, would strand the parts here.
   for (const seen of [{ nodeId: "c", epoch: 8, since: T0 }, { ...HELD, epoch: 6 }, null]) {
     view = seen;
     expect((await p.b.accept(body, "a")).ok).toBe(false);
@@ -748,8 +734,6 @@ test("the new owner takes a block in only if its own table gives it to the old o
 });
 
 test("a new owner that may not own blocks (fenced, its lease lapsed, or its run taken) takes nothing in", async () => {
-  // Ownership I1: a node stalled past its takeover wakes up and handles a BLOCK_MOVE before its beat finds the
-  // tombstone. Taken in, the block would be committed to a node the coordinator has forgotten.
   let mayOwn = false;
   const p = pair({ canOwnB: () => mayOwn });
   const o = await p.order();
@@ -938,8 +922,6 @@ test("a new owner that answers only after the deadline: the old owner keeps hold
   });
   const o = await p.order();
   p.linkA.blackhole = true;
-  // Guard (limit run C-2125): the order reads aborted, b cannot say whether it took it in. Without the longer hold the
-  // old owner loses the parts at the deadline, and the creature slots remove their creatures.
   expect(await p.a.run(o.id)).toBe("restored");
   expect(clock - T0).toBeGreaterThanOrEqual(40_000);
   expect(p.A.lost).toEqual([]);
@@ -977,8 +959,6 @@ test("review in the middle of a hold leaves the block given away, though the new
   p.linkA.blackhole = true;
   expect(await p.a.run(o.id)).toBe("restored");
   expect(reviewed).toBe(true);
-  // Guard: the `deciding` skip in review. Without it review drops the entry while the parts are still out, and the
-  // block is spawnable while its creatures are foreign.
   expect(frozen).toEqual([true]);
   expect(p.A.restored).toEqual(["objects", "slots"]);
   expect(p.a.givenAway("main", 1, 0)).toBe(false);
@@ -1053,15 +1033,11 @@ test("the timeouts fit together", async () => {
   // A closed order is still there when an old owner that waited the longest reads it.
   expect(BLOCK_MOVE_TIMEOUT_MS + DECIDE_FOR_MS).toBeLessThan(ORDER_KEEP_MS);
   expect(MOVE_START_TIMEOUT_MS).toBeLessThan(MOVE_SEND_TIMEOUT_MS);
-  // A move is sent or put back before the creature spawner lets go of the moving slots (preflight C5). Read from the
-  // source: loading the spawner needs the database stood in for, and the module mock would reach other test files.
   const source = await Bun.file(new URL("../systems/creatures/spawner.ts", import.meta.url)).text();
   const keep = Number(/export const OUTGOING_KEEP_MS = ([\d_]+);/.exec(source)?.[1]?.replaceAll("_", ""));
   expect(keep).toBeGreaterThan(0);
   // One question to the new owner can start just before the deadline (secfix A round 1).
   expect(BLOCK_MOVE_TIMEOUT_MS + DECIDE_FOR_MS + HELD_ASK_TIMEOUT_MS).toBeLessThan(keep);
-  // The longer hold of an undecided move ends while the closed order can still be read (ORDER_KEEP_MS), and the parts
-  // are told to hold on past `keep`.
   expect(BLOCK_MOVE_TIMEOUT_MS + DECIDE_FOR_MS + UNDECIDED_HOLD_MS + HELD_ASK_TIMEOUT_MS + DECIDE_RETRY_MS).toBeLessThan(ORDER_KEEP_MS);
 });
 
@@ -1144,8 +1120,6 @@ test("a sent order whose new owner missed its beats is committed all the same, a
   c.setLive(["a"]);
   // b's beat runs out (3 s). One pass: b is missing once, not yet taken over.
   await c.pass(5_000);
-  // Guard: no live check (task 20 review C1). The block goes where its state is. Left on a, a respawns the slots b
-  // holds once they are no longer outgoing: two creatures for one slot.
   const committed = (await c.stored()).owners["1,0"]!;
   expect(committed.nodeId).toBe("b");
   expect(await stateOf(c.orders, o.id)).toBe("done");
@@ -1289,8 +1263,6 @@ test("a closed order is removed only at the revision the coordinator read", asyn
   const o = await c.orders.create({ map: "main", bx: 1, by: 0, from: "a", to: "b", blockEpoch: 7 });
   const aborted = (await c.orders.swap(o.id, "ordered", "aborted"))!;
   advance(ORDER_KEEP_MS + 1_000);
-  // Right after the coordinator reads the order, before it removes it, the order's key is written again at a new
-  // revision.
   const real = c.store.get.bind(c.store);
   let armed = true;
   const reads = spyOn(c.store, "get").mockImplementation(async (key: string) => {
@@ -1413,8 +1385,6 @@ test("a sent order is committed before the pass gives out any other block", asyn
   } finally {
     spy.mockRestore();
   }
-  // Guard: preflight C5. The first table write of the pass is the commit: the old owner's spawner reviews the slots it
-  // let go on any table change, and must find the block already its new owner's.
   expect(writes[0]).toBe("0,0=a 1,0=b 2,0=b");
   expect(writes).toHaveLength(2);
 });
@@ -1448,8 +1418,6 @@ test("end to end: the leader orders a move, the old owner carries it out, and th
 test("a new owner that does not answer the probe: the order is aborted unreachable with nothing taken out, frozen or held", async () => {
   const p = pair();
   const o = await p.order();
-  // Guard: the link is clogged both ways; the probe waits behind it. Without the probe the parts are taken out first and
-  // the block sits frozen for the whole hold.
   p.linkA.probeThrough = false;
   p.linkA.blackhole = true;
   const before = clock;

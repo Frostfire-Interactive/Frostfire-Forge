@@ -25,13 +25,6 @@ for (const spell of spells) {
 }
 
 const authentication = {
-    /**
-     * Claims the session of the token's account for connection `id`, then reads the rows of the account's active
-     * character. An account with no active character to play (none chosen, deleted, or another account's) is refused
-     * with `characterRequired`, and the session is let go. `known`: the rows of that character were read already
-     * (loginprefetch.ts, by character id), so a token of its account reads nothing more. `characterId`: the character
-     * a handoff brings (handoff.ts arrivingCharacter), played in place of the active one, which is not read again.
-     */
     async process(token: string, id: string, known?: number, characterId?: number): Promise<Authentication> {
         try {
 
@@ -64,10 +57,6 @@ const authentication = {
         }
     },
 
-    /**
-     * The rows of character `characterId` read ahead of the login of a player arriving by handoff: none (data null)
-     * when it is deleted or not account `accountId`'s.
-     */
     async prefetch(characterId: number, accountId: number): Promise<Authentication> {
         const character = await characterById(Number(characterId)).catch(() => null);
         if (!character || character.deletedAt !== null || character.accountId !== Number(accountId)) {
@@ -149,9 +138,6 @@ const authentication = {
                 })
             );
 
-            // By id, from the database: on this thread the guild and party
-            // systems hold no copy of their tables and would read every row.
-            // Guild members come from guild_members, leader (rank 0) first.
             const membersOf = (rows: any) => String(rows?.[0]?.members ?? "").split(",").map((member) => member.trim()).filter((member) => member);
             const namesOf = (rows: any) => ((rows || []) as any[]).map((row) => String(row.member));
             const [partyMembers, guildMembers] = await Promise.all([

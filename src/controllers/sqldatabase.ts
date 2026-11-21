@@ -82,11 +82,6 @@ function getNextWorker(): Worker {
 const CLIENT_QUERY_TIMEOUT_MS = 30000;
 let queryTimeoutMs: number | undefined;
 
-/**
- * How long one query may run, for this process, in place of the usual limits (15s in the worker, 30s here). For long
- * work such as schema changes (database_setup.ts): an ALTER TABLE on a large table rebuilds it and can take minutes,
- * and a query that times out in the worker is sent again while the first one still runs.
- */
 export function setQueryTimeout(ms: number): void {
   queryTimeoutMs = ms;
 }
@@ -122,16 +117,6 @@ export default async function query<T>(sql: string, values?: any[]): Promise<T[]
   return ask<T[]>({ sql, values: values || [] });
 }
 
-/**
- * Runs `statements` in order as one transaction, on one connection: all of them are kept, or none.
- * Answers with one result for each statement, as `query` would give it. Throws when nothing was
- * kept: a GuardError when a statement marked `mustChange` changed no rows, the database's own error
- * otherwise. See TransactionStatement for what `mustChange` asks of a statement.
- *
- * `options.openBy` (ms since the epoch): the transaction is refused whole, with nothing sent, if it
- * cannot open by then, however long the worker waited for a connection (LateError, sqltransaction.ts).
- * Without it the message to the worker is what it always was.
- */
 export async function transaction(statements: TransactionStatement[], options: { openBy?: number } = {}): Promise<any[]> {
   if (statements.length === 0) return [];
   return ask<any[]>(options.openBy === undefined ? { transaction: statements } : { transaction: statements, openBy: options.openBy });

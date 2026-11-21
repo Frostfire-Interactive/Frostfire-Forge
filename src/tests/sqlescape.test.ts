@@ -27,11 +27,6 @@ const HOSTILE_STRINGS = [
   "ünïcødé ❄ \u{1F525}",
 ];
 
-/**
- * Splits a statement into its single-quoted string literals and the rest, following MySQL's
- * documented rules for reading them. It is a model of those rules, not a server.
- * `backslashEscapes` false is the NO_BACKSLASH_ESCAPES sql_mode (also how SQLite and Postgres read).
- */
 function readLiterals(sql: string, backslashEscapes: boolean) {
   const sequences: Record<string, string> = { "0": "\0", b: "\b", n: "\n", r: "\r", t: "\t", Z: "\x1a" };
   const literals: string[] = [];

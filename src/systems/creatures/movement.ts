@@ -44,19 +44,10 @@ export function stop(creature: CreatureInstance): void {
   creature.move = null;
 }
 
-/**
- * Snap onto a waypoint reached within ARRIVE_EPSILON. The next leg was planned
- * from the waypoint itself, and starting it a fraction of a pixel off can be
- * enough for the footprint to clip a wall and stick.
- */
 function arriveAt(grid: NavGrid, pos: Point, target: Point): Point {
   return grid.isWalkable(target.x, target.y) ? { x: target.x, y: target.y } : pos;
 }
 
-/**
- * Advance along the current path by speed * dt, sliding on walls. `place` is
- * called with the final position so the registry can re-bucket the creature.
- */
 export function advance(
   creature: CreatureInstance,
   grid: NavGrid,

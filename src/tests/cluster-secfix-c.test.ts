@@ -8,9 +8,6 @@ import { RedisStore, STORE_CALL_MS, STORE_STALL_MISSES } from "../cluster/rediss
 import { StoreHealth } from "../cluster/health";
 import { nodeLinkBindError, redisUrlProblem } from "../cluster/config";
 
-// Security fix group C (phase 7 review): M3 (a deadline on every Redis command), H1 (the start check for a Redis
-// password), L2 (no link listener on every interface in production), L3 and L4 (the Docker files).
-
 // ---------------------------------------------------------------- M3
 
 // A Redis that holds the connection: its commands answer, or never do.

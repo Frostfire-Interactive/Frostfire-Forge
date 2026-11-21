@@ -1,10 +1,3 @@
-/**
- * Corpse loot. One roll per corpse (not per player), owned by whoever the
- * tapping rules award it to. Items go to the loot owner; money is split
- * evenly between everyone eligible when the owner loots it. Pure state; the
- * socket layer performs the inventory/currency writes.
- */
-
 export interface CorpseItem {
   index: number;
   itemName: string;
@@ -53,10 +46,6 @@ export class CorpseLootStore {
   /** party key -> round-robin cursor */
   private rotation = new Map<string, number>();
 
-  /**
-   * Round-robin owner for a group: rotates through the eligible members
-   * (sorted for stability) each kill. Solo kills always go to the tapper.
-   */
   pickOwner(groupKey: string | null, eligible: string[]): string | null {
     if (eligible.length === 0) return null;
     if (!groupKey || eligible.length === 1) return eligible[0];

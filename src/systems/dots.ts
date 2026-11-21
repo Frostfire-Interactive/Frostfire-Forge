@@ -74,8 +74,6 @@ function stopSchedulerIfIdle() {
 }
 
 export async function applyDot(caster: any, target: any, spell: SpellData, baseEffect: SpellEffect) {
-  // Classic WoW: each tick also gets a share of the caster's damage stat,
-  // fixed now, at application. Creature casters have no stats: no bonus.
   const effect = withPeriodicBonus(baseEffect, caster?.stats?.stat_damage || 0);
   const valuePerTick = Math.floor(Number(effect.value) || 0);
   const durationSec = Number(effect.duration) || 0;
@@ -100,9 +98,6 @@ export async function applyDot(caster: any, target: any, spell: SpellData, baseE
 
   const existing = list.find((d) => d.id === spellName);
   if (existing) {
-    // Shared timer: reapplying refreshes the duration; stackable
-    // DoTs also increment the stack count up to their cap.
-    // The tick schedule is preserved so reapplying never delays the next tick.
     existing.stacks = stackable ? Math.min(existing.stacks + 1, maxStacks) : 1;
     existing.damagePerTick = valuePerTick;
     existing.interval = intervalSec;
@@ -214,8 +209,6 @@ async function tickPlayerDot(targetKey: string, dot: DotInstance): Promise<boole
     setPlayerPvp(caster, true);
     caster.last_attack = performance.now();
   }
-  // A caster on another node (a spell sent as a player_hit, or a caster handed off since): the target still enters
-  // PvP, and the caster's node is told so it can do the same for its player.
   const remote = !caster && dot.casterId && dot.casterId !== String(target.id) ? remoteCaster : null;
   if (remote) {
     setPlayerPvp(target, true);
@@ -306,8 +299,6 @@ registerSpellEffect("damage_over_time", ({ caster, target, spell, effect }) => {
 
 registerSpellEffect("heal_over_time", ({ caster, target, spell, effect }) => {
   if (!target) return;
-  // Healing uses negative damage internally; force the value negative
-  // so the payload renders as a buff (isDebuff: false).
   const healEffect = { ...effect, value: -Math.abs(Number(effect.value) || 0) };
   applyDot(caster, target, spell, healEffect);
 });

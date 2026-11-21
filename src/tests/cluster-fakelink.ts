@@ -1,10 +1,5 @@
 import type { LinkSender } from "../cluster/linktransport";
 
-// A pair of in-memory links for cluster tests: what one side sends reaches the
-// other side's handler on a later macrotask, as a JSON copy, the way a real
-// link decodes a frame. Each side holds one handler per kind (NodeLinks throws
-// on a second; a test that attaches twice uses a new pair).
-
 export const settle = async () => { for (let i = 0; i < 5; i++) await new Promise<void>((resolve) => setImmediate(resolve)); };
 
 export class FakeLink implements LinkSender {
@@ -50,10 +45,6 @@ export class FakeLink implements LinkSender {
     for (const h of this.upHandlers) h(this.other.self);
     for (const h of this.other.upHandlers) h(this.self);
   }
-  /**
-   * While blackholed, the old owner's BLOCK_MOVE_PROBE call and its answer still go through (true, the default): a test
-   * that blackholes the link before a move means the call after the probe. A test of the probe itself sets it false.
-   */
   probeThrough = true;
   private probeSeqs = new Set<number>();
   private letsProbeThrough(kind: string, data: any): boolean {
@@ -73,11 +64,6 @@ export function linkPair() {
   return { a, b };
 }
 
-/**
- * In-memory links between any number of nodes, all up at the start. As with FakeLink, a message reaches the
- * other side's handler on a later macrotask, as a JSON copy. `setUp(peer, up)` brings one link down or up and
- * runs the peer hooks on both of its ends.
- */
 export class MeshLink implements LinkSender {
   peers = new Map<string, MeshLink>();
   /** Every reliable message sent, in order. */
@@ -104,9 +90,6 @@ export class MeshLink implements LinkSender {
     return true;
   }
   on(kind: string, handler: (data: any, from: string) => void) {
-    // A second handler replaces the first, so a node can detach and attach again on the same link. The
-    // peer hooks of the earlier attach stay in the lists: a component must ignore them after its detach
-    // (LinkCalls does, with a token per attach), or they run again beside the new ones.
     this.handlers.set(kind, handler);
   }
   onDatagram(handler: (data: Uint8Array, from: string) => void) { this.datagramHandlers.push(handler); }

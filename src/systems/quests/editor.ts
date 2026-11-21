@@ -1,7 +1,3 @@
-/**
- * Quest editor: validation and CRUD for the admin quest editor window.
- * Mirrors systems/itemeditor.ts in shape and permission style.
- */
 import query from "../../controllers/sqldatabase";
 import log from "../../modules/logger";
 import assetCache from "../../services/assetCache";
@@ -375,14 +371,8 @@ export async function validateQuest(payload: QuestSavePayload): Promise<string[]
   return errors;
 }
 
-// Saves replace child rows (delete + insert), so two saves for the same quest
-// must never interleave - a double-clicked Save (or two admins) would
-// otherwise duplicate every objective, reward and prerequisite. A per-quest
-// promise chain serializes them.
 const saveQueues = new Map<string, Promise<void>>();
 
-// In-flight creates by client key. A double-submitted new quest (same draft,
-// no id yet) shares the first execution's result instead of inserting twice.
 const inFlightCreates = new Map<string, Promise<SaveResult>>();
 
 export async function save(payload: QuestSavePayload): Promise<SaveResult> {
@@ -417,11 +407,6 @@ export async function save(payload: QuestSavePayload): Promise<SaveResult> {
   }
 }
 
-/**
- * Drop giver/ender links to NPCs that no longer exist (deleted since the quest
- * was assigned), so saving the quest cleans them up instead of failing. Skipped
- * when the NPC list can't be read: an unreadable cache must not wipe links.
- */
 async function pruneDeletedNpcLinks(payload: QuestSavePayload): Promise<void> {
   let npcIds: Set<number>;
   try {
@@ -442,11 +427,6 @@ async function pruneDeletedNpcLinks(payload: QuestSavePayload): Promise<void> {
   }
 }
 
-/**
- * A save whose statement fails has written the ones before it, and may have
- * written that one too: the definitions held are read again, so they are
- * what the database has.
- */
 async function saveInner(payload: QuestSavePayload): Promise<SaveResult> {
   try {
     return await writeQuest(payload);
@@ -507,9 +487,6 @@ async function writeQuest(payload: QuestSavePayload): Promise<SaveResult> {
     )) as any;
     questId = Number(result?.insertId ?? result?.lastInsertRowid);
     if (!Number.isFinite(questId)) {
-      // The database did not say which id it gave the row: the definitions
-      // are read again, and the new quest is the one of that name that was
-      // not there before.
       await reload();
       const added = getCachedQuestsSync().filter((q) => q.name === row.name && !known.has(q.id)).map((q) => q.id);
       questId = added.length > 0 ? Math.max(...added) : NaN;

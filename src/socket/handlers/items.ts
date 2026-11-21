@@ -412,8 +412,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         if (!item || !bagSlot) return;
         if (!bags.SLOTS.includes(bagSlot)) return;
 
-        // One bag change at a time for a player, and none while a batch of theirs (mail, a sale) counts
-        // what is in use: two equips read "none equipped" side by side, and one bag filled two slots.
         await atomically([currentPlayer.username], async () => {
           const inventoryItem = currentPlayer.inventory.find((invItem: any) =>
             invItem.name.toLowerCase() === String(item).toLowerCase() &&
@@ -606,9 +604,6 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           break;
         }
 
-        // Re-read the inventory instead of patching the cached list by hand: an
-        // item the player did not hold before needs its full details (quality,
-        // icon, type), and the client cannot draw an entry without them.
         currentPlayer.inventory = await patchInventoryBagSlots(await inventory.get(currentPlayer.username), currentPlayer.username);
         playerCache.set(currentPlayer.id, currentPlayer);
         sendPacket(wt, packetManager.inventory(currentPlayer.inventory, await getInventorySlots(currentPlayer)));

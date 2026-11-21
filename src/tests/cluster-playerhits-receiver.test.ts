@@ -2,11 +2,6 @@ import { afterEach, beforeEach, expect, mock, test } from "bun:test";
 import { databaseModule } from "./setup";
 import { receiverSource } from "./receiver-source";
 
-// The receiver's helpers for a player's hit across a border (withMirrors, remoteHit, hitRemotePlayer,
-// applyRemotePlayerHit). socket/receiver.ts cannot be imported by a test (it imports the server, which
-// starts it), so, as the other receiver tests do, the code under test is read from its source and run
-// with the names it uses handed in. The AOI, mirror, attacker and refusal code is the real thing; the
-// owner's side of the link is a stand-in written in each test.
 mock.module("../controllers/sqldatabase", () => databaseModule({
   default: async (_sql: string, _params?: any[]) => [],
 }));
@@ -386,10 +381,6 @@ test("withMirrors adds the mirrors in range on the caster's layer, also when the
   caster.location.position = "10,20";
   expect(helpers().withMirrors(wt, 100, "forest.json").map((p: any) => p.id)).toEqual(["t1"]);
 });
-
-// ------------------------------------------------ the HOTBAR's remote branches
-// The cast flow cannot be run on its own, so these read its source for the three rules of the branches
-// around a mirrored target.
 
 const hotbarRemoteCalls = [...source.matchAll(/await hitRemotePlayer\(currentPlayer, target, remoteHit\([^\n]*(?:\n[^\n]*){0,6}/g)].map((m) => m[0]);
 

@@ -5,12 +5,6 @@ import { grants, handOverOf } from "./grants";
 import log from "../modules/logger";
 import { handedVerdict } from "../systems/itembounds";
 
-/**
- * Items across the border (spec §4). A corpse, ground loot or chest belongs to the node that owns it. A player
- * of a neighbouring node acts on it by a call to that owner, which checks the player's mirror and takes the
- * items; the answer carries them, and the player's own node writes them.
- */
-
 /** The room in a player's bags: free slots, and the lowercase names of what they hold (more of one takes no slot). */
 export interface BagRoom {
   free: number;
@@ -58,24 +52,16 @@ export function itemOwner(name: ItemCall, id: string | number): string | null {
   return ghosts.ownerOf(KINDS[name], id);
 }
 
-/**
- * Owner side: answers `name` for a player of the calling node. The player must be mirrored here, from that
- * node, under the name the call gives; anything else is "not_found".
- */
 export function serveItems(name: ItemCall, fn: ItemServer): () => void {
   return linkCalls.handle(name, async (body: any, from: string) => {
     const actor = mirrorPlayers.get(String(body?.actor?.id));
     const sameName = String(actor?.username ?? "").toLowerCase() === String(body?.actor?.username ?? "").toLowerCase();
     if (!actor || actor.mirrorFrom !== from || !sameName) return { ok: false, reason: "not_found" };
     const answer = await fn(actor, body);
-    // The items are off the corpse, the ground or the chest from here on, and in no inventory until the player's
-    // node writes them: this line is the only record if the answer is lost.
     if (TAKES.has(name) && answer?.ok) {
       const handed = describeHandOver(answer);
       if (handed) {
         log.info(`${name} from ${from}: ${actor.username} (${actor.id}) was handed ${handed}`);
-        // Parked before the answer goes out (grants.ts): an answer that is lost is given by recovery, and one that
-        // arrives is claimed. Without a store it is null, and the answer is phase 5's.
         const grantId = await grants.park({ username: String(actor.username), ...handOverOf(answer), call: name });
         if (grantId) return { ...answer, grantId };
       }
@@ -97,10 +83,6 @@ export function describeHandOver(answer: ItemAnswer): string {
   return parts.join(", ");
 }
 
-/**
- * The item rows an answer to a take hands over, as the receivers write them (socket/receiver.ts): `items` (a corpse,
- * a chest) or `item` as a ground loot row (`{ item, quantity }`). Counts and names are as they came, for the bounds.
- */
 export function handedRows(answer: ItemAnswer): Array<{ itemName: unknown; quantity: unknown }> {
   if (Array.isArray(answer.items)) return answer.items.map((row: any) => ({ itemName: row?.itemName, quantity: row?.quantity }));
   const row: any = answer.item;
@@ -108,11 +90,6 @@ export function handedRows(answer: ItemAnswer): Array<{ itemName: unknown; quant
   return [];
 }
 
-/**
- * Player side: asks the owner of the thing `id` names. Null when nobody mirrors it here (the caller acts on it
- * here, as before); `{ ok: false, reason: "failed" }` when the link fails (not retried: it may have been applied).
- * A take whose answer names a parked hand-over (`grantId`) is answered here only once this node has claimed it.
- */
 export async function askOwner(name: ItemCall, id: string | number, player: any, body: Record<string, unknown>): Promise<ItemAnswer | null> {
   const owner = itemOwner(name, id);
   if (!owner) return null;
@@ -120,9 +97,6 @@ export async function askOwner(name: ItemCall, id: string | number, player: any,
   if (outcome.ok) {
     const answer = outcome.answer;
     const grantId = answer?.ok && TAKES.has(name) ? answer.grantId : undefined;
-    // Security review M4: what an owner hands over is written here only when it is in bounds (itembounds.ts). One
-    // out of bounds is refused whole and logged lost by name; its hand-over is claimed first, so no recovery writes it.
-    // Guard (test "an owner's answer out of bounds is refused whole, claimed, and logged lost by name").
     if (answer?.ok && TAKES.has(name)) {
       const handed = handedRows(answer);
       const source = `${name} of ${id} on ${owner}${typeof grantId === "string" ? ` (hand-over ${grantId})` : ""}`;
@@ -135,9 +109,6 @@ export async function askOwner(name: ItemCall, id: string | number, player: any,
         if (parked) await grants.claim(grantId);
         return { ok: false, reason: "failed" };
       }
-      // A bound not read yet here (fix round 1): the hand-over is not claimed, so the owner's recovery writes it once
-      // the bounds are known. Guard (test "an owner's answer whose copper cannot be checked yet is left parked for the
-      // owner's recovery").
       if (verdict === "not-ready") {
         if (!parked) log.error(`${source} for ${player.username} is lost: ${describeHandOver(answer)} could not be checked yet and no hand-over was parked`);
         return { ok: false, reason: "failed" };
@@ -151,9 +122,6 @@ export async function askOwner(name: ItemCall, id: string | number, player: any,
     return answer;
   }
   if (TAKES.has(name)) {
-    // A call that never ran took nothing (linkcalls.ts neverRan); any other failure may have been applied. A link that
-    // is not up sends nothing, and is not worth a line. With the cluster store attached, what the owner took is parked
-    // and its recovery gives it.
     if (!neverRan(outcome)) log.warn(`${name} of ${id} on ${owner} for ${player.username} ended ${outcome.why}: ${grants.attached() ? `if ${owner} took anything for them, its recovery gives it` : "what the owner took for them may be lost"}`);
     else if (outcome.why !== "down") log.warn(`${name} of ${id} on ${owner} for ${player.username} ended ${outcome.why}: it did not run, so nothing was taken`);
   }

@@ -1,11 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
-// Cluster mode: every node spawns the gathering nodes of its own blocks, from the areas its spawner was given
-// (systems/gathering/index.ts). The areas are shared (the "gathering_areas" table cache); a save in the editor on one
-// node is told to the region's other nodes (peer news "gathering-areas"), and each gives its spawner the areas again
-// and tells its own open editors. index.ts loads the whole engine: these read its source.
-
 const source = readFileSync(new URL("../systems/gathering/index.ts", import.meta.url), "utf8");
 const transpiler = new Bun.Transpiler({ loader: "ts" });
 

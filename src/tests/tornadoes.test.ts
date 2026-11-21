@@ -179,8 +179,6 @@ test("a pull moves a player a little every 1/30 s, evenly, not a lump every 100 
   // a step on (nearly) every tick, each of a px or two: the part of a px left over is carried, not lost
   expect(moves.length).toBeGreaterThanOrEqual(28);
   const steps = moves.slice(1).map((m, i) => Math.hypot(m.x - moves[i].x, m.y - moves[i].y));
-  // (a whole px or two each way, a little more as it nears the middle, where it pulls harder: before, a lump of 4 to
-  // 11 px every third tick)
   expect(Math.max(...steps)).toBeLessThan(3.5);
   const start = Math.hypot(moves[0].x - one.x, moves[0].y - one.y), end = Math.hypot(moves.at(-1)!.x - one.x, moves.at(-1)!.y - one.y);
   // about the pull's speed out there over the second (not stalled by rounding)
@@ -238,8 +236,6 @@ test("a tornado is named by a world entity id, and none forms when no id can be 
   expect(errors).toHaveBeenCalled();
 });
 
-// Cluster mode: a tornado another node owns, shown here near the border (setRemoteTornado), pulls and hurts this node's
-// players as its own do. Only its owner moves it: its place here changes only by moveRemoteTornado.
 test("another node's tornado pulls and hurts the players here, and is not moved by this node", async () => {
   expect(t.setRemoteTornado({ id: "t900", map: "overworld", x: 5030, y: 5000 })).toBe(true);
   await run(0, 2_950);

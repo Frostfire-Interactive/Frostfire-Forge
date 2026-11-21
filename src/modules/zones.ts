@@ -1,8 +1,3 @@
-// Zones: named areas drawn on a map (map editor, "Zones" layer) or written by the world generator. A player who
-// walks into one sees its text and hears its music. A world keeps them in manifest.zones, a plain Tiled map in a
-// top-level "zones" key. Every number is in tiles. The asset server holds a copy of these rules
-// (Frostfire-Forge-Assets/src/modules/zones.ts).
-
 import { outlineMeets, ringMinus, ringRelation } from "./zoneoverlap";
 
 export interface MapZone {
@@ -52,11 +47,6 @@ function ringArea(ring: number[][]): number {
   return Math.abs(twice) / 2;
 }
 
-/**
- * A zone's rings with every ring that lies inside another one left out. A ring inside another would be a hole (a
- * point is inside when an odd number of rings surround it), so this fills the holes. Rings that lie apart are kept,
- * in their order.
- */
 export function fillHoles(outline: number[][][]): number[][][] {
   const largestFirst = outline.map((_, i) => i).sort((a, b) => ringArea(outline[b]!) - ringArea(outline[a]!));
   const kept: number[] = [];
@@ -78,13 +68,6 @@ function boxOf(outline: number[][][]): MapZone["bbox"] {
 
 const listed = (names: string[]) => names.join(", ");
 
-/**
- * Zones pulled apart where they partly overlap. Of two zones that overlap, the larger one is cut back to the edge of
- * the smaller one, so every place stays in the zone it was in (in game the smallest zone wins). A zone wholly inside
- * another one stays as it is. The cut runs along the smaller zone's border, and where it crosses between tile corners
- * it moves to a corner outside the smaller zone. A zone whose cut cannot be made in whole tiles keeps its border. The
- * zones keep their order, and each note says what was done to which zone.
- */
 export function separateZones(zones: MapZone[]): { zones: MapZone[]; notes: string[] } {
   const sizes = zones.map(zoneSize);
   const order = zones.map((_, i) => i).sort((a, b) => sizes[a]! - sizes[b]! || a - b);
@@ -222,10 +205,6 @@ export function zonesOfKind(zones: unknown, kind: string): Array<{ name: string;
   return found;
 }
 
-/**
- * Puts a map's zones on its data, with the desert and snow zones the sandstorm and blizzard read
- * (both worked out again from the zones, and removed when none of that kind is left).
- */
 export function applyZones(data: { zones?: unknown; deserts?: unknown; snowfields?: unknown }, zones: MapZone[]): void {
   data.zones = zones;
   const deserts = zonesOfKind(zones, "desert"), snowfields = zonesOfKind(zones, "snow");
@@ -233,19 +212,11 @@ export function applyZones(data: { zones?: unknown; deserts?: unknown; snowfield
   if (snowfields.length) data.snowfields = snowfields; else delete data.snowfields;
 }
 
-/**
- * The zones a map save carries: nothing when the save has none (the zones stay as they are), the cleaned list for
- * an array, and an error for a bad list or for anything else in its place.
- */
 export function zonesForSave(raw: unknown, widthTiles: number, heightTiles: number): { zones?: MapZone[] } | { error: string } {
   if (raw === undefined || raw === null) return {};
   return cleanZones(raw, widthTiles, heightTiles);
 }
 
-/**
- * The size in tiles a plain map will have once a save's chunks are in (assetloader.ts applyChunksWithRebase grows it
- * by the bounds the editor claims, left and up as well): its zones are checked against it.
- */
 export function sizeAfterSave(
   mapData: { width?: number; height?: number; layers?: any[] },
   bounds?: { minTileX?: number; minTileY?: number; width?: number; height?: number } | null,

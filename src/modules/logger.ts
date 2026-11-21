@@ -17,12 +17,6 @@ const types = {
 const ANSI = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])/g;
 const CONTROL = /[\x00-\x09\x0b-\x1f\x7f]/g;
 
-/**
- * A message as it is written: no terminal escapes and no carriage returns,
- * and each line after the first indented, so text a player sent can neither
- * restyle the console nor pose as an entry of its own (entries start at the
- * margin with their time).
- */
 export function cleanLogMessage(message: string): string {
   return String(message)
     .replace(ANSI, "")

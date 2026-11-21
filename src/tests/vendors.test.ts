@@ -2,10 +2,6 @@ import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
 import { characterDatabaseModule } from "./setup";
 import { GuardError } from "../controllers/sqltransaction";
 
-// Buying from and selling to an NPC. The real vendor, inventory, currency, bag
-// and equipment systems run against a fake database, and after each deal what
-// the player holds there is compared with what the deal should have moved.
-
 // ------------------------------------------------------------ fake database
 
 type Row = Record<string, any>;

@@ -1,7 +1,3 @@
-// Where a gathering node can stand: a random walkable tile inside its area's circle that no other node of the layer
-// stands on, far enough from every other node that their pictures never overlap (USER REQUEST 2026-10-17: "The
-// items should never overlap each other"). The spawner and the editor's density preview both use it, so the preview
-// shows what spawns.
 import type { GatherGrid, Point, Rng } from "./types";
 
 /** Tries for one spot before the slot waits and tries again later. */
@@ -14,19 +10,11 @@ export interface Spot extends Point {
   tile: string;
 }
 
-/**
- * Whether two nodes' pictures stay apart. Each is drawn inside a square of its size centred on its spot, so two are
- * apart when their squares, with NODE_GAP between them, do not overlap on at least one axis.
- */
 export function apart(a: { x: number; y: number; size: number }, b: { x: number; y: number; size: number }): boolean {
   const need = (a.size + b.size) / 2 + NODE_GAP;
   return Math.abs(a.x - b.x) >= need || Math.abs(a.y - b.y) >= need;
 }
 
-/**
- * A random free walkable tile inside the circle, as the anchor a node stands on. `clear`, when given, also has to
- * accept the spot (the spawner checks it against the other nodes). Null when none was found.
- */
 export function pickSpot(
   grid: GatherGrid,
   area: { x: number; y: number; radius: number },
@@ -55,10 +43,6 @@ export function pickSpot(
   return null;
 }
 
-/**
- * Where `count` nodes could stand at once: what the editor's preview draws, kept apart as the spawner keeps them.
- * Fewer when the area has no more room.
- */
 export function previewSpots(grid: GatherGrid, area: { x: number; y: number; radius: number; size?: number }, count: number, r: Rng): Spot[] {
   const taken = new Set<string>();
   const spots: Spot[] = [];

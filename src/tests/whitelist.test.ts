@@ -4,11 +4,6 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import { receiverSource } from "./receiver-source";
 
-// ------------------------------------------------------------ fake database
-// The two statements the whitelist switch sends, run against an in-memory
-// table. A statement it does not know is an error, so a read that is not the
-// load of the list fails the test that made it.
-
 type Row = { realm: string; username: string };
 let table: Row[];
 /** Every statement sent, with its values, in order. */
@@ -213,8 +208,6 @@ describe("everything that reads the switch reads the live value", () => {
     expect(receiver).toContain(LOGIN_CHECK);
     expect(receiver).toContain("if (!isWhitelistEnabled()) {");
     expect(receiver).toContain("whitelistEnabled: isWhitelistEnabled(),");
-    // Never the value itself: a copy taken at import would not change.
-    // (The import lines are left out: they name the function, they do not use its value.)
     expect(receiver.replace(/^import .*$/gm, "").match(/isWhitelistEnabled(?!\(\)|,)/g)).toBeNull();
   });
 

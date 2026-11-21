@@ -1,12 +1,6 @@
 import log from "../modules/logger";
 import type { ClusterStore } from "./store";
 
-// Numbers of layers above 1, the same across the cluster (spec §2): two nodes
-// that each opened "layer 2" of a map for their own crowds would put two
-// crowds under one name. One counter per map hands them out. The layer manager
-// is synchronous, so each map keeps a few numbers reserved ahead, refilled in
-// the background as the id allocator keeps its spare block (ids.ts).
-
 export const LAYER_POOL = 4;
 const seqKey = (map: string) => `cells:layerseq:${map}`;
 const bare = (map: string) => map.replace(/\.json$/, "");
@@ -32,8 +26,6 @@ export class LayerNumbers {
     return number;
   }
 
-  // The counter only grows: `incrBy(key, 1) + 1` per number, so the first is 2 (1 is every node's base layer).
-  // A whole pool is taken in one call.
   private async refill(name: string): Promise<void> {
     if (this.fetching.has(name)) return;
     let pool = this.pools.get(name);

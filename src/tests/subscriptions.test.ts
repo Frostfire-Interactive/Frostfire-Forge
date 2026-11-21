@@ -2,11 +2,6 @@ import { afterAll, beforeAll, beforeEach, describe, expect, mock, spyOn, test } 
 import { Database } from "bun:sqlite";
 import { databaseModule } from "./setup";
 
-// ------------------------------------------------------------ fake database
-// A real in-memory SQLite database behind the engine's query function, so the
-// statements of the subscription step and the login read are run, not matched.
-// A table the test did not create is an empty one (the login reads many).
-
 let db: Database;
 const queries: string[] = [];
 

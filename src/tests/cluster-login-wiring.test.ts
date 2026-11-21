@@ -3,12 +3,6 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import { receiverSource } from "./receiver-source";
 
-// The login routing as wired into socket/receiver.ts and socket/server.ts. Neither
-// can be imported (the first imports the second, which starts the server), so the
-// code is read from its source: the order of the login steps is checked there, and
-// switchLoginIfElsewhere is run from its source with the names it uses handed in
-// as fakes (as in disconnect-events.test.ts).
-
 type Row = Record<string, any>;
 const read = (file: string) => readFileSync(join(import.meta.dir, "..", "socket", file), "utf8");
 const receiver = receiverSource();

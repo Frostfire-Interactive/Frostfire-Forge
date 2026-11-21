@@ -39,8 +39,6 @@ function redisLike(initial: Record<string, any>) {
       },
       onChange: (key: string, fn: () => void) => { (listeners.get(key) ?? listeners.set(key, []).get(key)!).push(fn); },
     },
-    /** A write made through this process: stores and signals. */
-    /** A write by another node: stored, no signal. */
     writeElsewhere(key: string, value: any) { data.set(key, value); },
     write(key: string, value: any) { data.set(key, value); for (const fn of listeners.get(key) ?? []) fn(); },
   };
@@ -184,8 +182,6 @@ describe("the creature tick", () => {
       await creatures.refreshSpells();
       expect(lookup(1)?.name).toBe("Bolt");
       expect(lookup(3)).toBeUndefined();
-      // Unchanged: the same array comes back and the maps are not rebuilt. Changing the held array in place
-      // (never done by the code) shows whether they were: a rebuild would pick the change up.
       const held = heldStaticList("spells")!;
       const before = lookup(1);
       held[0] = { ...held[0], name: "Rebuilt" };

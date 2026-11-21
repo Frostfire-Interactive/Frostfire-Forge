@@ -19,9 +19,6 @@ import permissions from "./permissions";
 import { characterIdOf, needCharacterId, siblingNamesOf } from "./characterids";
 const defaultMap = settings.default_map?.replace(".json", "") || "main";
 
-// What the engine writes of an account. The rest of the row (session, token,
-// e-mail, password, two-factor) is the gateway's to write and is not held:
-// who is online is asked of the player cache instead.
 interface AccountRow {
   id: number;
   username: string;
@@ -45,20 +42,10 @@ interface AccountRow {
   guild_id: number | null;
 }
 
-// Every character (not deleted), by name, with its account's id: what a search
-// of the players asks, instead of the database. Characters are what players
-// are known by; an account's own username is never listed. It is read at
-// startup with the other tables. The gateway makes characters without the
-// engine hearing of it, so it is read again on the server's tick (below), and
-// a character whose row is read from the database, as a login does, is added
-// if it is not listed.
 const allAccounts = tableCache<{ id: number; username: string }>("account_names", async () =>
   ((await query("SELECT account_id AS id, name AS username FROM characters WHERE deleted_at IS NULL")) as { id: number; username: string }[]) || []
 );
 
-// How long the names are held before they are read again: 5 minutes. An
-// account the gateway made, and that has not logged in to the game since, is
-// found by a search at most this much later.
 const ACCOUNT_NAMES_REFRESH_MS = 5 * 60 * 1000;
 let accountNamesReadAt = Date.now();
 
@@ -92,9 +79,6 @@ async function listAccount(account: AccountRow): Promise<void> {
   }
 }
 
-// A player's row: the account's columns (role, ban, guest) and, from characters, the character's own (its name, where
-// it stands, whether it is dead, stealth, noclip, party and guild), held under the character's name. An account with
-// no character yet has the account's columns only.
 const accountRows = rowCache<AccountRow>("accounts", async (username) => {
   const rows = (await query(
     `SELECT a.id, a.username, a.role, a.banned, a.guest_mode, c.id AS character_id, c.stealth, c.noclip, c.is_dead, c.corpse_map, c.corpse_x, c.corpse_y, c.map, c.position, c.direction, c.party_id, c.guild_id, c.name AS character_name
@@ -109,9 +93,6 @@ const accountRows = rowCache<AccountRow>("accounts", async (username) => {
   return row;
 }, { perPlayer: true });
 
-// Account id -> username, for the lookups made by id. Only the name is held
-// here: what is known of the account is its row above, so the two cannot
-// disagree.
 const accountNames = rowCache<string>("account_ids", async (id) => {
   const rows = (await query("SELECT username FROM accounts WHERE id = ?", [Number(id)])) as { username: string }[];
   return rows?.[0]?.username;
@@ -146,27 +127,11 @@ const configRows = rowCache<Record<string, any>>("clientconfig", async (username
   return parseConfigJson(username, rows?.[0]);
 }, { perPlayer: true });
 
-/**
- * USER REQUEST 2026-10-14 ("Hard Rain.wav" and "Soft Rain.wav" on "a new 'ambience' sound track"): the pause menu's
- * Ambience slider is kept with the other sound levels, in clientconfig.ambience_volume. The setup scripts make the
- * column; a database that is already live gets it here at start, before the first login reads the table. Safe on
- * every start, and it never throws: without the column the slider still works, it is only not remembered.
- */
 let ambienceColumn = false;
-/**
- * USER REQUEST 2026-10-16 ("Weather should be separate from ambience in the audio slider. Ambience should be used for
- * those spatial audio npcs"): the Weather slider (rain, wind, thunder) is kept the same way, in
- * clientconfig.weather_volume, and added at start the same way.
- */
 let weatherColumn = false;
 /** The Auto loot setting (loot taken without the loot window), in clientconfig.auto_loot, added at start the same way. */
 let autoLootColumn = false;
 
-/**
- * USER REQUEST 2026-11-18 ("by default set the following slider values by default: weather: 60 music: 50
- * effects: 30 ambience: 50 fps: 60"): the pause menu's sliders as a player starts with them. A new account is given
- * these, and a player with no saved Ambience or Weather level (a column added after the row was made) is given them.
- */
 export const DEFAULT_CONFIG = { fps: 60, music_volume: 50, effects_volume: 30, ambience_volume: 50, weather_volume: 60 } as const;
 
 /** Adds a setting's column to clientconfig when it is missing. Whether it is there now; never throws. */
@@ -209,12 +174,6 @@ export async function ensureAmbienceColumn(): Promise<boolean> {
 /** When a failed read of accounts.subscribed was last said, so a database without it is warned of once a minute, not at every login. */
 let subscribedWarnedAt = 0;
 
-/**
- * accounts.subscribed of a login. Read apart from the rest of the account, and
- * never allowed to fail the login: the column is added by the setup scripts and
- * at server start, and if it is not there (or cannot be read) the account counts
- * as subscribed, so subscriptions stay off instead of refusing every login.
- */
 async function readSubscribed(username: string): Promise<boolean> {
   try {
     const rows = (await query("SELECT subscribed FROM accounts WHERE username = ?", [username])) as { subscribed: unknown }[];
@@ -272,10 +231,6 @@ async function siblingsOf(username: string): Promise<string[]> {
   }
 }
 
-/**
- * Sets the ban of the account of the character named, by the account's id: a ban is the account's, so each of its
- * characters' rows held are let go and read again.
- */
 async function setBanned(username: string, banned: 0 | 1): Promise<any> {
   const account = await accountRows.get(username);
   if (!account || !isId(account.id)) return;
@@ -296,11 +251,6 @@ function sessionOf(username: string): string | undefined {
 const whole = (...values: unknown[]) => values.every((value) => Number.isInteger(value));
 const text = (...values: unknown[]) => values.every((value) => typeof value === "string");
 
-/**
- * What SQL's `LIKE pattern` accepts, in any case: % stands for any run of
- * characters and _ for any one. Every other character stands for itself, a
- * backslash too (the searches made here are of letters, digits and _).
- */
 function like(pattern: string): (value: unknown) => boolean {
   const source = [...pattern]
     .map((character) => (character === "%" ? ".*" : character === "_" ? "." : character.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")))
@@ -309,11 +259,6 @@ function like(pattern: string): (value: unknown) => boolean {
   return (value) => expression.test(String(value));
 }
 
-/**
- * Runs a write to a player's row. When the database does not answer it, the
- * row is read again: a statement that timed out may still have been applied,
- * so what is held can be trusted no longer.
- */
 async function writing<T>(rows: RowCache<any>, username: string | undefined, write: () => Promise<T>): Promise<T> {
   try {
     return await write();
@@ -323,29 +268,13 @@ async function writing<T>(rows: RowCache<any>, username: string | undefined, wri
   }
 }
 
-/**
- * After a write to a player's row: the columns written, on the row held.
- * `asGiven` false: the database stores one of them differently from what it
- * was handed (a fraction in a whole-number column, say), so the row is read
- * again rather than guessed at.
- */
 async function wrote<T>(rows: RowCache<T>, username: string, columns: Partial<T>, asGiven = true): Promise<void> {
   if (asGiven) await rows.patch(username, columns);
   else await rows.drop(username);
 }
 
-/**
- * Whose row a write `WHERE session_id = ?` changes: the player online under
- * that session. A session that has already left the player cache (a
- * disconnect's last save) is nobody here, and its rows are forgotten with
- * the player.
- */
 const usernameOfSession = (session_id: string): string | undefined => playerCache.get(session_id)?.username;
 
-/**
- * A location write for a session whose character is not found: nothing is written, it is logged, and the answer is
- * the database's for a write that changed no row.
- */
 function noCharacterFor(what: string, session_id: string, username: string | undefined): { affectedRows: 0 } {
   log.error(`The ${what} of session ${session_id} (${username ?? "nobody"}) was not saved: it has no character`);
   return { affectedRows: 0 };
@@ -368,18 +297,8 @@ async function idsOf(who: CharacterRef): Promise<{ characterId: number; accountI
   return { characterId, accountId: Number(row?.account_id) || 0 };
 }
 
-/**
- * False when the database says a write changed no row: the session was not that account's any more.
- * SQLite reports `affectedRows` as null and the number of rows in `count`.
- */
 const changedRows = (response: any) => !(response && typeof response === "object" && "affectedRows" in response && Number(response.affectedRows ?? response.count) === 0);
 
-/**
- * After a layout is saved to a config column: the same on the row held, in
- * the form the database gives that column back. That is the text written
- * where the column is text and the parsed value where it is JSON, which the
- * row held shows; a row that shows neither is read again.
- */
 async function wroteLayout(username: string, column: "hotbar_config" | "inventory_config", json: string | undefined): Promise<void> {
   if (json === undefined) return configRows.patch(username, { [column]: null });
   const held = await configRows.get(username);
@@ -391,9 +310,6 @@ async function wroteLayout(username: string, column: "hotbar_config" | "inventor
 
 // The caches of the per-player tables the guest clean-up deletes from.
 const CLEANED = ["accounts", "account_ids", "inventory", "stats", "clientconfig", "quest_log", "currency", "collectables", "equipment", "learned_spells", "spell_usage", "permissions", "friends", "bags", "ignores"];
-// Every table column that names a guest by its name, for the guest clean-up: the character tables' account-name column
-// of their rows from before character_id, the account tables, and a player's ignore of a guest. Mail a guest sent and
-// the trade and report logs keep the name (a log row outlives who it names).
 const GUEST_NAMED: readonly [string, string][] = [
   ...["inventory", "stats", "clientconfig", "quest_log", "quest_objective_progress", "friendslist", "ignores", "player_home", "currency", "guild_members", "cutscene_views", "collectables", "learned_spells", "equipment", "bags", "player_achievements"].map((table) => [table, "username"] as [string, string]),
   ["permissions", "username"],
@@ -403,10 +319,6 @@ const GUEST_NAMED: readonly [string, string][] = [
 ];
 const GUEST_DELETE_BATCH = 10000;
 
-// An account token lasts this long from when it was issued, then a new
-// password login is needed. Kept in the account row (token_expires, epoch ms),
-// so the auth worker, every realm and the Gateway all see the same expiry. A
-// token with no expiry (issued before there was one) has expired.
 const TOKEN_LIFETIME_MS = (Number(process.env.TOKEN_LIFETIME_HOURS) || 24 * 7) * 60 * 60 * 1000;
 
 /** Whether an account row's token is still within its lifetime. */
@@ -415,20 +327,11 @@ export function tokenLive(row: { token_expires?: unknown } | undefined): boolean
   return Number.isFinite(expires) && expires > Date.now();
 }
 
-/**
- * This realm, as it marks the sessions it holds (SERVER_ID): realms sharing a database must each have their own.
- * In a cluster the lock is per region (every node of it holds the same mark); the player directory tracks the node.
- */
 export const SESSION_SERVER = clusterEnabled() ? regionId() : String(process.env.SERVER_ID || "default");
 /** A realm marks its sessions this often; one not marked for SESSION_STALE_MS is taken to be gone (the realm stopped). */
 export const SESSION_HEARTBEAT_MS = 30_000;
 const SESSION_STALE_MS = 3 * SESSION_HEARTBEAT_MS;
 
-/**
- * The last saved_at a fenced save wrote (player.saveFenced). Each one writes a later value than the one before, so two
- * saves in the same millisecond at the same place still change the row: the guard counts changed rows. Only the
- * owner's saves land, so one stamp per process is enough.
- */
 let lastSavedAt = 0;
 
 /** Whether an account's session is held by another realm that has vouched for it lately. */
@@ -439,12 +342,6 @@ export function heldElsewhere(row: { session_server?: unknown; session_seen?: un
   return Number.isFinite(seen) && now - seen < SESSION_STALE_MS;
 }
 
-/**
- * The Gateway's login step an account's token has not passed, or null when it
- * has passed them all: the token is set after the password, before a second
- * factor or the e-mail check, so it must not log in on its own until they are
- * done. Guests have no e-mail to verify.
- */
 export function loginStepMissing(row: { twofa_pending?: unknown; email_verified?: unknown; guest_mode?: unknown } | undefined): string | null {
   if (Number(row?.twofa_pending) === 1) return "two-factor authentication is pending";
   if (Number(row?.guest_mode) !== 1 && Number(row?.email_verified) !== 1) return "the e-mail address is not verified";
@@ -475,11 +372,6 @@ const LOGIN_COLUMNS = [
   { name: "saved_at", type: "BIGINT NOT NULL DEFAULT 0" },
 ];
 
-/**
- * Start-time step: the accounts columns a login reads, added if missing, as
- * the subscription columns are. A live database whose setup was not run again
- * must have them before the first login. Never throws.
- */
 export async function ensureLoginColumns(): Promise<boolean> {
   try {
     for (const column of LOGIN_COLUMNS) {
@@ -518,8 +410,6 @@ const mapCache: Map<
   }
 > = new Map();
 
-// Fills mapCache for a world. A world has no collision run lengths in the asset cache, so the lookups below take its
-// entry from here before they go looking for them.
 function cacheWorldMap(mapKey: string): CachedMap | undefined {
   const world = getWorldMap(mapKey);
   if (!world) return undefined;
@@ -662,17 +552,12 @@ const player = {
       // Every party is deleted below, so no character is in one.
       await query("UPDATE characters SET party_id = NULL");
 
-      // Guests are removed by account: deleting an account deletes its characters, and every row of a character
-      // (inventory, stats, bags, quests, mail, friends ... CHARACTER_TABLES) goes with it by its foreign key. What
-      // no key reaches is deleted by hand below: the account's permissions, and the parties and guilds a guest led.
       const guestUsernames = "(SELECT username FROM accounts WHERE guest_mode = 1)";
       await query(`DELETE FROM permissions WHERE username IN ${guestUsernames}`);
 
       // Delete parties led by guests
       await query(`DELETE FROM parties WHERE leader IN ${guestUsernames}`);
 
-      // Delete guilds led by guests, their ranks and member rows first. When
-      // setup has not made the rank tables yet, the rest still runs.
       const guestGuilds = `(SELECT id FROM guilds WHERE leader IN ${guestUsernames})`;
       await query(`UPDATE characters SET guild_id = NULL WHERE guild_id IN ${guestGuilds}`);
       for (const table of ["guild_ranks", "guild_members"]) {
@@ -688,9 +573,6 @@ const player = {
         await query("TRUNCATE TABLE parties");
       }
 
-      // Rows that name a guest (GUEST_NAMED): no foreign key reaches them, and some are of guests whose account went
-      // long ago. Only a guest's name starts with guest_ (register refuses it to others). On MySQL in batches: a table
-      // can hold hundreds of thousands of them, and one query has 15 seconds.
       for (const [table, column] of GUEST_NAMED) {
         const sql = `DELETE FROM ${table} WHERE ${column} LIKE 'guest!_%' ESCAPE '!'`;
         if (process.env.DATABASE_ENGINE === "sqlite") {
@@ -708,9 +590,6 @@ const player = {
       // Delete guest accounts, and with them their characters and the rows of those
       await query("DELETE FROM accounts WHERE guest_mode = 1");
     } finally {
-      // None of this names the rows it wrote: every account lost its party,
-      // and the guests are picked by the database. So the caches of these
-      // tables forget everything and read again, also when it stopped half way.
       await Promise.all(CLEANED.map((name) => dropAllRows(name)));
       await Promise.all([reloadTable("parties"), reloadTable("guilds"), reloadTable("guild_ranks"), reloadTable("guild_members"), reloadTable("mutes"), allAccounts.reload()]);
     }
@@ -777,8 +656,6 @@ const player = {
         [characterId, 100, 100, 100, 100, 0, 100, 1, 10, 10]
       );
 
-      // The Ambience and Weather levels are written when their columns are there; a database without them yet
-      // gives the row their defaults when they are added.
       const levels: [string, number][] = [
         ["fps", DEFAULT_CONFIG.fps],
         ["music_volume", DEFAULT_CONFIG.music_volume],
@@ -792,9 +669,6 @@ const player = {
         [characterId, ...levels.map(([, value]) => value)]
       );
 
-      // (Nothing for the quest log: it holds a row for each quest a player has taken, and a new one has taken
-      // none. The row once written for it here, a name and no quest, is refused by the table as it is now, and
-      // nothing after it was then written.)
       await query(
         "INSERT INTO currency (character_id, copper, silver, gold) VALUES (?, ?, ?, ?)",
         [characterId, 0, 0, 0]
@@ -850,10 +724,6 @@ const player = {
     }
     return found.filter(hasCharacter).map((account) => ({ username: shownName(account), banned: account.banned }));
   },
-  /**
-   * One account for the admin tools: by account id when `id` is given, otherwise by username.
-   * `session_id` is the session they are online under, null when they are not.
-   */
   findAccount: async (username?: string, id?: number) => {
     if (!username && !id) return null;
     const account = id ? await accountById(id) : await accountRows.get(username as string);
@@ -868,12 +738,6 @@ const player = {
       is_dead: account.is_dead,
     };
   },
-  /**
-   * Accounts whose username contains `search`, for the admin tools' player lists:
-   * what `username LIKE '%search%' ORDER BY username LIMIT limit` gave, asked of
-   * the names held. An account the gateway made since they were last read is not
-   * among them until it logs in or they are read again.
-   */
   searchAccounts: async (search: string, limit: number) => {
     if (!search) return [];
     const matches = like(`%${search.toLowerCase()}%`);
@@ -914,11 +778,6 @@ const player = {
 
     return { map, position };
   },
-  /**
-   * Saves where the session's character stands, while the session is still its account's. `who`: the player whose
-   * session it is, for a save made once the player has left the cache (a disconnect's last save); the character is
-   * then the one it carries or is named.
-   */
   setLocation: async (
     session_id: string,
     map: string,
@@ -942,14 +801,6 @@ const player = {
     }
     return response;
   },
-  /**
-   * setLocation for a player who has just been moved somewhere (through a warp, say), answering
-   * whether the account is saved as standing there: its row was changed, or it already said so.
-   * The database answers a write with the rows it changed, so a move to where the account was last
-   * saved changes none, exactly as a write for a session that is no longer the account's does. The
-   * two are told apart by the row held: a door leads to one spot, and a player brought back inside
-   * some other way walks out to the very place they were saved at.
-   */
   arriveAt: async (session_id: string, map: string, position: PositionData): Promise<boolean> => {
     if (!session_id || !map || !position) return false;
     const response = await player.setLocation(session_id, map, position);
@@ -974,13 +825,6 @@ const player = {
     await wrote(accountRows, username, { map, position: at, direction: position.direction as string }, text(map, position.direction));
     return response;
   },
-  /**
-   * Cluster mode: a save that lands only while `epoch` is still the account's owner epoch (cells phase 7). The
-   * location and saved_at go first, guarded; the stats follow in the same transaction, so a node that lost the
-   * player writes neither. saved_at is always new (lastSavedAt), so the guarded statement always changes its row when
-   * it matches. A session another realm (or the Gateway) took is refused too: those writers never raise the owner
-   * epoch, so the guard also asks that the session is still this realm's, or nobody's.
-   */
   saveFenced: async (
     who: CharacterRef,
     epoch: number,
@@ -1055,8 +899,6 @@ const player = {
   ): Promise<boolean | string> => {
     if (!token || !sessionId) return false;
 
-    // sessionId comes from wt.data.id which is a number via parseInt(),
-    // but the DB column is VARCHAR. Normalize to string for comparisons.
     const sid = String(sessionId);
     const accountResult = await query(
       "SELECT username, banned, token_expires, twofa_pending, email_verified, guest_mode FROM accounts WHERE token = ?",
@@ -1081,9 +923,6 @@ const player = {
       return false;
     }
 
-    // Attempt to atomically claim the session.
-    // The WHERE clause only matches if no other session is active
-    // (online=0 OR session_id IS NULL) or this is a re-auth.
     await query(
       `UPDATE accounts
        SET session_id = ?, online = 1, session_server = ?, session_seen = ?
@@ -1114,10 +953,6 @@ const player = {
       return false;
     }
 
-    // Held by another realm that is still answering for it: this realm cannot
-    // kick that session (its player cache is not this one), so taking it over
-    // here would leave the account in the game twice. Refused until it logs
-    // out there, or that realm stops vouching for it.
     if (heldElsewhere(existingSessionResult[0])) {
       log.info(`Login of ${username} refused: online on realm ${existingSessionResult[0].session_server}`);
       return false;
@@ -1318,8 +1153,6 @@ const player = {
       log.error(`The admin role of ${username} was not changed: its account was not found`);
       return false;
     }
-    // Written as the value it becomes, not as "the other one": the database
-    // and the row held then end the same whatever either held before.
     const role = account.role === 1 ? 0 : 1;
     const response = (await writing(accountRows, username, () => query(
       "UPDATE accounts SET role = ? WHERE id = ?",
@@ -1335,12 +1168,8 @@ const player = {
         [accountId]
       ))) as any;
       await accountRows.patch(username, { stealth: 0, noclip: 0 });
-      // What made them an admin goes with the role: permissions are read at
-      // every login whatever the role, and most commands check only them.
       await permissions.clear(username);
     }
-    // The account's other characters hold the same role (and, demoted, lost stealth and noclip): their rows are let
-    // go and read again, as a ban does.
     for (const name of await siblingsOf(username)) {
       if (name !== username) await accountRows.drop(name);
     }
@@ -1472,10 +1301,6 @@ const player = {
     await wrote(statRows, username, saved, whole(...Object.values(saved)));
     return response;
   },
-  /**
-   * With a `batch` (see services/batch), the write is added to it instead of sent: the gain is
-   * worked from the stats the batch has so far, and is on the row held once the batch is kept.
-   */
   increaseXp: async (username: string, xp: number, batch?: Batch) => {
     if (!username) return;
     username = username.toLowerCase();
@@ -1670,8 +1495,6 @@ const player = {
     for (let i = 0; i < warpList.length; i++) {
       const warp = warpList[i];
       if (
-        // across, the position is the middle of the sprite (as the tile test below has it): a warp is met by
-        // the player's own width centred on it, so a rectangle is entered as readily from its left as its right
         position.x + playerWidth / 2 > warp.position.x &&
         position.x - playerWidth / 2 < warp.position.x + warp.size.width &&
         position.y + playerHeight > warp.position.y &&
@@ -1785,8 +1608,6 @@ const player = {
     for (let i = 0; i < warpList.length; i++) {
       const warp = warpList[i];
       if (
-        // across, the position is the middle of the sprite (as the tile test below has it): a warp is met by
-        // the player's own width centred on it, so a rectangle is entered as readily from its left as its right
         position.x + playerWidth / 2 > warp.position.x &&
         position.x - playerWidth / 2 < warp.position.x + warp.size.width &&
         position.y + playerHeight > warp.position.y &&
@@ -1829,10 +1650,6 @@ const player = {
     }
     if (wt) wt.close();
   },
-  /**
-   * Bans the account of the character named: every character of it. Each of its characters online here is logged out;
-   * `wt` is the named character's connection, closed.
-   */
   ban: async (username: string, wt: any) => {
     if (!username) return;
     username = username.toLowerCase();
@@ -2194,8 +2011,6 @@ const player = {
       }
     }
 
-    // Resurrection Sickness survives every recompute while its wall clock
-    // runs (totals are rebuilt from base + equipment each sync).
     if (isSick(pcache)) {
       applySicknessToStats(currentStats);
     }
@@ -2247,11 +2062,6 @@ const player = {
       return { success: false, message: "Failed to remove whitelist from database" };
     }
   },
-  /**
-   * The rows a login sends, of character `characterId` of account `accountId`: the character's own columns from
-   * characters, its rows by character_id, and the account's (role, guest, permissions, subscription) by the account.
-   * Null when the character is not there, is deleted, or is not the account's.
-   */
   GetPlayerLoginData: async (accountId: number, characterId: number) => {
     if (!Number.isFinite(Number(accountId)) || !Number.isFinite(Number(characterId))) return null;
     accountId = Number(accountId);
@@ -2293,8 +2103,6 @@ const player = {
       query("SELECT permissions FROM permissions WHERE username = ?", [accountUsername]) as Promise<any[]>,
       query("SELECT copper, silver, gold FROM currency WHERE character_id = ?", [characterId]) as Promise<any[]>,
       query("SELECT friends FROM friendslist WHERE character_id = ?", [characterId]) as Promise<any[]>,
-      // Every column there is. This runs on a login worker, where the step that adds the newer setting columns at start
-      // (ensureAmbienceColumn) never ran, so it cannot know which are there: a column missing is a setting's default below.
       query("SELECT * FROM clientconfig WHERE character_id = ?", [characterId]) as Promise<any[]>,
       query("SELECT quest_id, state, accepted_at, completed_at, times_completed FROM quest_log WHERE character_id = ?", [characterId]) as Promise<any[]>,
       query("SELECT quest_id, objective_id, count FROM quest_objective_progress WHERE character_id = ?", [characterId]) as Promise<any[]>,

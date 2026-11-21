@@ -249,8 +249,6 @@ test("the handoff looks at the lock before the drain, takes it after the drain a
     const player: any = { id: "7", username: "ann", characterId: 7, accountId: 1, accountUsername: "acct" };
     a.players.set("7", player);
     expect(await a.handoff.handOff(player, "b")).toBe("switched");
-    // Guard: the lock step and the letGo after the save. A write on another node would land between the save and the new node's read.
-    // The first lock and unlock are the look (handoff fix 2, N1): a busy lock refuses before the player is stopped.
     expect(a.log).toEqual(["ticket", "lock 7", "unlock 7", "drain", "lock 7", "handOver player 7 b", "release 7", "adoptMirror player 7 b", "forward 7 ann b", "save 7", "unlock 7", "switch 7"]);
   } finally {
     stop();

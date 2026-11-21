@@ -110,11 +110,6 @@ export interface CombatText {
   amount: number;
 }
 
-/**
- * A hit on a mirrored creature, sent to the node that owns it (spec §4). The node that holds the
- * mirror rolls what needs the attacker's stats (the swing outcome, the damage stat for ticks); the
- * owner applies it. `textKind` is the combat text the owner shows for it, null for none.
- */
 export interface ForwardedHit {
   attackerId: string;
   amount: number;
@@ -320,9 +315,6 @@ export class CreatureCombatSystem {
       const p = this.world.getPlayer(unitId);
       const entry = threat.get(unitId);
       const unreachable = entry?.unreachableSince != null && now - entry.unreachableSince >= UNREACHABLE_DROP_MS;
-      // Stealth (player vanish) and GM invisibility break combat, like WoW's
-      // vanish: the creature loses its target and evades if nothing else is on
-      // the table.
       const hidden = !!p && (p.gmHidden || p.stealthed);
       if (!p || !p.alive || hidden || p.map !== creature.map || !sameLayer(creature, p) || unreachable) {
         this.removeThreat(creature, unitId);
@@ -374,9 +366,6 @@ export class CreatureCombatSystem {
     const d = dist(creature.x, creature.y, victim.x, victim.y);
     const rangedOk = template.ranged && d <= yards(RANGED_ATTACK_YD) && (!grid || grid.lineOfSight(creature, victim));
 
-    // Creatures have no automatic attack: every hit they land is one of their
-    // abilities (tryCombatAbilities above). In reach, they hold position and
-    // face the victim until an ability is ready.
     if (d <= melee || rangedOk) {
       stop(creature);
       threat.get(victim.id)!.unreachableSince = null;
@@ -566,10 +555,6 @@ export class CreatureCombatSystem {
 
   // ------------------------------------------------------------- threat ops
 
-  /**
-   * Put a creature in combat. Unless `social` is false, nearby same-type
-   * creatures (assist radius) and every member of its link group join too.
-   */
   enterCombat(creature: CreatureInstance, now: number, social = true): void {
     if (creature.remote) return;
     if (creature.state === AIState.COMBAT || creature.state === AIState.DEAD || creature.state === AIState.EVADING) return;
@@ -688,10 +673,6 @@ export class CreatureCombatSystem {
     this.unitIndex.delete(unitId);
   }
 
-  /**
-   * Healing generates 0.5 threat per point, split across every creature
-   * already fighting the healed unit. The healer joins those threat tables.
-   */
   onPlayerHealed(casterId: string, targetId: string, amount: number, now: number): void {
     if (amount <= 0) return;
     const engaged = this.unitIndex.get(targetId);
@@ -704,15 +685,6 @@ export class CreatureCombatSystem {
 
   // ---------------------------------------------------------------- damage
 
-  /**
-   * Apply damage from a player to a creature. Handles evade immunity, threat,
-   * stance reactions and death. Returns the damage actually dealt. With
-   * `textKind`, the combat text of a hit that lands is shown too.
-   *
-   * A mirror of another node's creature is never changed here: the hit goes to
-   * its owner (APPLY_EFFECT), which applies it and shows its text to every
-   * viewer, and 0 is returned.
-   */
   damageCreature(creature: CreatureInstance, attackerId: string, amount: number, now: number, threatMultiplier = 1, textKind: CombatTextKind | null = null): number {
     if (creature.remote) {
       this.world.forwardHit?.(creature, { attackerId, amount, threatMultiplier, textKind });
@@ -728,10 +700,6 @@ export class CreatureCombatSystem {
     return dealt;
   }
 
-  /**
-   * A hit on this creature from a player of another node, forwarded by the node that holds its mirror.
-   * `landed` is false when there was nothing to hit (dead, or evading an avoided swing).
-   */
   applyForwardedHit(creature: CreatureInstance, hit: ForwardedHit, now: number): { landed: boolean; killed: boolean } {
     if (creature.remote || creature.state === AIState.DEAD) return { landed: false, killed: false };
     if (hit.avoided) {
@@ -818,10 +786,6 @@ export class CreatureCombatSystem {
     }
   }
 
-  /**
-   * The creature was handed to another node (it is a mirror here now). Its threat table went with it; this
-   * node only forgets its index. Auto-attacks on it go on: phase 5 turns them into hits on the mirror.
-   */
   release(creature: CreatureInstance): void {
     this.clearThreatIndex(creature);
     this.active.delete(creature.id);
@@ -829,8 +793,6 @@ export class CreatureCombatSystem {
 
   /** A creature handed over here: index its threat table, and resume its combat if it was fighting. */
   adopt(creature: CreatureInstance): void {
-    // Combat, evading and fleeing are the states the engine keeps in `active`. Only those carry threat that counts:
-    // an idle or dead creature's table would pin its units "in combat" with nothing to clear it.
     const outOfCombat = creature.state === AIState.IDLE || creature.state === AIState.WANDER || creature.state === AIState.PATROL;
     if (creature.state === AIState.DEAD || outOfCombat) return;
     for (const unitId of creature.combat.threat.units()) {
@@ -977,14 +939,8 @@ export class CreatureCombatSystem {
     return true;
   }
 
-  /**
-   * A player's spell effects landing on a creature. Supports damage/heal over
-   * time, stun, slow, interrupt, taunt and threat modification.
-   */
   applySpellToCreature(creature: CreatureInstance, sourceId: string, spell: SpellData, now: number, casterStatOverride?: number): void {
     if (creature.remote) {
-      // The owner applies the effects; the caster's damage stat is read here, where the caster is. Only a player's
-      // spell is sent: the owner refuses any other source, so a creature's heal on a mirrored ally would be a wasted call.
       const caster = this.world.getPlayer(sourceId);
       if (caster && Array.isArray(spell?.effects)) {
         this.world.forwardHit?.(creature, { attackerId: sourceId, amount: 0, threatMultiplier: 1, textKind: null, spell, casterStat: casterStatOverride ?? caster.statDamage ?? 0 });
@@ -996,8 +952,6 @@ export class CreatureCombatSystem {
     const template = this.world.template(creature.templateId);
     if (!template) return;
     const immune = () => this.world.onCombatText({ creatureId: creature.id, targetId: creatureUnitId(creature.id), sourceId, kind: "immune", amount: 0 });
-    // A player caster's damage stat adds to their DoT/HoT ticks (classic WoW);
-    // creature sources are not players and get no bonus.
     const casterStat = casterStatOverride ?? this.world.getPlayer(sourceId)?.statDamage ?? 0;
     let changed = false;
     for (const rawEffect of spell.effects) {
@@ -1248,16 +1202,12 @@ export class CreatureCombatSystem {
   resolveSpell(creature: CreatureInstance, spell: SpellData, target: CastTarget, now: number): void {
     this.world.onSpellLaunch?.(creature, spell, target);
 
-    // Spells with a projectile land when it arrives, not the instant they are
-    // cast, so the damage matches what players see flying at them.
     const targetPos = this.targetPosition(target);
     const travelMs = targetPos && this.world.later
       ? projectileTravelMs(dist(creature.x, creature.y, targetPos.x, targetPos.y))
       : 0;
     if (travelMs > 0) {
       this.world.later!(travelMs, () => {
-        // Evading resets the fight, so a shot in flight is cancelled. Dying does
-        // not: on_death abilities are cast as the creature falls and must land.
         if (creature.state === AIState.EVADING) return;
         this.applySpell(creature, spell, target, Date.now());
       });

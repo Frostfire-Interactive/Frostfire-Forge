@@ -1,6 +1,3 @@
-// Achievements wired to the engine: the events they count (criteria.ts) handed to the service, progress written on
-// the save tick and when a player leaves, the list a player's window asks for, and the client brought up to date
-// after a reward through the receiver (setBridge). See types.ts for the request.
 import { onPeerNews, tellPeers } from "../../cluster/peernews";
 import log from "../../modules/logger";
 import { getIconUrl } from "../../modules/spriteSheetManager";

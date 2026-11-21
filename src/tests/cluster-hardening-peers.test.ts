@@ -7,9 +7,6 @@ import assetCache from "../services/assetCache";
 import { linkPair } from "./cluster-fakelink";
 import { databaseModule, mockQuery } from "./setup";
 
-// Phase 5 final fix wave, part B: what a node does with what a peer sends it. The reward, the grant, the creature's
-// effects on a player and the hits on a creature are each held to what play can reach, and to the node that may send them.
-
 mock.module("../controllers/sqldatabase", () => databaseModule({ default: mockQuery }));
 mock.module("../config/settings.json", () => ({ default: { creatures: {} }, creatures: {} }));
 

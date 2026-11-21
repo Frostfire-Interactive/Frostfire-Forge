@@ -5,11 +5,6 @@ import { join } from "node:path";
 import log from "../modules/logger";
 import { CLIENT_OPTIONS, SHARED_OPTIONS, SharedRedis } from "../services/redisclient";
 
-// The cache client (CACHE=redis, with or without a cluster) after a Redis outage. Bun 1.4.4 stops reconnecting once the
-// connection has been away longer than connectionTimeout, and every call then fails with "Connection has failed". The
-// client is replaced by a fresh one, as the cluster store's is. No socket anywhere: the fake clients keep the handlers
-// the slot assigns, and the tests fire them by hand.
-
 const REVIVE_TEST_MS = 5;
 
 type Connect = "ok" | "fail" | "hang";
@@ -186,8 +181,6 @@ test("a first connection that never answers is given up after the attempt deadli
   expect(await redis.get("a")).toBeNull();
 });
 
-// The cache and the worlds' player counts take their client from here and not from Bun's `redis` singleton, which gives
-// up for good after a long outage. The cache module is replaced by stand-ins in many test files, so its source is read.
 test("the asset cache and the worlds' counts use the shared client, not Bun's redis singleton", () => {
   const cache = readFileSync(join(import.meta.dir, "..", "services", "assetCache.ts"), "utf8");
   const worlds = readFileSync(join(import.meta.dir, "..", "systems", "worlds.ts"), "utf8");

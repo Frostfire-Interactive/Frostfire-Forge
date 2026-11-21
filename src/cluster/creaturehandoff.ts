@@ -5,13 +5,6 @@ import type { Ghosts } from "./ghosts";
 import { bareMapName, type OwnerAt } from "./handoffwatch";
 import type { LinkCalls } from "./linkcalls";
 
-// A creature that walks into a block another node owns moves to that node (cells phase 6, spec §5). It is a
-// reservation, then a commit: the receiving node reserves the id for 5 s, the holder casts the creature and turns
-// its own copy into a mirror in the same step, and the receiver makes it live. The commit is cast before anything
-// changes here, so a lost commit loses the creature (a mirror here, nothing there) and never doubles it. The node
-// that owns the creature's spawn slot (its home) keeps the slot as an away slot, and learns of the creature's
-// moves and death; the sweeps find what a broken link lost.
-
 export const RESERVE_MS = 5_000;
 export const COOLDOWN_MS = 2_000;
 export const SWEEP_GRACE_MS = 10_000;
@@ -141,8 +134,6 @@ export class CreatureHandoff {
     const deps = this.deps;
     if (!deps || target === deps.self) return "busy";
     if (c.handoff || c.remote || isDead(c) || isCasting(c) || this.coolingDown(c.id)) return "busy";
-    // Its slot is moving out with its block: it stays here until the move is sent or restored, so a restore finds it
-    // and never respawns its slot while another node holds it.
     if (deps.spawner.movingOut?.(c.id, deps.now())) return "busy";
     const home = deps.spawner.foreignHome(c.id) ?? deps.self;
     // A creature with no slot of its own here (a stale copy) is not offered: its home would refuse it anyway.
@@ -189,11 +180,6 @@ export class CreatureHandoff {
     }
   }
 
-  /**
-   * Step 6, once the commit went out: one synchronous step, so no scan or tick sees the creature half moved. The
-   * target makes the creature live from the commit, so this copy must end a mirror whatever throws here: each part
-   * runs on its own, in order, and one that throws is logged with the creature's name and stops none of the others.
-   */
   private letGo(deps: CreatureHandoffDeps, c: CreatureInstance, target: string, home: string, record: unknown): void {
     const name = this.named(c.templateId, c.id);
     const step = (what: string, fn: () => void) => {
@@ -207,8 +193,6 @@ export class CreatureHandoff {
     step("giving up its slot", () => {
       if (home !== deps.self) deps.spawner.dropForeign(c.id);
       else if (!deps.spawner.markAway(c.id, target)) {
-        // No live slot here to keep away: the target holds it as this node's foreign creature, and its sweep
-        // removes it when this node answers it has no slot for it.
         log.warn(`Creature ${name} handed to ${shown(target)} had no live slot here to keep: ${shown(target)} removes it at its sweep`);
       }
     });
@@ -238,19 +222,11 @@ export class CreatureHandoff {
     return to && to !== deps?.self ? to : null;
   }
 
-  /**
-   * Whether the slot of creature `id` is moving out with its block, the move not yet sent or put back. Its new home
-   * is not known then (movedTo answers null), and a move put back keeps the slot here.
-   */
   private slotMoving(id: number): boolean {
     const deps = this.deps;
     return !!deps?.spawner.movingOut?.(id, deps.now());
   }
 
-  /**
-   * Ask the other side of each away slot and each foreign creature whether it still exists. One sweep at a time;
-   * the peers are asked in parallel, so a slow peer delays only its own checks.
-   */
   async sweep(): Promise<void> {
     const deps = this.deps;
     if (!deps || this.sweeping) return;
@@ -372,15 +348,10 @@ export class CreatureHandoff {
           return;
         }
         if (outcome.ok && (outcome.answer as { ok?: unknown } | undefined)?.ok === false) {
-          // The peer cannot act on it yet (the creature's slot is moving out with its block there): kept for the
-          // next sweep, which sends it again.
           deferred.add(key);
           continue;
         }
         if (this.outbox.get(key) === entry) this.outbox.delete(key);
-        // The peer ran it and it threw (or it has no handler), or it is too big to send: sending it again would fail
-        // the same way and hold up every later entry for that peer. Its home's sweep frees the slot once the creature
-        // is found gone.
         if (!outcome.ok) {
           const why = outcome.why === "too-big" ? "it is too big to send" : "the call failed there";
           log.warn(`${entry.name} for creature ${entry.what} to ${entry.peer} dropped: ${why}`);
@@ -443,8 +414,6 @@ export class CreatureHandoff {
       return;
     }
     if (home === deps.self && !this.holdsAwaySlot(id, from)) {
-      // Coming home, but the away slot went in the reservation window (a data reload released it, or it moved to
-      // another holder). Its slot may hold a fresh copy already, so it is not made live uncounted: it is lost here.
       log.warn(`Creature ${this.named(templateId, id)} handed back by ${shown(from)} was lost: its away slot here is no longer held for it`);
       return;
     }
@@ -469,9 +438,6 @@ export class CreatureHandoff {
     const name = this.named(templateId, id);
     const lead = `Creature ${name} handed over by ${shown(from)} was lost (${why})`;
     if (this.handedTo.has(id)) {
-      // This node held the creature live and handed it on since: the commit is a stale copy of an earlier handoff
-      // (the creature lives on), or a later handoff back here failed. Freeing the slot could double it, so nothing is
-      // freed: the home's sweep finds out which, and frees the slot only when the creature is gone.
       log.warn(`${lead}, or is a stale copy: this node handed it on before, so its slot is left to the home's sweep`);
       return;
     }
@@ -506,11 +472,7 @@ export class CreatureHandoff {
       deps.spawner.moveAway(id, holder);
       return { ok: true };
     }
-    // Its slot is moving out with its block, and the move is not decided: refused, so the sender's outbox keeps the
-    // report and sends it again once the move is sent (the new home is told) or put back (the slot is away here again).
     if (this.slotMoving(id)) return { ok: false, reason: "moving" };
-    // Its slot moved with its block: the new holder learns the new home, as the block's old holders did when it was
-    // sent. Only the creature's home can rehome it there, so a stray CREATURE_MOVED changes nothing.
     const moved = this.movedTo(id);
     if (moved) deps.calls.cast(holder, "CREATURE_HOME", { id, home: moved });
     return { ok: true };
@@ -553,8 +515,6 @@ export class CreatureHandoff {
     const deps = this.deps;
     const id = body?.id;
     if (!deps || !isId(id)) return { gone: false };
-    // A slot that just moved with its block is not gone: the holder learns its new home from CREATURE_HOME. Nor is one
-    // still moving out: a move put back keeps it here.
     return { gone: !deps.spawner.awaySlots().some((s) => s.instanceId === id) && this.movedTo(id) === null && !this.slotMoving(id) };
   }
 

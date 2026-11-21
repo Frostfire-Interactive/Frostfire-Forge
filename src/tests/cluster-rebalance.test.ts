@@ -79,15 +79,11 @@ test("a node 1.10 times the average and 25 over it sends a block", () => {
 });
 
 test("a node 1.10 times the average but less than 25 over it sends nothing", () => {
-  // a at 110, b at 90: average 100, a is 1.10 times it and 10 over. Guard: MIN_OVERLOAD. The move would pass hysteresis
-  // (90 + 5 is below 110 - 5), and with the floor off it is made.
   expect(planRebalance(two(110, 5, 90))).toEqual([]);
   expect(planRebalance(two(110, 5, 90), { minOverload: 0 })).toEqual([{ map: "main", bx: 1, by: 0, from: "a", to: "b", blockEpoch: 2, load: 5 }]);
 });
 
 test("a node 1.05 times the average sends nothing, though it is far over it in units", () => {
-  // a at 1050, b at 950: average 1000, a is 50 over, which is past the floor, but 1.05 is under the ratio of 1.08.
-  // Guard: OVERLOAD_RATIO. The light block passes hysteresis (950 + 10 is below 1050 - 10), and with a lower ratio it goes.
   expect(planRebalance(two(1050, 10, 950))).toEqual([]);
   expect(planRebalance(two(1050, 10, 950), { ratio: 1.04 })).toEqual([{ map: "main", bx: 1, by: 0, from: "a", to: "b", blockEpoch: 2, load: 10 }]);
 });
@@ -150,8 +146,6 @@ test("a node that owns one block never gives it to a node that owns none", () =>
 });
 
 test("a node that owns no block receives one even when no node is over 1.2 times the average", () => {
-  // Five nodes at load 4 and an empty one: the average is 20 / 6, so 1.2 times it is 4, which no node exceeds. Only
-  // the weight-1 block passes hysteresis (0 + 1 < 4 - 1); the weight-3 block does not.
   const owners: MapBlocks["owners"] = {};
   const loads: LoadReport[] = [];
   ["a", "b", "d", "e", "f"].forEach((nodeId, i) => {
@@ -277,8 +271,6 @@ test("at most four moves a pass", () => {
 // ---- perf fix 2: a load signal that answers to the moves (block ping-pong)
 
 test("a block weighs what its owner reports: a weight only a non-owner reports does not count", () => {
-  // b reports main|1,0, a block a owns, and a does not: the weight is nobody's. Without the owner rule it would be 50,
-  // and 1,0 would pass hysteresis (70 + 50 is below 200 - 50).
   const loads = [report("a", { "main|0,0": 200 }), report("b", { "main|2,0": 20, "main|1,0": 50 })];
   expect(planRebalance({ now: T0, tables: [{ map: "main", table: table() }], loads, busy: new Set() })).toEqual([]);
   // Both report it: the owner's 50 is the weight, not 50 + 10.
@@ -324,8 +316,6 @@ test("an aborted order rests the block and its nodes, and the rest doubles with 
     await orders.swap(all[all.length - 1].id, "ordered", "aborted");
   };
   await abortLast();
-  // Guard: MOVE_BACKOFF_MS. The abort moved nothing, but the same block must not be ordered again at once (the limit
-  // run C-2125 ordered it four times in 50 s).
   await pass(10_000);
   await pass(MOVE_BACKOFF_MS - 30_000);
   expect(await orders.all()).toHaveLength(1);
@@ -374,8 +364,6 @@ test("an order aborted because the old owner was busy does not lengthen its bloc
   const second = ((await orders.all()) as any[]).find((order) => order.id !== first!.id);
   expect(second).toBeDefined();
   await busy.swapWith(second.id, "ordered", "aborted", { reason: "busy" });
-  // Guard: a busy abort is not a failure of the block. Counted, this second abort would rest the block 120 s, and the
-  // order would not come at 61 s.
   await pass(MOVE_BACKOFF_MS + 1_000);
   expect(await orders.all()).toHaveLength(3);
 });
@@ -445,9 +433,6 @@ test("a listed id with no order behind it is dropped from the set; a malformed o
 
 const info = (nodeId: string): NodeInfo => ({ nodeId, regionId: "eu", publicHost: `${nodeId}.example.com`, port: 3000, wtPort: 3002, useSSL: true, startedAt: T0 });
 
-// `joiners`: live nodes that own no block and send no report.
-// `clocks`: the coordinator's own `now` and `monotonic`, when a test needs them apart.
-// `shape`: another block table and load reports than the default pair of nodes.
 async function world(rebalanceEveryMs?: number, joiners: string[] = [], clocks: { now?: () => number; monotonic?: () => number } = {}, shape: { table?: MapBlocks; reports?: () => LoadReport[] } = {}) {
   const store = new MemoryStore();
   const registry = new NodeRegistry(store);
@@ -491,8 +476,6 @@ test("the leader writes one order and tells the old owner; the table is left alo
 test("no second order while the first is open", async () => {
   const { pass, orders } = await world();
   await pass();
-  // The open order keeps a and b busy: that, not the 10 s interval, is what holds back a second order here (the
-  // interval has its own test below).
   for (let i = 0; i < 25; i++) await pass();
   expect(await orders.all()).toHaveLength(1);
 });

@@ -1,9 +1,3 @@
-// The rows of a player arriving by handoff, read while their client is still on its way (cells phase 6). The old node
-// casts HANDOFF_SAVED once its save of the player has landed: from then the rows are the ones the login would read, so
-// the auth pool reads them at once, by the character's id the handoff carries. The client's AUTH then only has the
-// token checked (the worker is told the character it expects); a token of another account, or a read that failed, logs in by reading everything, as any
-// login does. Kept apart from receiver.ts so a test can run it with a fake pool.
-
 import log from "../modules/logger";
 
 /** The id (and token) of a read's job in the auth pool: never a connection's id. */
@@ -84,10 +78,6 @@ export class LoginPrefetch {
     entry.settle(data);
   }
 
-  /**
-   * The read for the connection with this ticket, once: the character it is for (name and id) and its rows. The rows settle with the
-   * pool's answer, as null when the read failed or ran out (PREFETCH_TTL_MS): the login then reads them itself.
-   */
   take(ticket: string): { username: string; characterId: number; data: Promise<PlayerData | null> } | null {
     const entry = ticket ? this.entries.get(ticket) : undefined;
     if (!entry || entry.taken) return null;

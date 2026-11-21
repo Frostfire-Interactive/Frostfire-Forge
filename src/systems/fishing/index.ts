@@ -1,17 +1,3 @@
-/**
- * Fishing wired to the engine (USER REQUEST 2026-10-20, see catches.ts): the fishable tiles kept in the database, the
- * fishable tile under a point of any map, and the rules of a cast. The cast itself (the pose, the bite, the catch)
- * is run by the receiver (castFish), as a gather is.
- *
- * A player clicks a fishable tile within FISH_RANGE: the bobber lands there, a fish bites after BITE_MIN_MS to
- * BITE_MAX_MS, and the player reels it in. The client draws the line and the reel; the server only takes the catch once
- * the fish has been on the line for MIN_REEL_MS. A fish not reeled within BITE_ESCAPE_MS of its bite, or not landed
- * within HOOKED_MAX_MS of the reel starting, gets away.
- *
- * The tiles are rows of fishing_tiles, one per tile: its tileset key, its id there, and its catches as JSON. Every
- * player is sent which tiles are fishable (FISHING_TILES) at login and after every save; only the editor is sent what
- * they give.
- */
 import query from "../../controllers/sqldatabase";
 import log from "../../modules/logger";
 import { serverFetch } from "../../modules/https_servers";
@@ -28,10 +14,6 @@ export * from "./catches";
 
 /** How far from the player a cast may land (px, from the player's position to the bobber). */
 export const FISH_RANGE = 256;
-/**
- * How far a fishing player may walk from where they cast before the line is taken in (px; USER REQUEST 2026-10-20: "My
- * player should be able to move a short distance while fishing").
- */
 export const FISH_WALK_RANGE = 64;
 /** How long the bobber floats before a fish bites, at least and at most (ms). */
 export const BITE_MIN_MS = 3000, BITE_MAX_MS = 10000;
@@ -39,18 +21,7 @@ export const BITE_MIN_MS = 3000, BITE_MAX_MS = 10000;
 export const MIN_REEL_MS = 1000;
 /** A fish not landed this long after the reel began gets away (ms). */
 export const HOOKED_MAX_MS = 60000;
-/**
- * A fish the player does not start reeling in this long after it bit gets away (ms; USER REQUEST 2026-10-20: "if the
- * line doesn't start reeling in for 5 seconds, make the fish get away"). The bobber comes up again and the line stays
- * out: another fish may bite.
- */
 export const BITE_ESCAPE_MS = 5000;
-/**
- * How long the staff stays in hand after the line ends (ms): the clients draw a caught fish swung up to its tip
- * (fishing.ts YANK_S, 550 ms), or an empty line's bobber drawn back to it (RETRIEVE_S, 350 ms), before the pose goes,
- * with room for the packets' way and the clients' frames (USER REPORT 2026-10-20: the rod "completely disappears before
- * the line is finished being reeled in").
- */
 export const CATCH_HOLD_MS = 950, LINE_IN_MS = 700;
 
 const sqlite = (): boolean => (process.env.DATABASE_ENGINE || "mysql") === "sqlite";
@@ -88,11 +59,6 @@ async function hasToolsColumn(): Promise<boolean> {
   return Number(found?.[0]?.count) > 0;
 }
 
-/**
- * Start-time safety step: makes the table, and its tools column, on a database whose setup ran before they were added.
- * Safe on every start, and never throws: without the table, nothing is fishable and a save is refused. The tiles saved
- * before the column was added name no tools, so they cannot be fished until the map editor gives them some.
- */
 export async function ensureFishingSchema(): Promise<boolean> {
   ready = false;
   try {
@@ -249,10 +215,6 @@ export function qualityOf(item: string): string {
 
 type EditorItem = { name: string; image: string | null; quality: string | null };
 
-/**
- * What the editor is sent: every fishable tile with its catches and what fishes it, the material items to pick catches
- * from, and the weapons to pick what fishes from.
- */
 export async function editorData(): Promise<{ tiles: FishingTiles; tools: FishingTools; items: EditorItem[]; weapons: EditorItem[] }> {
   await refreshItems();
   const listed = (from: Map<string, any>): EditorItem[] => [...from.values()]

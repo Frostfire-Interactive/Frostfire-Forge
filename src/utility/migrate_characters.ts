@@ -1,13 +1,3 @@
-// One-time migration to many characters per account: gives every account that has no character one (named after the
-// account, whole: existing names are kept as they are), points accounts.active_character_id at it, and fills
-// character_id (and the id twins of name pointers) on every character table. Safe to run again: it only fills what is
-// still NULL. Every write is a transaction of one chunk (the engine ends a transaction after 15 s), and every read is
-// paged, so a big table never meets that limit and a run that stopped part way is finished by the next. The SQL is
-// plain enough for MySQL and SQLite alike (correlated subqueries, no UPDATE ... JOIN); where the two differ
-// (transactions) the caller says which it is talking to.
-//
-// Run by `bun migrate-characters` against the database in .env.production. Its SQL is built from table names, which
-// the ratchet in tests/character-keys.test.ts does not read, so it needs no entry there.
 import { createHash } from "crypto";
 import { CHARACTER_TABLES } from "./charactertables";
 
@@ -258,10 +248,6 @@ export async function migrateCharacters(ask: Ask, options: MigrateOptions): Prom
   return report;
 }
 
-/**
- * The command line's part: connects with the engine's own query layer (.env.production), migrates, prints the report.
- * Run only during the cutover downtime, with the game offline: rows written meanwhile would be missed or mismatched.
- */
 async function main() {
   const { default: query, transaction } = await import("../controllers/sqldatabase");
   const dialect = (process.env.DATABASE_ENGINE || "mysql") === "sqlite" ? "sqlite" : "mysql";

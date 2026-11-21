@@ -130,8 +130,6 @@ test("a stall of this node's own loop is not taken for a dead peer", async () =>
   await b.links.start();
   a.links.want(["b"]);
   await until(() => a.links.isUp("b") && b.links.isUp("a"));
-  // Block the loop for 300 ms, far past deadMs (80). Both late ticks fire before the pings
-  // queued behind them are read, so they must hold their verdict for one tick.
   const end = Date.now() + 300;
   while (Date.now() < end) { /* stall */ }
   await Bun.sleep(100);

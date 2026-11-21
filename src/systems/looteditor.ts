@@ -1,9 +1,3 @@
-/**
- * Loot table editor: what the editor window (/le) asks for, one change to a
- * packet. Each is checked, carried out through lootTable, and answered with
- * whether it was done, why not when it was not, and every table as it then
- * stands, so the window never has to work out for itself what happened.
- */
 import log from "../modules/logger";
 import { getIconUrl } from "../modules/spriteSheetManager";
 import assetCache from "../services/assetCache";
@@ -132,11 +126,6 @@ const CHANGES: Record<string, (data: any) => Promise<Outcome>> = {
   },
 };
 
-/**
- * Changes run one at a time. Each is a check followed by a write, and the
- * database layer has no transactions: the same request arriving twice must
- * not pass the check twice before either writes.
- */
 let changes: Promise<unknown> = Promise.resolve();
 
 function oneAtATime<T>(work: () => Promise<T>): Promise<T> {
@@ -157,11 +146,6 @@ export interface LootEditorResult {
   tables: Awaited<ReturnType<typeof lootTable.list>> | null;
 }
 
-/**
- * Dispatch for every LOOT_EDITOR_* packet. Permission is checked here, on each
- * one. The tables are read after the change, made or refused; when they cannot
- * be read this throws, and no answer is sent rather than one with nothing to show.
- */
 export async function handleEditorPacket(player: any, type: string, data: any): Promise<LootEditorResult> {
   const request = Number.isSafeInteger(data?.request) ? (data.request as number) : undefined;
   if (!canUseEditor(player)) return { ok: false, errors: [DENIED], request, tables: null };

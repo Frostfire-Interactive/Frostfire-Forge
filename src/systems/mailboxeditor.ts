@@ -1,19 +1,3 @@
-/**
- * Mailbox editor: what the admin mailbox editor window (/mailbox) asks for. USER REQUEST 2026-10-16 ("Add a
- * /mailbox command to open a UI to edit where mailboxes are placed and the ability to move them"), built as the
- * other editors are (USER REQUEST 2026-10-17: "Rebuild the mailbox editor on the standard editor pattern, like
- * the NPC editor").
- *
- * A map left alone has its mailboxes in front of its inns (mail.mailboxesOn). Once its mailboxes are saved from
- * the editor, the map keeps a list of its own, one row of mailbox_spots, and the inns place none; deleting that
- * list gives the map back to its inns. An empty list is a map with no mailbox. A record of the editor is a map.
- * The editor is sent the map the admin is on and the maps they visited recently (the game remembers them and sends
- * their names); any other map is found by a search of its name, as the item editor finds items (SEARCH_LIMIT at a
- * time), never the whole list at once. USER REQUEST 2026-10-17: "You should only show recently visited maps unless
- * the developer searches for a specific map". Each change is checked, written to the table and
- * then to the cache, and answered with whether it was done and every record as it then stands. Like the other
- * editors, it reads only what the server holds, never the database.
- */
 import query from "../controllers/sqldatabase";
 import log from "../modules/logger";
 import { tableCache } from "../services/datacache";
@@ -41,11 +25,6 @@ export const MAILBOX_SPOTS_TABLE: Record<"mysql" | "sqlite", string> = {
 
 let ready = false;
 
-/**
- * Start-time safety step: makes the table on a database whose setup ran before it was added, and lists
- * the tool's permission. Safe on every start, and never throws: without the table, every map keeps the
- * mailboxes its inns place, and a change is refused.
- */
 export async function ensureMailboxSchema(): Promise<boolean> {
   ready = false;
   try {
@@ -208,12 +187,6 @@ export type EditorAnswer =
 
 const spotsOnly = (boxes: Mailbox[]): Spot[] => boxes.map(({ x, y }) => ({ x, y }));
 
-/**
- * The records the editor is sent. With no `query`: the map the admin is on, then the maps of `recent` (the names
- * the game remembers, newest first) that are maps, RECENT_LIMIT at most. With a query: the maps whose name has it
- * in, those that start with it first, SEARCH_LIMIT at most. `open`: the map the editor has open, sent along
- * whatever else is, so it stays open.
- */
 export async function buildEditorData(world: EditorWorld, rawQuery: unknown = "", open: unknown = "", recent: unknown = []): Promise<EditorData> {
   const here = mapName(world.here);
   const query = String(rawQuery ?? "").trim().toLowerCase();

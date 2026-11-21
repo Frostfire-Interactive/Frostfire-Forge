@@ -1,17 +1,10 @@
 import { expect, test, mock, beforeEach } from "bun:test";
 import { databaseModule } from "./setup";
 
-// Two players logging in at the same exact time must end up mutually visible:
-// each side's `playersInAOI` contains the other, the reverse index agrees, and
-// a spawn is queued in BOTH directions. Uses the real AOI module (only the
-// database is stubbed); each test gets its own map name because LayerManager
-// has no reset and layers are keyed by map.
 mock.module("../controllers/sqldatabase", () => databaseModule({
   default: async (_sql: string, _params?: any[]) => [],
 }));
 
-// Generated at server start (`bun create-config`) and gitignored, so CI has
-// no copy on disk. Mock the values instead of requiring the file.
 mock.module("../config/aoi.json", () => ({
   default: {
     DEFAULT_RADIUS: 1000,
@@ -51,8 +44,6 @@ function makePlayer(id: string, username: string, map: string, x: number, y: num
   };
 }
 
-// Full login-sequence equivalent for one player: cache add -> AOI init ->
-// map index -> AOI update (mirrors the auth-complete path in receiver.ts).
 async function loginPlayer(
   p: any,
   spawnBatchQueue: Map<string, Map<string, any>>,
@@ -97,8 +88,6 @@ test("concurrent logins converge to mutual visibility (no lost spawn)", async ()
   const spawn = new Map<string, Map<string, any>>();
   const despawn = new Map<string, Set<string>>();
 
-  // Both players are already in the cache (auth completed for both) and their
-  // AOI updates run concurrently - the simultaneous-login interleaving.
   const a = makePlayer("A", "Alice", map, 500, 500);
   const b = makePlayer("B", "Bob", map, 510, 510);
   playerCache.add(a.id, a);
@@ -121,9 +110,6 @@ test("concurrent logins converge to mutual visibility (no lost spawn)", async ()
   expect(pb.aoi.playersInAOI.has("A")).toBe(true);
   expect(aoiReverse.getViewers("A").has("B")).toBe(true);
   expect(aoiReverse.getViewers("B").has("A")).toBe(true);
-  // At least one direction queued each spawn; whoever ran second may have
-  // found the other already present (entered-loop dedup), but the union must
-  // cover both directions exactly once across the two updates.
   expect(spawn.get("A")?.has("B")).toBe(true);
   expect(spawn.get("B")?.has("A")).toBe(true);
 });
@@ -137,8 +123,6 @@ test("late joiner's update heals an early update that ran before they existed", 
   await loginPlayer(makePlayer("A", "Alice", map, 500, 500), spawn, despawn);
   expect(playerCache.get("A").aoi.playersInAOI.size).toBe(0);
 
-  // B logs in afterwards: B's own update must queue BOTH directions so A
-  // learns about B without having to move.
   await loginPlayer(makePlayer("B", "Bob", map, 510, 510), spawn, despawn);
 
   expect(playerCache.get("B").aoi.playersInAOI.has("A")).toBe(true);
@@ -155,8 +139,6 @@ test("forward sets and reverse index stay consistent after mutual login", async 
   await loginPlayer(makePlayer("A", "Alice", map, 500, 500), spawn, despawn);
   await loginPlayer(makePlayer("B", "Bob", map, 510, 510), spawn, despawn);
 
-  // For every player, every id in their forward set must list them as a
-  // viewer in the reverse index (the invariant movement broadcast relies on).
   for (const id of ["A", "B"]) {
     const p = playerCache.get(id);
     for (const seen of p.aoi.playersInAOI) {

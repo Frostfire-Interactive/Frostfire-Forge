@@ -5,10 +5,6 @@ const assetServerUrl = process.env.ASSET_SERVER_URL || 'http://localhost:8000';
 /** Each item's sheet by its lowercased name, worked out once per item list held. */
 const sheetsByList = new WeakMap<object, Map<string, string>>();
 
-/**
- * How long the sheets are kept without a write to the items being heard here. A write through this process's cache
- * drops them at once; an edit made on another node (the Redis cache is shared) is only seen after this long.
- */
 const SHEETS_TTL_MS = 5000;
 let held: { sheets: Map<string, string>; at: number } | null = null;
 let loading: Promise<Map<string, string>> | null = null;
@@ -32,10 +28,6 @@ function heldSheets(): Map<string, string> | null {
   return held && Date.now() - held.at < SHEETS_TTL_MS ? held.sheets : null;
 }
 
-/**
- * The sheet a worn item is drawn with: the one chosen for it in the item editor,
- * or the sheet named after it when none was.
- */
 function equipmentSheets(): Promise<Map<string, string>> {
   if (loading) return loading;
   const seen = version;
@@ -62,11 +54,6 @@ function equipmentSheets(): Promise<Map<string, string>> {
   return mine;
 }
 
-/**
- * Identifies the item-to-sheet table the equipment sprites are drawn from right now: the same object for as long as
- * the table is held and unchanged, null once it has expired or an item was written. A caller that keeps what it built
- * from getPlayerSpriteSheetData holds it only while this still returns the object it read before the call.
- */
 export function equipmentSheetsToken(): object | null {
   return heldSheets();
 }
@@ -107,8 +94,6 @@ export async function getPlayerSpriteSheetData(
 
   const sheets = equipment ? (heldSheets() ?? await equipmentSheets()) : null;
 
-  // Helper function to generate sprite URLs for equipment (uses shared template).
-  // `item` is the worn item's name; its sheet is the one chosen for it, else its own name.
   function generateEquipmentSpriteUrl(item: string): SpriteUrl {
     const name = sheets?.get(item.toLowerCase()) ?? item.toLowerCase();
     return {
@@ -208,8 +193,6 @@ export function getIconUrl(iconName: string | null): string | null {
   return `${assetServerUrl}/icon?name=${encodeURIComponent(iconName.replace(/\.(png|jpg|jpeg|gif)$/i, ''))}`;
 }
 
-// Generate sprite URLs (from the sprites/ folder) for spell effect icons.
-// Spell icons live in the sprites folder, not icons, unlike items/mounts.
 export function getSpriteUrl(spriteName: string | null): string | null {
   if (!spriteName) return null;
   return `${assetServerUrl}/sprite?name=${encodeURIComponent(spriteName.replace(/\.(png|jpg|jpeg|gif)$/i, ''))}`;
@@ -265,8 +248,6 @@ export function getNpcSpriteLayers(npc: {
     };
   }
 
-  // Animated: body and head use shared base templates (same as players),
-  // equipment layers use their own name as both template and image.
   const bodyUrl = (name: string): SpriteUrl => ({
     name,
     templateUrl: `${assetServerUrl}/sprite-sheet-template?name=npc_body_base`,
@@ -297,8 +278,6 @@ export function getNpcSpriteLayers(npc: {
   };
 }
 
-// Check if sprite sheet system is available
-// Since we're now generating URLs on-demand, this always returns true
 export async function isSpriteSheetSystemAvailable(): Promise<boolean> {
   return true;
 }

@@ -2,11 +2,6 @@ import { afterAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:t
 import { characterDatabaseModule } from "./setup";
 import { GuardError } from "../controllers/sqltransaction";
 
-// Using an item, and going home. The real consumable, home, inventory and bag
-// systems run against a fake database: after each use, what the player holds
-// there and the stats they carry are compared with what the use should have
-// done.
-
 // ------------------------------------------------------------ fake database
 
 type Row = Record<string, any>;
@@ -477,8 +472,6 @@ describe("the home item", () => {
       throw error;
     });
     try {
-      // Guard: nothingWritten. Retried, a second try would find the stone held (heldIn), but only a batch that sent
-      // nothing is known to be safe to run again.
       expect(await consumables.giveHomeItem("ally", 1)).toBe(false);
       expect(tries).toBe(1);
     } finally {

@@ -7,9 +7,6 @@ import { CreatureRegistry } from "../systems/creatures/registry";
 import { databaseModule, mockQuery } from "./setup";
 import { linkPair } from "./cluster-fakelink";
 
-// The ghost-perf wave: flushTick reads only the entities that were touched and those whose keyframe is due (fix 2),
-// the creature registry keeps the cells that pass the band between scans (fix 3), and the block table's bare()
-// memo is bounded (fix 1).
 mock.module("../controllers/sqldatabase", () => databaseModule({ default: mockQuery }));
 mock.module("../config/settings.json", () => ({ default: { creatures: {} }, creatures: {} }));
 

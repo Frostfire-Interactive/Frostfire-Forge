@@ -1,13 +1,3 @@
-// What a map marks for a player: its inns, its merchants, its caves and its houses.
-//
-// All are read from the map's warps. An inn or a merchant is the door of the
-// house the innkeeper or the vendor is in. A cave is a way from one stretch of
-// open country into another: from the overworld down into the underworld, and
-// back up. A house is a door from open country into a map that is indoors. The
-// server works them out for the map a player is on and sends them
-// (MAP_MARKERS): the minimap draws a pin for each inn, merchant and cave, and
-// the world map a picture for each house.
-
 import { isInnkeeper } from "./homes";
 import vendors from "./vendors";
 
@@ -40,14 +30,6 @@ function topOf(warp: WarpObject): { x: number; y: number } | null {
   return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
 }
 
-/**
- * Where NPCs of a kind are marked on a map. Such an NPC stands inside a house, which is a map of
- * its own: it is marked on the door that leads there (a warp of this map into the NPC's map), at
- * the middle of the door's top edge, once however many doors the house has, under the name of the
- * first of them in it. `outdoors` says whether a map is open country (a world) and not the inside
- * of something: an NPC standing in the open is marked where it stands, on its own map only, and a
- * way into that map from another is not its door. Indoors nothing is marked for the room's own.
- */
 function npcMarkers(map: string, npcs: Npc[], warps: Warps, outdoors: Outdoors): NpcMarker[] {
   const here = mapName(map);
   // The first of them on each map that has one.
@@ -79,11 +61,6 @@ export function innMarkers(map: string, npcs: Npc[], warps: Warps, outdoors: Out
   return npcMarkers(map, (npcs || []).filter((npc) => isInnkeeper(npc)), warps, outdoors);
 }
 
-/**
- * The doors of a map's inns, from open country: of each house an innkeeper is in, the first door
- * that leads there from this map. Indoors there are none, and an innkeeper standing in the open has
- * no door.
- */
 export function innDoors(map: string, npcs: Npc[], warps: Warps, outdoors: Outdoors): WarpObject[] {
   const here = mapName(map);
   if (!outdoors(here)) return [];
@@ -104,10 +81,6 @@ export function merchantMarkers(map: string, npcs: Npc[], warps: Warps, outdoors
   return npcMarkers(map, (npcs || []).filter((npc) => !npc.hidden && vendors.isVendor(npc)), warps, outdoors);
 }
 
-/**
- * A map made of separate cave systems (a world's underworld): their rectangles, in tiles, and the size of a tile.
- * A warp from one of them into another is a cave as much as one into another map.
- */
 export interface MapSections {
   sections: Array<{ x: number; y: number; width: number; height: number }>;
   tileWidth: number;
@@ -120,13 +93,6 @@ function sectionAt(layout: MapSections, x: number, y: number): number {
   return layout.sections.findIndex((s) => c >= s.x && c < s.x + s.width && r >= s.y && r < s.y + s.height);
 }
 
-/**
- * Where a map's caves are: each warp of an open map that leads into another open map, marked at
- * the middle of its top edge. A warp to another place on the same map is no cave, and neither is a
- * door into a house or out of one, but on a map made of cave systems (`layout`) a warp from one into
- * another is: it is the way into the next cave (USER REQUEST 2026-10-16: "Fix the blue diamonds that
- * go to other caves in the underworld, it should be the same cave icon for those as well").
- */
 export function caveMarkers(map: string, warps: Warps, outdoors: Outdoors, layout?: MapSections | null): Array<{ x: number; y: number }> {
   const here = mapName(map);
   if (!outdoors(here)) return [];
@@ -149,11 +115,6 @@ export function caveMarkers(map: string, warps: Warps, outdoors: Outdoors, layou
   return marked;
 }
 
-/**
- * Where a map's houses are: each door of an open map that leads into a map that is indoors, marked
- * at the middle of its top edge, once however many doors the house has. From inside, the door back
- * out is no house.
- */
 export function houseMarkers(map: string, warps: Warps, outdoors: Outdoors): Array<{ x: number; y: number }> {
   const here = mapName(map);
   if (!outdoors(here)) return [];

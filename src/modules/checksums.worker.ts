@@ -1,6 +1,3 @@
-// Works out the maps' checksums off the main thread (modules/checksums.ts): a first pass reads, parses and hashes
-// every map file (some 1,800 on Mystika, about 90 MB), which held the event loop for over a second. The checksums
-// held here by file size and time (checksums.ts calculateFileChecksum) stay for this worker's life.
 import { allMapChecksumsNow, mapChecksumNow } from "./checksums.ts";
 
 declare const self: Worker;

@@ -1,10 +1,5 @@
 import { linkCalls } from "./linkcalls";
 
-// APPLY_EFFECT (spec §4): a change to an entity this node does not own goes to
-// its owner, which checks it and applies it, and answers what happened. Each
-// op has one applier, registered by the module that owns that kind of entity.
-// The answer of an APPLY_EFFECT call is its EFFECT_RESULT.
-
 export type EffectOp = "creature_hit" | "creature_threat" | "creature_on_player" | "player_hit";
 /** `stats` and `absorb` come with a player_hit that landed: the caster's node shows the damage numbers from them. */
 export type EffectResult = { outcome: "applied" | "killed" | "refused" | "missing"; reason?: string; stats?: unknown; absorb?: number };
@@ -20,11 +15,6 @@ export function onApplyEffect(op: EffectOp, fn: EffectApplier): () => void {
   return () => { if (appliers.get(op) === fn) appliers.delete(op); };
 }
 
-/**
- * Tests only: replaces the applier of `op` (or clears it with null) and returns a function that puts
- * the previous one back. Modules register their real ops at load, and every test file shares one
- * process, so a test that needs an op of its own swaps it rather than registering a second applier.
- */
 export function swapApplierForTest(op: EffectOp, fn: EffectApplier | null): () => void {
   const previous = appliers.get(op);
   if (fn) appliers.set(op, fn);

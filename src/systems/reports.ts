@@ -96,26 +96,15 @@ const fromRow = (row: any): Report => ({
   resolution: row.resolution ?? null,
 });
 
-// The reports the staff work from: every open one, and the latest that were
-// resolved. Reads are answered from these rows; a change below is written to
-// the database and then to them, and a write the database does not answer has
-// them read again.
 const rows = tableCache<Report>("reports", async () => {
   const open = (await query(`SELECT ${COLUMNS} FROM reports WHERE status = 'open'`, [])) as any[];
   const resolved = (await query(`SELECT ${COLUMNS} FROM reports WHERE status = 'resolved' ORDER BY resolved_at DESC LIMIT ?`, [RESOLVED_KEPT])) as any[];
   return [...(open || []), ...(resolved || [])].map(fromRow);
 });
 
-// One change at a time. Filing is a check followed by a write: the same
-// report arriving twice must not pass the check twice before either writes.
 const oneAtATime = turns();
 const inTurn = <T>(work: () => Promise<T>) => oneAtATime("reports", work);
 
-/**
- * Runs one write. When the database does not answer it the reports are read
- * again: a statement that timed out may still have been applied. The failure
- * is still thrown.
- */
 async function writing<T>(write: () => Promise<T>): Promise<T> {
   try {
     return await write();
@@ -159,10 +148,6 @@ const reports = {
   async openAgainst(username: string): Promise<number> {
     return reports.openCount(username);
   },
-  /**
-   * Files a report, or says why it was not filed. `target` is the name of a character: whether
-   * there is one is for the caller to have asked the player system.
-   */
   async file(filing: Filing, now = Date.now()): Promise<{ ok: true; report: Report } | { ok: false; code: RefusedReport }> {
     const reporter = lower(filing.reporter);
     const target = lower(filing.target);
@@ -194,8 +179,6 @@ const reports = {
         resolved_at: null,
         resolution: null,
       };
-      // The row is the reporter's character's; it names the target's character, and the target's account, which a
-      // ban or a mute acts on, by id. The names stay as they were written.
       const reporterId = await characterIdOf(reporter);
       const named = await characterByName(target);
       const result = await writing(() => query(

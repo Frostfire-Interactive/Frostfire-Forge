@@ -9,10 +9,6 @@ import type { GhostCandidate, GhostKind } from "../ghosts";
 import { FLAG_MOVING, FLAG_STEALTH, directionCode, directionName } from "../linkproto";
 import { mirrorPlayers } from "../mirrors";
 
-// Players as mirrors (spec §3): the owner sends what a viewer's client is shown
-// of a player; the mirror is a player-shaped record that AOI, spawn and movement
-// sends read like a local player, but it is not in playerCache and has no socket.
-
 export interface PlayerGhostDeps {
   queueMove(mirror: any, final: boolean): void;
   spawnQueue: Map<string, Map<string, any>>;
@@ -26,15 +22,8 @@ const bare = (map: unknown) => {
 
 // Fields a GHOST_STATE may not touch: they are the mirror's own bookkeeping, or arrive by spawn and move only.
 const KEPT = new Set(["id", "userid", "username", "location", "moving", "remote", "mirrorFrom", "aoi", "wt", "_viewersAt", "_stateStealth", "_moveStealth"]);
-// A change to one of these can show or hide the player for a viewer, or move them to other viewers.
-// isStealth is not here: the mirror's own value is worked out from two inputs (see stealthOf).
 const VISIBILITY = ["isVanished", "isDead", "isGhost", "layerId"];
 
-// A mirror's stealth has two inputs. The spawn record and GHOST_STATE are reliable and in order, so their
-// value is the authority. The stealth flag on a move comes sooner, but datagrams are unordered and carry
-// no sequence, so a late one may be stale. The mirror is stealthed while either says so: a move can hide
-// the player at once, and a stale move without the flag can never show a player the state says is hidden.
-// A stale move with the flag, after the stealth ended, is undone by the next move or keyframe without it.
 const stealthOf = (mirror: any) => !!(mirror._stateStealth || mirror._moveStealth);
 
 function shown(player: any) {
@@ -46,8 +35,6 @@ function shown(player: any) {
     equipment: player.equipment ?? null, equipmentRevision: player.equipmentRevision ?? 0,
     // party_id picks the corpse-loot owner for a tapper seen as a mirror (creatures/kill.ts), who has no party row here.
     casting: !!player.casting, party: [...(player.party ?? [])], party_id: player.party_id ?? null, pvp: !!player.pvp,
-    // Times the effects run out, not seconds left: the state is compared every scan, and a countdown
-    // would send every timed effect to the neighbours once a second.
     effects: getEffectsState(player),
     // The fishing line as it stands (receiver.ts broadcastFishing): a viewer who comes into view is sent it.
     fishLine: player.fishLine ?? null,
@@ -65,19 +52,12 @@ export function playerGhostRecord(player: any): any {
   };
 }
 
-/**
- * The mirror of a player who is local here now (a relog, or a move to this node, while the old node's despawn
- * is still on its way): forget it without a word to viewers. The id is the local player's now, so are the
- * viewers' entries for it, and a despawn would hide the local player from them.
- */
 function dropShadowed(id: string): void {
   if (!mirrorPlayers.delete(id)) return;
   // The grid entry is the mirror's only while the local player has not been filed under the id yet.
   if (spatialGrid.isRemote(id)) spatialGrid.removePlayer(id);
 }
 
-// A login takes the id over at once, before anything else from the old node reaches the mirror (relayed packets
-// would otherwise go to the local player's viewers). Does nothing outside cluster mode: there are no mirrors.
 playerCache.onAdd((key) => dropShadowed(String(key)));
 
 export function playerGhostKind(deps: PlayerGhostDeps): GhostKind {
@@ -90,10 +70,6 @@ export function playerGhostKind(deps: PlayerGhostDeps): GhostKind {
     queued.set(mirror.id, spawnData);
   };
 
-  // A local stealth toggle despawns the player for the viewers who lose it and spawns it again for them on
-  // the way back (socket/handlers/commands.ts, STEALTH). The owner's despawns and spawns go map-wide there, not through AOI, so
-  // the mirror does the same for its own viewers when the hidden flag flips.
-  // Unlike that handler, party members and forced viewers keep the player here, as AOI shows them.
   const hiddenChanged = (mirror: any, hidden: boolean) => {
     const spawnData = hidden ? null : queueSpawnPlayerPacket(mirror);
     if (!hidden && !spawnData) return;
@@ -126,8 +102,6 @@ export function playerGhostKind(deps: PlayerGhostDeps): GhostKind {
         if (!player?.aoi || !pos || player.remote) continue;
         const x = Number(pos.x);
         const y = Number(pos.y);
-        // The band takes the map as the player has it (it reads a .json spelling itself), so no candidate is built
-        // for a player it skips. Ghosts.scan checks again, for the kinds that do not filter.
         if (band && !band.near(String(player.location.map ?? ""), x, y)) continue;
         const map = bare(player.location.map);
         yield { id: String(player.id), num: Number(player.id), map, layerId: player.aoi.layerId ?? null, x, y };
@@ -139,8 +113,6 @@ export function playerGhostKind(deps: PlayerGhostDeps): GhostKind {
       return player?.location?.position ? playerGhostRecord(player) : null;
     },
 
-    // layerId goes with the state: Ghosts starts a mirror over on a map change only, so a layer switch
-    // reaches the mirror as a change here.
     state: (id) => {
       const player = local(id);
       return player ? { layerId: player.aoi?.layerId ?? null, ...shown(player) } : null;
@@ -167,8 +139,6 @@ export function playerGhostKind(deps: PlayerGhostDeps): GhostKind {
       const layerId = record.layerId ?? null;
       const aoi = old?.aoi ?? { playersInAOI: new Set<string>(), aoiRadius: AOI_CONFIG.DEFAULT_RADIUS, revision: 0 };
       aoi.layerId = layerId;
-      // Sent again (after a link flap, say): the new record replaces the old one whole, so a field it leaves
-      // out is gone here too.
       const mirror = {
         ...record,
         id,
@@ -185,9 +155,6 @@ export function playerGhostKind(deps: PlayerGhostDeps): GhostKind {
       mirrorPlayers.set(id, mirror);
       spatialGrid.addPlayer(id, mirror.location.position.x, mirror.location.position.y, map, true);
       if (old) {
-        // Sent again after a gap (a link flap, or a new owner): what changed in it was never sent as a change.
-        // The viewers who keep it lose or regain it as for a stealth toggle, and the rest are sent it afresh
-        // for its look.
         if (isHidden(old) !== isHidden(mirror)) hiddenChanged(mirror, isHidden(mirror));
         const spawnData = queueSpawnPlayerPacket(mirror);
         for (const viewerId of spawnData ? aoiReverse.getViewers(id) : []) {
@@ -212,9 +179,6 @@ export function playerGhostKind(deps: PlayerGhostDeps): GhostKind {
       const pos = mirror.location.position;
       const direction = directionName(dir);
       const moving = (flags & FLAG_MOVING) !== 0;
-      // The move carries the stealth flag, and comes sooner than the state scan: hide the mirror now, so its
-      // steps and the owner's relayed packets are not sent to viewers who no longer see it. See stealthOf
-      // for why a move without the flag shows it only when the state agrees.
       const moveStealth = (flags & FLAG_STEALTH) !== 0;
       if (moveStealth !== !!mirror._moveStealth) {
         const wasHidden = isHidden(mirror);
@@ -234,8 +198,6 @@ export function playerGhostKind(deps: PlayerGhostDeps): GhostKind {
       mirror.moving = moving;
       spatialGrid.updatePlayer(key, x, y, mirror.location.map);
       deps.queueMove(mirror, !moving);
-      // Throttled like a local walker's own AOI update, but always on a stop: no move follows it, so an
-      // idle viewer the mirror stopped next to would otherwise never be told.
       const now = Date.now();
       if (!moving || now - (mirror._viewersAt ?? 0) >= AOI_UPDATE_MS) {
         mirror._viewersAt = now;

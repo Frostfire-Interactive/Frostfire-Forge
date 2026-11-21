@@ -1,10 +1,3 @@
-// What a player who leaves keeps for their next login, saved the same way whether they disconnect (server.ts
-// onDisconnect) or a newer login of their account kicks them (server.ts saveKickedPlayer): the effects on them
-// (damage over time, barriers, stuns, slows), their sickness, then their stats and where they stand.
-//
-// Made of what it saves through, handed in: socket/leavesave.ts hands in the server's own modules, and the tests that
-// run server.ts's leave code from its source hand in their stand-ins (tests/setup.ts withLeaveSaves), so both run this.
-
 /** What the leave saves are written through. */
 export interface LeaveSaveDeps {
   effectManager: {
@@ -27,11 +20,6 @@ export interface LeaveSaveDeps {
 export interface LeaveSaves {
   /** Saves the effects on a leaving player and their sickness. Nothing for a guest. */
   saveLeavingEffects(p: any): void;
-  /**
-   * Saves a leaving player's stats and location without the owner-epoch fence. `bySession`: the location goes by the
-   * player's session id, so a session another login has taken since writes none (a disconnect). Otherwise it goes by
-   * the character (a kick: the new login has claimed the session already). Nothing for a guest.
-   */
   saveLeavingState(p: any, bySession: boolean): Promise<void>;
 }
 

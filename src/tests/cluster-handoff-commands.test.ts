@@ -2,8 +2,6 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-// The handler modules cannot be imported (they import the receiver, which starts the server). The commands' remote
-// branches run in admin-commands.test.ts; here the source is read for what only it shows.
 const handlers = join(import.meta.dir, "..", "socket", "handlers");
 const commands = readFileSync(join(handlers, "commands.ts"), "utf8");
 const session = readFileSync(join(handlers, "session.ts"), "utf8");

@@ -3,9 +3,6 @@ import { Database } from "bun:sqlite";
 import { databaseModule, standInFor } from "./setup";
 import { CHARACTER_TABLES } from "../utility/charactertables";
 
-// The migration against an in-memory SQLite database made by the engine's own SQLite setup: two accounts with rows in
-// the character tables, friends pointing at each other, and one mail to a name that does not exist.
-
 let db = new Database(":memory:");
 db.exec("PRAGMA foreign_keys = ON");
 

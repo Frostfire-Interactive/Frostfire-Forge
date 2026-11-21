@@ -99,8 +99,6 @@ test("an outgoing slot whose move never committed is spawned again by the old ow
   f.spawner.despawn(f.spawner.getLiveInstanceId(1)!, 2_000, { delayMs: 100_000 });
   f.spawner.exportSlots(inMain00, "t", "f", 3_000);
   f.spawner.reviewOwnership(3_000 + OUTGOING_KEEP_MS + 1);
-  // Guard: reviewOwnership schedules at the later of now and the slot's due time. Without it a slot given away and
-  // taken back respawns at once.
   expect(f.spawner.getPendingAt(1)).toBe(102_000);
 });
 
@@ -112,8 +110,6 @@ test("a move held undecided: its slots stay moving past OUTGOING_KEEP_MS, and no
   const slots = f.spawner.exportSlots(inMain00, "t", "f", 2_000);
   void part.hold!(move, slots, 5 * OUTGOING_KEEP_MS);
   const late = 2_000 + OUTGOING_KEEP_MS + 1;
-  // Guard: holdSlots. Without it the entry is pruned at OUTGOING_KEEP_MS: the creature may be handed on while the move
-  // is undecided, and the slot is scheduled afresh, so a restore finds two.
   expect(f.spawner.movingOut(id, late)).toBe(true);
   f.spawner.reviewOwnership(late);
   f.spawner.tick(late + 1_000_000);
@@ -211,8 +207,6 @@ test("a held slot whose creature is already foreign here is taken as held here, 
   const slots = f.spawner.exportSlots(inMain00, "t", "f", 2_000);
   expect(slots[0]).toMatchObject({ kind: "held", holder: "c" });
   expect(t.spawner.importSlots(slots, 2_000, "t")).toBe(1);
-  // Guard: the foreign check before the away branch. Without it t holds the slot away at c and the wolf foreign at
-  // once; its sweep hears "moved to t" from c, frees the slot and spawns a second wolf.
   expect(t.spawner.getLiveInstanceId(1)).toBe(id);
   expect(t.spawner.foreignHome(id)).toBeNull();
   expect(t.spawner.awaySlots()).toEqual([]);
@@ -313,8 +307,6 @@ test("rehome moves a foreign creature's home; to this node only when its away sl
   expect(t.spawner.foreignHome(wolf.id)).toBe("t2");
   expect(t.spawner.rehome(12_345, "x")).toBe(false);
 
-  // importSlots and adopt never leave a creature both foreign and away here any more (P2), so the state rehome(null)
-  // repairs is built by hand: the away slot first, then the creature marked foreign.
   const u = side({ owns: false });
   u.spawner.importSlots([{ kind: "held", spawnId: 1, layerId: null, instanceId: wolf.id, poolId: null, templateId: 1, holder: "c" }], 2_000, "u");
   u.registry.add({ ...wolf });
@@ -540,8 +532,6 @@ test("an outbox entry too big to send is dropped by name and does not hold up th
     handoff.died(1, 1, "h", { respawn: true, delayMs: null });
     handoff.died(2, 1, "h", { respawn: true, delayMs: null });
     await twice();
-    // Guard: too-big is dropped, not kept. Without it the entry stays at the head of the outbox and is tried again
-    // before every later one, so the second death never reaches its home.
     expect(sent).toEqual([1, 2]);
     expect(handoff.outboxSize()).toBe(0);
     expect(warnings.some((w) => w.includes("Wolf (1)") && w.includes("too big"))).toBe(true);
@@ -599,8 +589,6 @@ test("a creature whose slot is moving out is not handed on, so a restore finds i
   const handoff = handing(f, "f");
   const part = realPart(f);
   const data = await part.collect(move);
-  // Guard: the in-move check in handOff. Without it f hands the wolf to d; the restore then finds no foreign wolf,
-  // respawns the slot on its roll, and d still holds the first wolf: two wolves for one slot.
   expect(await handoff.handOff(wolf, "d")).toBe("busy");
   expect(await handoff.handOff(wolf, "t")).toBe("busy");
   expect(wolf.remote).toBeFalsy();
@@ -698,8 +686,6 @@ test("a move lost at the deadline drops the creatures the old owner still holds 
   } finally {
     errorSpy.mockRestore();
   }
-  // Guard: the drop (task 20 review I2). Kept, the wolf stays foreign here while t may hold its slot, and the slot
-  // respawns here once it is no longer outgoing: two wolves for one slot.
   expect(f.registry.get(id)).toBeUndefined();
   expect(f.spawner.foreignHome(id)).toBeNull();
   expect(f.events).toContain(`despawn:${id}`);
@@ -720,13 +706,9 @@ test("a slot another node holds, in a move lost at the deadline, is held here ag
     const data = await part.collect(move);
     expect(data).toEqual([{ kind: "held", spawnId: 1, layerId: null, instanceId: id, poolId: null, templateId: 1, holder }]);
     await part.lost!(move, data);
-    // Guard: lost leaves the slot out (task 20 re-review N1). Held away here at once, the holder could hand the wolf
-    // home to f, where it would become live while t, had it taken the slot, finds it gone and spawns a second.
     expect(f.spawner.awaySlots()).toEqual([]);
     // The order is read back aborted: t never took the slot.
     await part.lostAborted!(move, data);
-    // Guard: lostAborted puts the slot back away. Without it f spawns slot 1 afresh once it no longer answers for it,
-    // while the holder keeps the first wolf: two wolves for one slot.
     expect(f.spawner.awaySlots()).toEqual([{ instanceId: id, spawnId: 1, layerId: null, poolId: null, templateId: 1, holder }]);
     f.spawner.reviewOwnership(2_000 + OUTGOING_KEEP_MS + 1);
     f.spawner.tick(10_000_000);

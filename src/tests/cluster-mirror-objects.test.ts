@@ -1,13 +1,8 @@
 import { expect, mock, spyOn, test } from "bun:test";
 import { databaseModule, mockQuery } from "./setup";
 
-// Mirrors of another node's loot, chests, skeletons, tornadoes, ground AOEs and gathering nodes: shown to the players
-// here through the read paths, never reached by a writer. Real grid / layer / player modules; only the database is
-// stubbed.
 mock.module("../controllers/sqldatabase", () => databaseModule({ default: mockQuery }));
 
-// Generated at server start (`bun create-config`) and gitignored, so CI has
-// no copy on disk. Mock the values instead of requiring the file.
 mock.module("../config/settings.json", () => ({
   default: { creatures: {} },
   creatures: {},

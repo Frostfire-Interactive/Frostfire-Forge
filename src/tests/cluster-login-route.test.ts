@@ -7,9 +7,6 @@ import { packetManager } from "../socket/packet_manager";
 import { accountBinding, checkTicket, isSwitchTicket, NODE_TICKET_TTL_MS, nodeTicket, signTicket } from "../socket/ticket";
 import { TransportConnection } from "../socket/transport";
 
-// Cluster mode: a login lands on the node that owns the player's spawn block;
-// the node that got it hands it over with SWITCH (receiver.ts, at login).
-
 const node = (nodeId: string, over: Partial<NodeInfo> = {}): NodeInfo => ({
   nodeId, regionId: "us", publicHost: `${nodeId}.example`, port: 443, wtPort: 3002, useSSL: true, startedAt: 1, ...over,
 });

@@ -2,10 +2,6 @@ import { afterAll, beforeAll, beforeEach, describe, expect, mock, spyOn, test } 
 import { characterDatabaseModule as databaseModule } from "./setup";
 import { receiverSource } from "./receiver-source";
 
-// ------------------------------------------------------------ fake database
-// The accounts the commands look up, and the permissions table as the real
-// permissions module reads and writes it.
-
 type Row = Record<string, any>;
 let accounts: Row[];
 let held: Record<string, string>;
@@ -25,10 +21,6 @@ mock.module("../controllers/sqldatabase", () => databaseModule({
 const { default: permissions, canGrant, outranks } = await import("../systems/permissions");
 const { clearCaches } = await import("../services/datacache");
 const { followServerOrder, restartState, shutdownEverywhere, startRestart, toggleRestart } = await import("../socket/serverorders");
-
-// ------------------------------------------------------------------ harness
-// The receiver cannot be imported (it starts the server), so a command is run
-// from its source: the body of its case, with the names it uses handed in.
 
 const source = receiverSource();
 const commandsAt = source.indexOf('      case "COMMAND": {');
@@ -185,8 +177,6 @@ function names(name: string, args: string[], over: Row = {}): Row {
       },
       // The characters of the account a character belongs to, lower case: here each account is one character.
       charactersOf: async (username: string) => (accountOf(username) ? [username.toLowerCase()] : []),
-      // A location is saved as systems/player.ts saves it: for the session with that id, or for that username.
-      // A username handed to the first is no session's id, and saves nothing.
       setLocation: async (...call: any[]) => {
         moved.push(call);
         const row = online[call[0]] ? accountOf(online[call[0]].username) : undefined;
@@ -364,8 +354,6 @@ describe("/shutdown", () => {
     expect(ending).toEqual([]);
     expect(intervals[0].cleared).toBe(false);
 
-    // Everyone is out: clear what a session leaves behind, let the database
-    // finish what the disconnects wrote, then stop the server.
     online = {};
     await intervals[0].run();
     expect(intervals[0].cleared).toBe(true);

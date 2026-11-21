@@ -1,11 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { characterDatabaseModule as databaseModule, testCharacterId } from "./setup";
 
-// ------------------------------------------------------------ fake database
-// The statements the guild system sends, run against in-memory tables. A
-// statement it does not know is an error, so a read that is not the load of
-// a whole table fails the test that made it.
-
 type Row = Record<string, any>;
 let guildsTable: Row[];
 let ranksTable: Row[];
@@ -497,8 +492,6 @@ describe("a guild change is written to the database, then to the table held", ()
 
 // --------------------------------- a write the database does not answer
 
-// Each write, the statement of it that is not answered, what the write then
-// answers, and the accounts the player system must be told to read again.
 const unanswered: Array<[string, RegExp, () => Promise<unknown>, unknown, string[]]> = [
   ["setLeader", /^UPDATE guilds/, () => guilds.setLeader(1, "user2"), [], []],
   ["add (the account)", /^UPDATE accounts/, () => guilds.add("user4", 1), [], ["user4"]],
@@ -514,8 +507,6 @@ const unanswered: Array<[string, RegExp, () => Promise<unknown>, unknown, string
   ["create (the account)", /^UPDATE accounts/, () => guilds.create("user4", "New Guild"), false, ["user4"]],
 ];
 
-// A statement that timed out may still have been applied, so after either
-// kind of failure the tables are read again rather than trusted.
 for (const made of [false, true]) {
   describe(`a guild write the database ${made ? "made but never answered" : "refused"}`, () => {
     test.each(unanswered)("%s: the tables are read again, so what is held is what the database holds", async (_name, statement, write, answer, accounts) => {

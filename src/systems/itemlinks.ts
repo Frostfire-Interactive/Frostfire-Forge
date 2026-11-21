@@ -1,8 +1,3 @@
-// Item links in chat: a `[Item Name]` in a chat line that names a real item is
-// sent to the client with that item's tooltip data, so the client can show the
-// line's token as a link. Pure: the item list comes in as an argument, so this
-// never reads the database or a cache itself.
-
 /** The most links one chat line carries. */
 export const MAX_ITEM_LINKS = 5;
 
@@ -58,9 +53,6 @@ export interface LinkableAchievement {
 }
 
 const TOKEN = /\[([^\[\]]+)\]/g;
-// A translation placeholder is built from two private-use characters round the link's number. A
-// player cannot type them (protectLinks strips them from the line first), so typed text can
-// never be mistaken for one.
 const OPEN = "";
 const CLOSE = "";
 const PLACEHOLDER = /(\d+)/g;
@@ -68,11 +60,6 @@ const RESERVED = /[]/g;
 
 const key = (name: string): string => name.trim().replace(/\s+/g, " ").toLowerCase();
 
-// The lowercase name -> item map, kept between lines. It is rebuilt when the list's length changes
-// or after NAME_MAP_TTL_MS, whichever comes first. A time bound (not the array reference) is what
-// makes this correct with CACHE=redis, where every assetCache.get returns a new array. An item
-// added or removed rebuilds it at once; an item edited (fields or name) can show its old values in
-// links for at most the TTL, since the editors replace the item object rather than change it.
 const NAME_MAP_TTL_MS = 30_000;
 let nameMap: { map: Map<string, Record<string, any>>; length: number; builtAt: number } | null = null;
 
@@ -106,10 +93,6 @@ function linkOf(item: any, iconUrl: (icon: string | null) => string | null): Ite
 
 type AchievementSource = LinkableAchievement[] | (() => LinkableAchievement[] | Promise<LinkableAchievement[]>);
 
-/**
- * One scan of a line. `achievements` null means "not read yet": the scan stops with null at the first
- * token that is not an item (and could be an achievement), so the caller can read them and scan again.
- */
 function scan(
   text: string,
   items: Array<Record<string, any>>,
@@ -152,13 +135,6 @@ function scan(
   return links;
 }
 
-/**
- * The links in a chat line: each distinct `[Name]` that names a real item or, when no item has that
- * name, an enabled achievement (case and spacing ignored), in order of first appearance, at most `max`
- * of both kinds together. `achievements` is the list or a getter for it (sync or async); a getter is
- * called only once a token turns up that is not an item, so a line of item links never reads them.
- * `iconUrl` turns an icon name into the url the client loads.
- */
 export async function findChatLinks(
   text: string,
   items: Array<Record<string, any>>,
@@ -192,13 +168,6 @@ export function canonicalLinks(text: string, links: Array<{ name: string }>): st
   });
 }
 
-/**
- * Swaps each link's `[Name]` token for a placeholder (private-use characters round
- * the link's number) that a player cannot type: those characters are stripped from
- * the line first. `held` is what `restoreLinks` needs to put the tokens back: the
- * links' exact names, by placeholder number. Brackets that are not links (unknown
- * names, links past the cap) are left as they are.
- */
 export function protectLinks(text: string, links: Array<{ name: string }>): { text: string; held: string[] } {
   const held = links.map((link) => link.name);
   if (typeof text !== "string") return { text, held };
@@ -214,11 +183,6 @@ export function protectLinks(text: string, links: Array<{ name: string }>): { te
   };
 }
 
-/**
- * Puts the link tokens back, each as `[Exact Name]`, exactly. Null when the text is not
- * a string or lost a placeholder (the translator mangled it): the caller keeps
- * the untranslated line then, so a link is never half there.
- */
 export function restoreLinks(text: string, held: string[]): string | null {
   if (typeof text !== "string") return null;
   const found = new Set<number>();

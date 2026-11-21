@@ -15,8 +15,6 @@ const { loadWorldMaps, getWorldMap, warpsAndGraveyardsOf } = await import("../mo
 
 type Warp = { name?: string; map: string; x: number; y: number; position: { x: number; y: number }; size: { width: number; height: number } };
 
-// The maps folder of a real world (one of the Mystika game's), for the two tests of the real overworld below. Not in
-// this repository: set MYSTIKA_MAPS_DIR to run them; without it they skip.
 const WORLD_DIR = process.env.MYSTIKA_MAPS_DIR ?? "";
 const OVERWORLD_MANIFEST = `${WORLD_DIR}/overworld.world/manifest.json`;
 

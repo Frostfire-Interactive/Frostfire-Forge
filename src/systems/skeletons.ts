@@ -38,9 +38,6 @@ const skeletons = {
   },
 
   spawn(map: string, x: number, y: number, username: string, layerId: string | null = null): DeathSkeleton | null {
-    // Players only: this is the single choke point for marker creation and
-    // entities have no username/account, so reject anything else here rather
-    // than trusting every present and future call site.
     if (typeof username !== "string" || username.length === 0) return null;
     if (typeof map !== "string" || map.length === 0) return null;
     if (!Number.isFinite(x) || !Number.isFinite(y)) return null;

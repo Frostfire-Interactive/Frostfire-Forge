@@ -1,9 +1,6 @@
 import { beforeEach, expect, test } from "bun:test";
 import * as t from "../systems/tornadoes";
 
-// The 10 Hz TORNADOES list goes to each player alone, holding only the tornadoes near them: a viewer's own sight
-// radius plus SHOW_MARGIN. showNearby is what the engine's bridge `show` runs; here the engine is a few stand-ins.
-
 type Sent = { id: string; list: Array<{ id: string; x: number; y: number }> };
 
 let viewers: any[];

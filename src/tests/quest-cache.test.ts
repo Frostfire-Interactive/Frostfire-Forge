@@ -2,19 +2,10 @@ import { afterAll, beforeAll, beforeEach, describe, expect, mock, spyOn, test } 
 import { characterDatabaseModule } from "./setup";
 import { GuardError } from "../controllers/sqltransaction";
 
-// Generated at server start (`bun create-config`) and gitignored, so CI has
-// no copy on disk. Mock the values instead of requiring the file.
 mock.module("../config/settings.json", () => ({
   default: { creatures: {} },
   creatures: {},
 }));
-
-// ------------------------------------------------------------ fake database
-// The few statement shapes the quest system and the inventory and bags behind
-// it send, run against in-memory tables: what a test then finds in a table is
-// what the statements left there, and the caches are held up against it. A
-// statement on a quest table that is not understood is an error, so a read
-// that is not a cache filling itself fails the test that made it.
 
 type Row = Record<string, any>;
 let tables: Record<string, Row[]>;
@@ -145,8 +136,6 @@ async function ask(sql: string, params: any[] = []) {
 
 mock.module("../controllers/sqldatabase", () => characterDatabaseModule({
   default: ask,
-  // All of its statements or none: one that is refused, or that had to change a row and did not, puts the
-  // tables back as they were. One written with its answer lost stands for a transaction kept whole and never answered.
   transaction: async (statements: Array<{ sql: string; values?: any[]; mustChange?: boolean }>) => {
     transactions++;
     const before = structuredClone({ tables, nextId });
@@ -1347,9 +1336,6 @@ describe("what a hand-in takes", () => {
 });
 
 describe("in a cluster", () => {
-  // The quest rows are shared (CACHE=redis), and a delete there forgets every player's; the log each online player
-  // carries is held by the node they play on. A quest deleted in the editor on one node is told to the region's other
-  // nodes (peer news "quest-removed"), and each takes it out of the logs its own players carry.
   const BUS_KEY = "quest-cache-test-key";
   async function region() {
     const { ClusterBus } = await import("../cluster/bus");

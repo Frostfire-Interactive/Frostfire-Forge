@@ -8,10 +8,6 @@ import { databaseModule } from "./setup";
 mock.module("../controllers/sqldatabase", () => databaseModule({ default: async () => [] }));
 import { buildClusterDebug, MAX_DEBUG_CELLS, type ClusterDebugSource } from "../cluster/nodedebug";
 
-// The kick paths run inside the login handler and the disconnect listener, which need a database, so the call
-// sites are checked as source text; the part that can be driven (what packetManager hands back, what the overlay
-// answers) is checked by behaviour.
-
 const socket = join(import.meta.dir, "..", "socket");
 const code = (file: string) => readFileSync(join(socket, file), "utf8").replace(/\r\n/g, "\n");
 

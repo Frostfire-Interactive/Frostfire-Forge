@@ -1,19 +1,6 @@
 import { afterAll, beforeEach, expect, mock, spyOn, test } from "bun:test";
 import { databaseModule } from "./setup";
 
-// Carried item (a) of the phase 6 final review, at run time: the AUTH case in socket/handlers/session.ts logs in a
-// connection whose node ticket this connection spent ("spent"), or that has no spend (unset or null, a Gateway
-// ticket). It refuses one spent before by another connection ("reused", "Ticket already used") and one whose spend
-// could not be checked ("unknown", "Ticket could not be checked"). End to end with a MemoryStore and the server's
-// own spendsTicket/spendTicket, a ticket used twice logs in once, and a store that fails refuses it (security
-// review L1, m4).
-//
-// session.ts imports the receiver, which cannot be imported by a test (it imports the server, which starts it): a
-// stand-in gives the few names session.ts takes from it. The real receiver cannot be imported to put back
-// afterwards, so a stand-in here would stay for every file run after this one. The tests therefore run in a
-// process of their own: this file, run by `bun test`, starts `bun test` on itself with CELLS_TICKET_AUTH_INNER set,
-// and only that inner run installs the stand-ins and runs the cases.
-
 const INNER = process.env.CELLS_TICKET_AUTH_INNER === "1";
 
 if (!INNER) {
@@ -45,8 +32,6 @@ if (!INNER) {
     releaseDraggedBy: () => {},
     sendPacket: (_wt: unknown, packet: unknown) => { sent.push(packet); },
   };
-  // The stand-ins are put in before session.ts is imported, so the module graph never reaches the real ones. The
-  // database is stubbed the way the other tests stub it (the real module starts its worker pool when imported).
   mock.module("../socket/receiver", () => receiverStandIn);
   mock.module("../controllers/sqldatabase", () => databaseModule({ default: async () => [] }));
 

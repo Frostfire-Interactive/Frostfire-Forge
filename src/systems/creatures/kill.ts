@@ -1,7 +1,3 @@
-/**
- * What happens when a tapped creature dies: XP (with party split), quest kill
- * credit and corpse loot. Owns the corpse loot store.
- */
 import log from "../../modules/logger";
 import { getIconUrl } from "../../modules/spriteSheetManager";
 import assetCache from "../../services/assetCache";
@@ -115,8 +111,6 @@ export function formatMoney(copper: number): string {
 
 async function awardXp(member: any, amount: number, creatureId: number): Promise<void> {
   if (amount <= 0) return;
-  // increaseXp (systems/player.ts) levels up once per pass, with no limit of its own: an amount beyond what the stats
-  // table holds would keep it running, and with it this node's one thread, for as long as the number is large.
   if (!Number.isFinite(amount) || amount > STAT_INT_MAX) {
     log.error(`XP award of ${amount} to ${member?.username} for creature ${creatureId} refused: more than the stats table holds`);
     return;
@@ -225,8 +219,6 @@ export async function handleKill(creature: CreatureInstance, template: CreatureT
   // A member on a neighbouring node (a mirror) gets their share there (APPLY_REWARD). The split counts everyone.
   const local = members.filter((m) => !m.remote);
   const away = members.filter((m) => m.remote);
-  // A mirror that arrived without stats has no known level: it is left out of the split (it would count as
-  // level 1 and skew the highest level for everyone) and gets 0 XP, with its quest credit as the rest do.
   const counted = members.filter((m) => !(m.remote && !m.stats));
   const xp = (template.flags & CreatureFlags.NO_XP) !== 0
     ? new Map<string, number>()
@@ -274,15 +266,9 @@ export async function handleKill(creature: CreatureInstance, template: CreatureT
   ]);
 }
 
-/**
- * A share of a kill made on a neighbouring node, for a player here (APPLY_REWARD): their XP and their quest
- * credit, as handleKill gives a local member. False when the player is not here (they moved or left).
- */
 export async function applyReward(body: RewardBody, from?: string): Promise<boolean> {
   const member = playerCache.get(String(body?.playerId));
   if (!member || lower(member.username) !== lower(body.username)) return false;
-  // The creature is named by its template, and the template is this node's own: the kill credit and the name in the
-  // notice come from its table, not from the body, and the XP cannot be more than that template gives.
   const template = knownTemplates.get(Number(body.templateId));
   if (!template) {
     log.warn(`Kill reward from ${from} for ${member.username} names creature template ${body.templateId}, which this node does not have`);
@@ -295,8 +281,6 @@ export async function applyReward(body: RewardBody, from?: string): Promise<bool
     return false;
   }
   await awardXp(member, xp, Number(body.creatureId));
-  // Quest credit reads only the template's id and name, and passes the creature on in CREATURE_KILL_CREDIT.
-  // On this path that creature carries only its id, so a plugin listening for the event gets no map or level.
   await creditQuests(
     [member],
     { id: Number(body.creatureId) } as CreatureInstance,
@@ -305,11 +289,6 @@ export async function applyReward(body: RewardBody, from?: string): Promise<bool
   return true;
 }
 
-/**
- * This node's creature templates by id, and the most copper any of them drops. The creature system hands them in
- * each time it loads its tables (setKnownTemplates), so a reward or a grant is checked with no read of the asset
- * cache. Answers the map that was held before, so a test can put it back.
- */
 let knownTemplates = new Map<number, CreatureTemplate>();
 let mostCopperDropped = 0;
 
@@ -323,15 +302,6 @@ export function setKnownTemplates(templates: Map<number, CreatureTemplate>): Map
 /** The biggest group bonus there is (groupBonus, 1 to 5 members). */
 const MAX_GROUP_BONUS = Math.max(...[1, 2, 3, 4, 5].map(groupBonus));
 
-/**
- * The most XP a member of level `memberLevel` can be given for a kill of a creature of this template: what the
- * local kill reward gives a player of that level for the template's highest creature level (baseKillXp, which only
- * grows with the creature's level), times the rank and the template's multiplier and the biggest group bonus.
- * A share is never more than the whole, and the whole is worked from the highest member's level, which is above
- * this member's only when that member is in a group with them: then the share is cut by their part of the levels,
- * and stays under this bound. A member who gained a level between the kill and the reward arriving is allowed what
- * the level below gave. Rounded up by one, and at most what the stats table holds.
- */
 export function maxShareXp(template: CreatureTemplate, memberLevel: number): number {
   if ((template.flags & CreatureFlags.NO_XP) !== 0) return 0;
   const level = Math.max(1, Number(memberLevel) || 1);
@@ -346,16 +316,10 @@ export function maxCorpseCopper(): number {
 }
 
 setRewardApplier(applyReward);
-// Hand-overs from other nodes carry corpse money at most (itembounds.ts). With no templates loaded yet the cap is not
-// known (null): such a hand-over waits, parked, instead of being refused.
 setCopperCap(() => (knownTemplates.size > 0 ? maxCorpseCopper() : null));
 
 export type LootError = "not_found" | "too_far" | "not_allowed" | "empty" | "failed" | "full";
 
-/**
- * The items a player's bags have room for, in order: more of something they hold takes no slot,
- * anything else takes one (as vendors and mail count it, systems/vendors.ts hasRoomFor).
- */
 async function fitsInBags(username: string, items: CorpseItem[]): Promise<CorpseItem[]> {
   return fitsInRoom(await bagRoom(username), items);
 }
@@ -394,8 +358,6 @@ export async function takeCorpseLoot(
 ): Promise<{ taken: CorpseItem[]; empty: boolean; full: boolean; remaining: CorpseItem[]; copper: number } | LootError> {
   const error = checkLootAccess(player, creature);
   if (error) return error;
-  // A looter of a neighbouring node (a mirror, LOOT_TAKE) sends the room in their bags, and their node
-  // writes what they take: the items and their share of the money go back in the answer.
   const handOver = !!player.remote;
   // Only what fits in the looter's bags is taken: the rest stays on the corpse.
   const wanted = corpseLoot.remaining(creature!.id).filter((item) => !indices || indices.includes(item.index));
@@ -409,8 +371,6 @@ export async function takeCorpseLoot(
   const result = corpseLoot.take(creature!.id, player.username, fits.map((item) => item.index));
   if (!result) return "not_allowed";
 
-  // Who gets their share where: written here for a player here or offline, sent to the node of a member on
-  // another node (sendGrant), or handed over to a looter of a neighbouring node.
   const looterKey = lower(player.username);
   const here: string[] = [];
   const away: string[] = [];
@@ -454,16 +414,11 @@ export async function takeCorpseLoot(
       send(recipient.wt, packetManager.notify({ message: `You receive loot: ${formatMoney(copper)}` }));
     }
   }
-  // The shares for members on other nodes are already off the corpse, so they are paid after the looter is answered:
-  // a grant to a slow node must not hold the answer back, or the looter's call (the same 10 s) times out and the
-  // items they took are lost. Nothing of the looter's is in these shares, so the two cannot overlap.
   if (away.length > 0) {
     const paying = payAway(away.map((name) => ({ username: name, copper: result.copper.get(name)! })))
       .finally(() => pending.delete(paying));
     pending.add(paying);
   }
-  // The same hook a pickup from the ground has (systems/loot.ts), so what counts loot counts this too.
-  // A looter of a neighbouring node gets these from their own node.
   for (const item of added) {
     send(player.wt, packetManager.lootReceived({ itemName: item.itemName, quantity: item.quantity, quality: item.quality || "common" }));
     listener.emit(Events.PLAYER_LOOT_RETRIEVED, { player, itemName: item.itemName, quantity: item.quantity, mapName: creature!.map, x: creature!.x, y: creature!.y } as any);
@@ -490,10 +445,6 @@ export async function grantsPaid(): Promise<void> {
   while (pending.size > 0) await Promise.allSettled([...pending]);
 }
 
-/**
- * Sends each share to the node of its member, all at once, and logs the ones that are lost. Each is already off
- * the corpse, so none is retried (Deviation 15); a member who went offline meanwhile is written here.
- */
 async function payAway(shares: GrantBody[]): Promise<void> {
   await Promise.all(shares.map(async (share) => {
     try {
@@ -507,17 +458,11 @@ async function payAway(shares: GrantBody[]): Promise<void> {
   }));
 }
 
-/**
- * A share of a corpse's money for a player of this node (GRANT, cells-grant), or, when `mustBeHere` is false,
- * for one who is offline (their rows are written here). "absent" when they must be here and are not.
- */
 async function grantCopper(body: GrantBody, mustBeHere: boolean): Promise<GrantOutcome> {
   const member = findPlayerByUsername(body.username);
   if (!member && mustBeHere) return "absent";
   const copper = Math.max(0, Math.floor(Number(body.copper) || 0));
   if (copper === 0) return "given";
-  // A share a peer sent (mustBeHere) cannot be more than a corpse holds. One written for an offline member is this
-  // node's own and was taken off its own corpse.
   if (mustBeHere) {
     const most = maxCorpseCopper();
     if (!Number.isInteger(body.copper) || copper > most) {
@@ -527,9 +472,6 @@ async function grantCopper(body: GrantBody, mustBeHere: boolean): Promise<GrantO
   }
   // A share with a grant id is given once (cluster/grants.ts): one sent again after a lost answer finds the mark.
   const id = body.id;
-  // Security review L7: every sender sets an id in cluster mode, and a share without one could be paid twice when
-  // sent again. One a peer sent without an id is refused there. Guard (test "a share without an id is refused in
-  // cluster mode, and given as before with the cluster off").
   if (!id && mustBeHere && clusterEnabled()) {
     log.error(`Corpse money for ${body.username} (${copper} copper) is refused and lost: a share from another node carries no grant id, so it could be given twice`);
     return "failed";
@@ -550,8 +492,6 @@ async function grantCopper(body: GrantBody, mustBeHere: boolean): Promise<GrantO
   }
   try {
     const balance = await atomically([body.username], async (batch) => {
-      // The id's row goes with the money (grantwrites.ts, security review M2): the store's mark above is the fast
-      // path, and this row is the proof should the store lose the mark. First in the batch, so its guard is known.
       if (id) await recordGrantWrite(batch, id);
       return await currency.add(body.username, { copper, silver: 0, gold: 0 }, batch);
     });
@@ -569,8 +509,6 @@ async function grantCopper(body: GrantBody, mustBeHere: boolean): Promise<GrantO
     }
     log.error(`Corpse money (${copper} copper) could not be given to ${body.username}: ${error}`);
     if (id) {
-      // Nothing was written: a second send of the same share may give it. Any other failure may come after the
-      // commit (a kept step, or a commit whose answer was lost), so the mark stays and the share is not given again.
       if (nothingWritten(error)) await grants.unapply(id);
       else log.error(`Corpse money ${id} (${copper} copper) for ${body.username} may have been written; it is not given again (lost if it was not)`);
     }

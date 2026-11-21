@@ -13,8 +13,6 @@ export interface WorkerFlushRequest {
   diffs: ReceiverDiff[];
   // `volume`: the flush's movement volume (movement_batch batchVolume); 0 when the flush failed.
   onBatches: (batches: any[], updatedSeqs?: Record<string, number>, volume?: number) => void;
-  // Set by queueLayerWorkerFlush; used to coalesce repeat flushes per layer
-  // when several layers share one worker.
   layerId?: string;
 }
 
@@ -26,19 +24,9 @@ interface PooledWorker {
   queue: WorkerFlushRequest[];
 }
 
-// Worker threads are shared across map layers rather than allocated one per
-// layer. Layers used to be capped at 50 players per map, so at 2000+
-// players a per-layer thread meant 40+ OS threads each holding its own heap -
-// hundreds of MB of RSS. A bounded pool keeps the flush off the main event
-// loop without the thread explosion.
-//
-// The worker's receiver-set mirror is keyed by playerId (globally unique), so
-// several layers can safely share one worker's state.
 const MAX_WORKERS = Math.max(2, Math.min(8, os.cpus().length - 1));
 const workers: PooledWorker[] = [];
 
-// Stable layer -> worker assignment. Re-hashing a layer to a different worker
-// would strand its receiver-set mirror on the old one.
 const layerAssignment = new Map<string, PooledWorker>();
 let nextWorkerIndex = 0;
 
@@ -68,13 +56,9 @@ function createWorker(): PooledWorker {
   });
   worker.on("error", (error: Error) => {
     log.error(`[MOVEMENT WORKER] ${error.message}`);
-    // The worker is dead: drop queued work before finalizing so nothing gets
-    // re-posted onto a terminated worker.
     pooled.queue.length = 0;
     finishFlush(pooled, []);
 
-    // Evict it from the pool and detach every layer that was mapped to it, so
-    // those layers re-sync their receiver-set mirror onto a fresh worker.
     const index = workers.indexOf(pooled);
     if (index !== -1) workers.splice(index, 1);
 
@@ -125,11 +109,6 @@ function finishFlush(pooled: PooledWorker, batches: any[], updatedSeqs?: Record<
 
 function queueFlushOn(pooled: PooledWorker, request: WorkerFlushRequest): void {
   if (pooled.flushInFlight) {
-    // Coalesce per layer: a layer only ever needs its most recent flush, but
-    // DIFFERENT layers sharing this worker must not overwrite each other (the
-    // old single-slot pendingFlushRequest silently dropped one of them).
-    // The replaced request's receiver-set diffs and snapshot are merged into
-    // the new one: the worker's mirror is only updated by what it is sent.
     const queuedIndex = pooled.queue.findIndex((queued) => queued.layerId === request.layerId);
     if (queuedIndex !== -1) {
       pooled.queue[queuedIndex] = mergeFlushRequests(pooled.queue[queuedIndex], request);
@@ -176,8 +155,6 @@ export function postToAllWorkers(message: any): void {
   }
 }
 
-// Idle workers are reaped so an emptied server doesn't hold threads open.
-// A worker is only reaped once EVERY layer mapped to it has gone quiet.
 const WORKER_IDLE_TIMEOUT_MS = 30000;
 setInterval(() => {
   const now = Date.now();
@@ -195,8 +172,6 @@ setInterval(() => {
 
     workers.splice(i, 1);
 
-    // Detach every layer bound to this worker so the next flush re-syncs its
-    // receiver-set mirror onto a fresh one.
     for (const [assignedLayer, assignedWorker] of layerAssignment.entries()) {
       if (assignedWorker !== entry) continue;
       layerAssignment.delete(assignedLayer);

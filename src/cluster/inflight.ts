@@ -1,12 +1,6 @@
 // src/cluster/inflight.ts
 import { AsyncLocalStorage } from "node:async_hooks";
 
-// The incoming packets of each player that are being handled right now (cells phase 6). A handoff waits for them
-// before it snapshots the player, so a packet that started on the old node finishes there. The outgoing queue in
-// server.ts (packetQueue) is backpressure for sends and says nothing about these.
-
-// One record per trackPacket call. `live` turns false when the packet ends, so a timer or un-awaited promise the
-// packet started cannot pass for the packet itself after it has ended. `parent` is the packet this one was started in.
 interface Run {
   id: string;
   live: boolean;
@@ -44,12 +38,6 @@ function ownPackets(run: Run | undefined, id: string): number {
   return own;
 }
 
-/**
- * Wait, at most `ms`, until no packet of player `id` is in flight, the packets this call runs inside excepted. A call
- * made while one of that player's packets runs (a warp handled inside the packet) does not wait for that packet. Once
- * the packet has ended, a timer or promise it started waits for the others like any other call. True when idle, false
- * when the time ran out.
- */
 export async function waitIdle(id: string, ms: number, pollMs = 10): Promise<boolean> {
   const run = inside.getStore();
   const deadline = Date.now() + ms;

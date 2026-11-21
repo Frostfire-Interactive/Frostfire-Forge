@@ -1,11 +1,6 @@
 import log from "../modules/logger";
 import type { ClusterStore } from "./store";
 
-// Ids that are unique across every node of the world: players (and, from
-// phase 2, creatures, loot and the rest) keep theirs when they move to
-// another node, and the client keys entities by them. Each node takes a block
-// of ids at a time from one counter in Redis; the wire formats carry a u32.
-
 export const ID_BLOCK = 65_536;
 const COUNTER = "cells:ids";
 const U32_MAX = 0xffff_ffff;
@@ -74,9 +69,6 @@ export class IdAllocator {
       .finally(() => { this.fetching = false; });
   }
 
-  // The counter only grows; the block it names wraps round the u32 range, so
-  // two nodes taking blocks at the same moment still get different ones. Ids
-  // from four billion ids ago belong to no one by the time they come round.
   private async takeBlock(): Promise<[number, number]> {
     const taken = await this.store.incrBy(COUNTER, this.blockSize);
     const index = (Math.floor(taken / this.blockSize) - 1) % this.blocksPerCycle;

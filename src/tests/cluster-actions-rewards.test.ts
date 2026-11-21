@@ -99,9 +99,6 @@ test("a share for a node whose link is down is not confirmed", async () => {
 
 // ------------------------------------------------------------------ handleKill and applyReward
 
-// The party: ann (level 10, the tapper) and bob (20) are here. cat (30) is a mirror 400 px from the corpse, dan a
-// mirror 900 px away (out of the 800 px reward range) and eve a mirror that is a ghost. Level 30 against a level 30
-// creature gives XP, so every share is more than zero.
 const levels: Record<string, number> = { ann: 10, bob: 20, cat: 30 };
 const CORPSE = { x: 1000, y: 1000 };
 
@@ -131,10 +128,6 @@ interface Seen {
   hasLink: () => boolean;
 }
 
-/**
- * Runs `body` with the local players, the mirrors, a link to the node "b" (its APPLY_REWARD answered by `answer`)
- * and listeners on the XP awards and the kill credit. Everything is put back afterwards.
- */
 async function scene(
   locals: any[],
   mirrors: any[],

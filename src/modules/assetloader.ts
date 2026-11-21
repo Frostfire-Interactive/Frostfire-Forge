@@ -53,8 +53,6 @@ const mountList = await assetCache.get("mounts") as Mount[];
 
 log.success(`Loaded ${mountList.length} mount(s) from the database in ${(performance.now() - mountNow).toFixed(2)}ms`);
 
-// The cutscenes (the cutscene editor's). A database set up before the table was added has none yet: the start makes it
-// (ensureCutsceneSchema) and reads the scenes then, so a missing table is no reason to stop here.
 const cutsceneNow = performance.now();
 let cutsceneList: StoredCutscene[] = [];
 try {
@@ -68,8 +66,6 @@ log.success(`Loaded ${cutsceneList.length} cutscene(s) from the database in ${(p
 
 const spellnow = performance.now();
 const spellList = await spell.list() as any[];
-// Icons and sprites are now served from asset server, not stored in cache
-// Parse the JSON `effects` column into a SpellEffect[] so callers always get an array
 for (const s of spellList) {
   if (typeof s.effects === "string") {
     try {
@@ -148,10 +144,6 @@ const mapChangeListeners: Array<(changes: MapChange[]) => unknown> = [];
 /** Each map's asset-server checksum, once its copy was taken in: the same copy listed again is not read again. */
 const takenInMaps = new Map<string, string>();
 let checkingMaps = false;
-/**
- * Where this server stands in the asset server's list of changed maps (/map-changes): the asset server's run, and the
- * last change it was told about. Set by checkMapChanges; empty until then, or with an asset server that keeps no list.
- */
 const mapSync = { epoch: "", seq: 0 };
 
 /** Called with the maps a check found changed on the asset server, once they are read again here. */
@@ -213,9 +205,6 @@ async function syncMapsBeforeLoading(): Promise<void> {
       log.info("All maps are up to date");
     }
 
-    // The asset server names every map it has (`maps`). A local map it no
-    // longer has is removed, so the folder stays a copy of the asset server's.
-    // An older asset server sends no list: nothing is removed then.
     if (Array.isArray(result.maps)) {
       for (const name of removeUnlistedMaps(mapDir, result.maps.map(String))) {
         log.warn(`Removed map ${name}: the asset server no longer has it`);
@@ -226,11 +215,6 @@ async function syncMapsBeforeLoading(): Promise<void> {
   }
 }
 
-/**
- * Brings this node's copy of one map up to date with the asset server's, as at start (for a save made in the map
- * editor on another node of the region). True when a newer copy was fetched; false when this one is the asset
- * server's, or there is no asset server.
- */
 export async function syncMapFromAssetServer(mapName: string): Promise<boolean> {
   const assetServerUrl = process.env.ASSET_SERVER_INTERNAL_URL || process.env.ASSET_SERVER_URL;
   if (!assetServerUrl) return false;
@@ -291,8 +275,6 @@ function loadAllMaps() {
     }
   }
 
-  // Worlds: maps too large for one file, kept as <id>.world directories (modules/worldmaps.ts). They join the same
-  // two lists without tile data; their warps, graveyards and particle objects are read like any map's.
   for (const world of loadWorldMaps(mapDir, new Set(mapFiles))) {
     try {
       registerWorld(world, maps);
@@ -333,10 +315,6 @@ function registerWorld(world: WorldMap, maps: MapData[]): void {
   emptyParticleLayers(world.map);
 }
 
-/**
- * A world changed on the asset server (worldmaps.ts checkWorldChanges, which gave its map entry the new objects): its
- * particle and placed NPCs are read again from them and reach the NPC cache.
- */
 export async function takeInWorldChange(world: WorldMap): Promise<void> {
   dropMapNpcs(world.name);
   extractAndCompressLayers(world.map);
@@ -344,12 +322,6 @@ export async function takeInWorldChange(world: WorldMap): Promise<void> {
   await publishMapNpcs();
 }
 
-/**
- * A map the asset server has just made from the map editor (CREATE_MAP, systems/mapcreate.ts), taken in without a
- * restart: a Tiled map from the data it answered with, written to the local maps folder like a synced one (or, with no
- * data, as the file already is there); a world fetched from it as the worlds are at start. Afterwards it can be warped
- * to like any map.
- */
 export async function addCreatedMap(name: string, kind: "map" | "world", data?: any): Promise<void> {
   const maps = ((await assetCache.get("maps")) as MapData[] | null) ?? [];
   if (maps.some(m => m.name === `${name}.json`)) throw new Error(`${name} is already a map`);
@@ -379,11 +351,6 @@ export async function addCreatedMap(name: string, kind: "map" | "world", data?: 
   await publishMapNpcs();
 }
 
-/**
- * Cluster mode: a map made in the map editor on another node of the region (peer news "map-created"), taken in here:
- * a Tiled map's file is fetched from the asset server first, then read as addCreatedMap reads one; a world is fetched
- * by addCreatedMap itself.
- */
 export async function adoptCreatedMap(name: string, kind: "map" | "world"): Promise<void> {
   if (kind === "map" && !(await syncMapFromAssetServer(name)) && !fs.existsSync(path.join(mapDir, `${name}.json`))) {
     throw new Error(`${name}.json could not be fetched from the asset server`);
@@ -391,19 +358,9 @@ export async function adoptCreatedMap(name: string, kind: "map" | "world"): Prom
   await addCreatedMap(name, kind);
 }
 
-// Tiled stores "infinite" maps as per-layer `chunks` arrays instead of a flat
-// `data` array. The rest of the pipeline assumes finite maps (flat `layer.data`
-// sized width*height), so flatten infinite maps in place. Tiles outside the
-// declared map bounds are clipped. This must run AFTER any checksum/compression
-// of the raw JSON so map-sync between engine and asset server stays stable.
 function normalizeInfiniteMap(mapData: any): void {
   if (!mapData || mapData.infinite !== true || !Array.isArray(mapData.layers)) return;
 
-  // The map's declared width/height go stale the moment "infinite" is enabled in
-  // Tiled. Derive the true size from the actual painted tiles across all layers
-  // (not the 16-aligned chunk bounds) so we don't report empty padding that would
-  // render as a black border and let the camera pan into nothing. Origin stays at
-  // tile 0,0; any negative-coordinate tiles are clipped.
   let mapWidth = 0;
   let mapHeight = 0;
   for (const layer of mapData.layers) {
@@ -464,9 +421,6 @@ function normalizeInfiniteMap(mapData: any): void {
 
   mapData.width = mapWidth;
   mapData.height = mapHeight;
-  // Keep mapData.infinite = true so the flag reaches the client/editor. Re-running
-  // this is safe: once chunks are flattened away the bounds loop finds none and
-  // returns early before touching layer data.
 }
 
 function processMapFile(file: string): MapData | null {
@@ -583,8 +537,6 @@ function extractAndCompressLayers(map: MapData) {
             });
             break;
           }
-          // A point on a "Particles" layer is a particle-only NPC: hidden, named after the object, emitting the
-          // particles in its "Particle List" property (a Tiled list of strings, or a comma-separated string)
           case "particles": {
             const listProp = propsArray.find((p: any) => /^particle\s*list$|^particles$/i.test(String(p?.name ?? "")));
             const raw = listProp?.value;
@@ -602,8 +554,6 @@ function extractAndCompressLayers(map: MapData) {
               last_updated: null,
               map: map.name.replace(".json", ""),
               name: obj.name || null,
-              // the client emits an NPC's particles at its position + (16, 24) (a sprite NPC's body centre, client
-              // npc.ts); the object's point is where the particles belong, so the NPC stands that far up-left of it
               position: { x: Math.floor(obj.x) - MAP_NPC_PARTICLE_OFFSET.x, y: Math.floor(obj.y) - MAP_NPC_PARTICLE_OFFSET.y, direction: "down" },
               hidden: true,
               script: null,
@@ -625,8 +575,6 @@ function extractAndCompressLayers(map: MapData) {
             });
             break;
           }
-          // A point of type "npc" (or on an "NPCs" layer) is an NPC the map places itself (mapnpc.ts): drawn and
-          // talked to as a row of the npcs table is, under an id that is the same at every start
           case "npc":
           case "npcs": {
             const placed = placedNpc(map.name, obj);
@@ -694,16 +642,12 @@ function extractAndCompressLayers(map: MapData) {
     }
   });
 
-  // Check if graveyards and warps are saved in the map JSON properties
-  // These take precedence over extracted object group data
   const _map = mapProperties.find(m => m.name.replace(".json", "") === map.name.replace(".json", "")) as MapProperties | undefined;
   if (_map) {
     // Only update if not already extracted from object groups or if map file has explicit saved data
     if (map.data.graveyards && (!_map.graveyards || (_map.graveyards as any[]).length === 0)) {
       _map.graveyards = map.data.graveyards;
     } else if (map.data.graveyards && _map.graveyards) {
-      // If there's saved data in the map file AND extracted data, merge them
-      // Create a map of extracted graveyards by name to preserve layer info
       const extractedMap = new Map((_map.graveyards as any[]).map(g => [g.name, g]));
       const savedGraveyards = Array.isArray(map.data.graveyards) ? map.data.graveyards : Object.values(map.data.graveyards);
 
@@ -722,8 +666,6 @@ function extractAndCompressLayers(map: MapData) {
     if (map.data.warps && (!_map.warps || (_map.warps as any[]).length === 0)) {
       _map.warps = map.data.warps;
     } else if (map.data.warps && _map.warps) {
-      // If there's saved data in the map file AND extracted data, merge them
-      // Create a map of extracted warps by name to preserve layer info
       const extractedMap = new Map((_map.warps as any[]).map(w => [w.name, w]));
       const savedWarps = Array.isArray(map.data.warps) ? map.data.warps : Object.values(map.data.warps);
 
@@ -740,9 +682,6 @@ function extractAndCompressLayers(map: MapData) {
     }
   }
 
-  // The named zones of a plain map, saved at the top of its file by the map editor (modules/zones.ts): kept one by
-  // one against the map size in tiles, a bad zone is left out with a warning, and a zone that partly overlaps a smaller
-  // one is cut back to its edge
   if (!(map as any).world && map.data) {
     const { zones, dropped, fixed } = cleanZonesLenient(map.data.zones, Number(map.data.width) || 0, Number(map.data.height) || 0);
     for (const problem of dropped) log.warn(`Map ${map.name}: zone left out: ${problem}`);
@@ -822,12 +761,6 @@ function extractAndCompressLayers(map: MapData) {
   if (noPvpZones.length > 0) compressLayer(noPvpZones, "nopvp");
 }
 
-// Apply edited chunks to a finite map: grow the flat storage to fit the edits,
-// then (for infinite maps) trim the result back to the tight content bounds so
-// empty expansion isn't persisted. Existing tiles and object-group objects are
-// shifted by the actual amount the content moved. `bounds` is the editor's claimed
-// extent (minTileX/minTileY <= 0, width/height exclusive max). Returns the net
-// world shift (in tiles) and the final map dimensions.
 export function applyChunksWithRebase(
   mapData: any,
   chunks: any[],
@@ -904,10 +837,6 @@ export function applyChunksWithRebase(
   let finalWidth = provWidth;
   let finalHeight = provHeight;
 
-  // Trim empty expansion (infinite maps only): shrink back to the tight content
-  // bounds. Left/up is only trimmed up to the expansion amount, so intentional
-  // empty borders at the original origin are preserved. Use the client's infinite
-  // flag when provided (the in-memory map's flag can be stale).
   if ((bounds?.infinite ?? mapData.infinite) === true) {
     let tMinX = Infinity, tMinY = Infinity, tMaxX = -1, tMaxY = -1;
     for (const layer of mapData.layers) {
@@ -996,9 +925,6 @@ export async function saveMapChunks(mapName: string, chunks: any[], bounds?: { m
 
     const mapData = JSON.parse(fs.readFileSync(fullPath, "utf-8"));
 
-    // Infinite maps store tiles in per-layer `chunks` instead of a flat `data`
-    // array. Flatten to finite so the per-layer write-back below works; the file
-    // is then persisted (and reprocessed) as a finite map.
     normalizeInfiniteMap(mapData);
 
     applyChunksWithRebase(mapData, chunks, bounds);
@@ -1241,15 +1167,7 @@ export async function reloadMap(mapName: string): Promise<MapData> {
   }
 }
 
-/**
- * Writes here and reads again each map the asset server sent (a new one is taken in like a map made in the map
- * editor), and tells the listeners (onMapsChanged). A map with a map editor save under way, here or on another node
- * (modules/mapsaves.ts), or whose copy here already hashes like the asset server's (a save, once it has ended), is left
- * alone. Returns the maps that changed.
- */
 async function takeInMaps(sent: unknown): Promise<MapChange[]> {
-  // Nearly every poll sends nothing. The maps list is every map's data (with CACHE=redis, a read and parse of all of
-  // it that holds the event loop for seconds), so it is read only for a map that came.
   if (!Array.isArray(sent) || sent.length === 0) return [];
   const { writeMapContent, calculateMapChecksum } = await import("./checksums.ts");
   const loaded = ((await assetCache.get("maps")) as MapData[] | null) ?? [];
@@ -1257,8 +1175,6 @@ async function takeInMaps(sent: unknown): Promise<MapChange[]> {
   for (const fresh of (Array.isArray(sent) ? sent : []) as Array<{ name?: string; checksum?: string; data: unknown }>) {
     const file = String(fresh?.name ?? "");
     if (file !== path.basename(file) || !file.endsWith(".json") || file.startsWith(".")) continue;
-    // A map editor save under way (SAVE_MAP), here or on another node, told of before it has finished: the save takes in
-    // the asset server's copy itself
     if (leaveToSave(file)) continue;
     const checksum = String(fresh.checksum ?? "");
     // Taken in already, and still listed: this copy and the asset server's do not hash alike. Read once, not at every check.
@@ -1295,13 +1211,6 @@ async function takeInMaps(sent: unknown): Promise<MapChange[]> {
   return changes;
 }
 
-/**
- * Takes in the maps changed on the asset server since its last answer (asked every WORLD_SYNC_INTERVAL seconds, only from an asset server without /map-events): the asset
- * server keeps a list of the maps saved to it, and sends only those. While this server has no place in that list, or
- * the asset server started again (its files may have changed while it was down) or no longer holds every change since
- * this server's place, every map is compared once instead (checkMapChanges). Returns the maps that changed. Throws when
- * the asset server refuses or cannot be reached; does nothing with none configured, or while a check is under way.
- */
 export async function pollMapChanges(): Promise<MapChange[]> {
   const assetServerUrl = process.env.ASSET_SERVER_INTERNAL_URL || process.env.ASSET_SERVER_URL;
   if (!assetServerUrl || checkingMaps) return [];
@@ -1332,13 +1241,6 @@ export async function pollMapChanges(): Promise<MapChange[]> {
   return checkMapChanges(assetServerUrl);
 }
 
-/**
- * Compares every Tiled map with the asset server's (at registration with the gateway, and when pollMapChanges cannot
- * ask for the changed ones): the asset server sends each map whose copy here differs from its own, and they are taken
- * in (takeInMaps). Its answer gives this server its place in the asset server's list of changed maps. Returns the maps
- * that changed. Throws when the asset server refuses or cannot be reached; does nothing with none configured, or while
- * a check is under way.
- */
 export async function checkMapChanges(url?: string): Promise<MapChange[]> {
   const assetServerUrl = url || process.env.ASSET_SERVER_INTERNAL_URL || process.env.ASSET_SERVER_URL;
   if (!assetServerUrl || checkingMaps) return [];
@@ -1375,12 +1277,6 @@ export async function checkMapChangesWhenFree(url?: string): Promise<MapChange[]
   return checkMapChanges(url);
 }
 
-/**
- * Follows the maps changed on the asset server while this server runs (modules/mapevents.ts): one connection to
- * /map-events, on which the asset server sends each map saved there and each world change, and after it restarts, the
- * maps that differ from its last run. Nothing is asked between. With an asset server that has no /map-events, `legacy`
- * runs instead (asking every few seconds). Returns the function that stops it; does nothing with no asset server.
- */
 export function followAssetServerMapChanges(handlers: { worldsChanged: () => Promise<unknown>; legacy: () => void }): () => void {
   const assetServerUrl = process.env.ASSET_SERVER_INTERNAL_URL || process.env.ASSET_SERVER_URL;
   if (!assetServerUrl) return () => {};

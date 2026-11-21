@@ -3,17 +3,6 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { databaseModule } from "./setup";
 
-// Cells phase 6, security review of the arrival side (M2, M4 detail, L3, L7) and the final review's M1 and M2:
-//   - what a DoT or HoT brings with an arriving player (arrival.ts) is clamped to what a spell can make, and its
-//     caster is kept only when this node knows them;
-//   - the corpse's map is one this node has;
-//   - the reverse summon (cells-teleport-to) carries the admin's own summon-admins permission, sent by the admin's
-//     node and passed on by the target's, never made up;
-//   - a gather result is checked against the node's item and largest yield (gathering/remote.ts);
-//   - a teleport outside a packet, and a trade, are refused for a player in a handoff.
-// The receiver cannot be imported by a test (it imports the server, which starts it): the pieces that decide are cut
-// out of its source and run with the names they use handed in, as cluster-handoff-receiver.test.ts does.
-
 mock.module("../controllers/sqldatabase", () => databaseModule({ default: async () => [] }));
 
 const { default: log } = await import("../modules/logger");
@@ -40,8 +29,6 @@ function quietLog(): { warned: string[]; errored: string[]; info: string[] } {
 
 // ------------------------------------------------------------------ M2: DoTs and HoTs that arrive with a player
 
-// The default poison (database_setup.ts), a HoT, and the largest and fastest effects the spell editor allows
-// (spelleditor.ts: value up to 100000, a tick every 0.25 s at the least, up to 100 stacks).
 const SPELLS = [
   { name: "poison_bolt", effects: [{ type: "damage_over_time", value: 4, duration: 12, interval: 3, stackable: true, max_stacks: 5 }] },
   { name: "renew", effects: [{ type: "heal_over_time", value: 6, duration: 15, interval: 3 }] },
@@ -97,8 +84,6 @@ test("a DoT or HoT of any spell passes unchanged, with its caster", () => {
 test("a DoT that arrives late keeps the ticks it is owed (review I1)", () => {
   const logged = quietLog();
   const now = Date.now();
-  // A handoff takes 0.5 to 3 s (SWITCH, reconnect, AUTH) and up to the arrival's 30 s wait: the scheduler pays what
-  // fell due, one tick per pass, as after a relog.
   for (const [spell, behind] of [[SPELLS[2]!, 1200], [SPELLS[2]!, 3000], [SPELLS[0]!, 3000], [SPELLS[1]!, 2500], [SPELLS[0]!, ARRIVAL_TTL_MS]] as const) {
     const dot = dotOf(spell, 0, { nextTickAt: now - behind, expiresAt: now + 60_000 });
     expect(dotsOf([dot], KNOWN, now)).toEqual([dot]);
@@ -218,8 +203,6 @@ test("the receiver's lookup knows a caster in the player cache or among the mirr
 });
 
 test("a DoT without a caster is safe for the scheduler: dots.ts gives it no remote credit and no killer", () => {
-  // tickPlayerDot looks the caster up by id and takes the remote path only for a non-empty id, so "" is a DoT with no
-  // caster at all (what applyDot makes of a creature or a missing caster). Read from the source, as the code is not exported.
   const source = readFileSync(join(import.meta.dir, "..", "systems", "dots.ts"), "utf8");
   expect(source).toContain("const remote = !caster && dot.casterId && dot.casterId !== String(target.id) ? remoteCaster : null;");
   expect(source).toContain("caster || remote?.killer(dot) || null");

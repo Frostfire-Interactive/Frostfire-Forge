@@ -1,7 +1,3 @@
-// Cluster mode: one world shared by many engine processes ("nodes"). See
-// docs/superpowers/specs/2026-10-21-spatial-cells-design.md. Read on each
-// call, so tests can switch it.
-
 export function clusterEnabled(): boolean {
   return process.env.CLUSTER === "true";
 }
@@ -27,10 +23,6 @@ export function nodeLinkHost(): string {
   return host === "localhost" ? "127.0.0.1" : host;
 }
 
-/**
- * The interface the link listener binds: NODE_LINK_BIND_HOST, else 0.0.0.0. Set it to the private network's address
- * to keep links off the public one. (NODE_LINK_HOST is the address neighbours dial, which may differ.)
- */
 export function nodeLinkBindHost(): string {
   return process.env.NODE_LINK_BIND_HOST?.trim() || "0.0.0.0";
 }
@@ -38,22 +30,12 @@ export function nodeLinkBindHost(): string {
 /** Addresses that bind every interface. */
 const EVERY_INTERFACE = new Set(["0.0.0.0", "::", "[::]"]);
 
-/**
- * The startup warning for a link listener bound to every interface, or null for a bound address. The listener's
- * limits before the hello do not hold against a flood from outside (security review I2), so the port must not be
- * reachable from anything but the other nodes.
- */
 export function nodeLinkBindWarning(host: string, port: number): string | null {
   if (!EVERY_INTERFACE.has(host)) return null;
   return `Node links listen on every interface (${host}). Set NODE_LINK_BIND_HOST to this node's private address, `
     + `or firewall UDP port ${port} so that only the other nodes can reach it.`;
 }
 
-/**
- * The startup error for a cluster node whose link listener would bind every interface because NODE_LINK_BIND_HOST
- * is unset (security review L2), or null. Whatever NODE_ENV is (a .env.production often sets none). With links off
- * (NODE_LINK_PORT=0) there is no listener. Reads the environment on each call.
- */
 export function nodeLinkBindError(): string | null {
   if (!clusterEnabled()) return null;
   if (process.env.NODE_LINK_PORT?.trim() === "0") return null;
@@ -66,11 +48,6 @@ export function nodeLinkBindError(): string | null {
 /** The password the cluster's example files ship with: a copied example must not run. */
 const EXAMPLE_REDIS_PASSWORD = "change-me";
 
-/**
- * Why REDIS_URL cannot be used by a cluster node, or null. It must carry a password (redis://:pw@host or
- * redis://user:pw@host) or use TLS (rediss://), and the password must not be the example's. Names the variables,
- * never their values.
- */
 export function redisUrlProblem(url: string, redisPassword?: string): string | null {
   let parsed: URL;
   try {

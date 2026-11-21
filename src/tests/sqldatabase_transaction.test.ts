@@ -3,10 +3,6 @@ import os from "os";
 import path from "path";
 import fs from "fs";
 
-// The database layer end to end: main thread, worker pool and a SQLite file. It runs in a process
-// of its own (see the fixture), so the stand-ins other test files put in place of the layer do not
-// reach it.
-
 const name = `ff_transaction_test_${process.pid}`;
 const file = path.join(os.tmpdir(), "frostfire_forge", `${name}.sqlite`);
 const remove = () => { for (const suffix of ["", "-wal", "-shm"]) fs.rmSync(file + suffix, { force: true }); };
@@ -53,8 +49,6 @@ describe("transaction through the worker pool", () => {
   });
 });
 
-// The systems' statements are MySQL's. SQLite has other words for two of them, and the layer
-// writes those: without that, a new item or a change of coins is a syntax error there.
 describe("MySQL's insert forms on SQLite", () => {
   test("INSERT IGNORE adds a row, answers with its id, and adds nothing when one is in the way", () => {
     expect(out.ignore).toEqual({ id: 1, again: "ran" });

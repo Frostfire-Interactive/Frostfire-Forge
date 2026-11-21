@@ -44,9 +44,6 @@ export class PlayerManager {
         };
     }
 
-    // `login`: a new session takes the name. Otherwise a name already held by
-    // another live session keeps it, so an old session still being written
-    // while it is disconnected does not take the name back from the new one.
     private index(key: string, value: any, login: boolean) {
         const username = value?.username;
         if (typeof username !== "string" || !username) return;
@@ -103,9 +100,6 @@ export class PlayerManager {
         this.cache[key][nestedKey] = value;
     }
     set(key: string, value: any) {
-        // A player handed to another node (cells phase 6) is gone from here: a write-back of an object held across
-        // an await must not make it live on two nodes, nor replace the session that now has its id (a hand-back
-        // keeps the id). Only the object the cache holds is written again.
         if (value?.handedOff === true && this.cache[key] !== value) return;
         this.cache[key] = value;
         this.index(key, value, false);

@@ -1,25 +1,3 @@
-// Unified HTTP serving stack. This file is kept byte-identical across the
-// Frostfire Forge engine, gateway and asset server repositories.
-//
-// Layout:
-//   1. The application runs an HTTPS server bound to 127.0.0.1 on the
-//      internal port (started by the caller with getInternalServerOptions).
-//   2. This module starts the edge reverse proxy in front of it on the public
-//      interface. When SSL is enabled the proxy terminates TLS (HTTP/3 +
-//      HTTP/2) and forwards HTTPS to the internal server, adding the
-//      X-Real-Client-IP / X-Forwarded-For / X-Forwarded-Proto headers.
-//   3. When SSL is enabled, an HTTP->HTTPS 301 redirect server runs on the
-//      plain HTTP port.
-//
-// Environment (identical in every project):
-//   HTTP_USE_SSL          "true" to enable TLS on the public listener
-//   WEBSRV_PORT           public plain HTTP port (redirect target when SSL is on)
-//   WEBSRV_PORTSSL        public HTTPS port
-//   WEBSRV_INTERNAL_PORT  internal HTTPS port (the application itself)
-//   WEBSRV_HTTP1          "false" to disable HTTP/1.1 on the public listener (default: on)
-//   WEBSRV_HTTP2          "false" to disable HTTP/2 on the public listener (default: on)
-//   WEBSRV_HTTP3          "false" to disable HTTP/3 on the public listener (default: on, TLS only)
-//   TLS_CERT_PATH / TLS_KEY_PATH / TLS_CA_PATH
 import fs from "node:fs";
 import tls from "node:tls";
 
@@ -41,9 +19,6 @@ export interface HttpsServerConfig {
   certPath?: string;
   keyPath?: string;
   caPath?: string;
-  // Force HTTP/3 off on the edge proxy. Needed when another listener owns
-  // the UDP port (e.g. the game server's WebTransport/QUIC listener shares
-  // the port number with the HTTP API).
   http3?: boolean;
   log?: HttpsServerLogger;
   filterRequest?: (req: Request, ip: string) => Response | null | Promise<Response | null>;
@@ -57,11 +32,6 @@ export interface HttpsServerStack {
   sslEnabled: boolean;
 }
 
-// Environment-driven HTTP protocol toggles for every Bun.serve listener in
-// the project (edge proxy, redirect server and internal application server).
-// Internal hops always fetch over TLS with HTTP/2 (see serverFetch and the
-// proxy's upstream request), so HTTP/1.1 can be disabled everywhere without
-// breaking the proxy chain.
 export function getHttpProtocolOptions(sslEnabled: boolean, http3Override?: boolean): { http1: boolean; http2: boolean; http3?: boolean } {
   const http1 = process.env.WEBSRV_HTTP1 !== "false";
   const http2 = process.env.WEBSRV_HTTP2 !== "false";
@@ -82,9 +52,6 @@ function readChain(certPath: string, caPath?: string): string {
   return cert;
 }
 
-// The internal hop uses TLS when the shared certificate files exist
-// (production / local machines) and falls back to plain HTTP when they do
-// not (CI/docker images do not bake in certificates).
 export function isInternalTlsEnabled(certPath?: string, keyPath?: string): boolean {
   return !!certPath && !!keyPath && fs.existsSync(certPath) && fs.existsSync(keyPath);
 }
@@ -94,12 +61,6 @@ export function getInternalBaseUrl(port: number, certPath?: string, keyPath?: st
   return `${scheme}://${host ?? "127.0.0.1"}:${port}`;
 }
 
-// Options for the internal application server: HTTPS on 127.0.0.1 using the
-// same certificate as the public proxy. Protocol versions follow the
-// WEBSRV_HTTP1/2/3 env vars - internal hops always fetch over TLS with
-// HTTP/3 or HTTP/2 (see serverFetch), so disabling HTTP/1.1 is safe
-// everywhere. Without certificate files (CI images) it falls back to plain
-// HTTP so the stack still boots.
 export function getInternalServerOptions(certPath: string, keyPath: string, caPath?: string): { http1: boolean; http2: boolean; http3?: boolean; tls?: { cert: string; key: string | Buffer } } {
   const protocols = getHttpProtocolOptions(isInternalTlsEnabled(certPath, keyPath));
   if (!isInternalTlsEnabled(certPath, keyPath)) {
@@ -117,9 +78,6 @@ export function getInternalServerOptions(certPath: string, keyPath: string, caPa
 // Origins whose HTTP/3 support has been probed: true = h3 works, false = h2 only.
 const http3Origins = new Map<string, boolean>();
 const HTTP3_PROBE_TIMEOUT_MS = 2500;
-// On this machine a QUIC handshake takes milliseconds. The Gateway's internal port answers HTTP/2 only, and the
-// remote wait held the node's first request to it (its registration) 2.5 s. A probe that misses on a busy start-up
-// only means HTTP/2 for that origin, which works.
 const HTTP3_LOOPBACK_PROBE_TIMEOUT_MS = 250;
 
 /** Whether a URL's host is this machine: 127.0.0.0/8, ::1 or localhost. */
@@ -134,9 +92,6 @@ export function isLoopbackUrl(url: string): boolean {
   return host === "localhost" || host.endsWith(".localhost") || host === "::1" || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
 }
 
-// The CA bundle the servers are configured with (TLS_CA_PATH), trusted beside
-// the system's own roots, so a deployment with its own CA is verified too.
-// Read once, when first needed.
 let extraCa: string[] | null = null;
 function trustedCas(): string[] | undefined {
   if (extraCa === null) {
@@ -151,25 +106,12 @@ function trustedCas(): string[] | undefined {
   return extraCa.length > 0 ? extraCa : undefined;
 }
 
-/**
- * The TLS options for a server-to-server request. The certificate is checked,
- * except on the hop to this same machine (the internal URLs), whose
- * certificate is self-signed or issued for the public name: nobody else can
- * answer on loopback. Everything else is verified, so a machine on the path
- * cannot read the auth keys sent or answer in the asset server's place.
- */
 export function tlsFor(url: string): { rejectUnauthorized?: boolean; ca?: string[] } {
   if (isLoopbackUrl(url)) return { rejectUnauthorized: false };
   const ca = trustedCas();
   return ca ? { rejectUnauthorized: true, ca } : { rejectUnauthorized: true };
 }
 
-// Server-to-server fetch. Tries HTTP/3 first on https:// URLs (each origin is
-// probed once with a short timeout - a failed QUIC handshake would otherwise
-// stall 20s), falls back to HTTP/2, and keeps HTTP/1.1 for cleartext http://
-// URLs (development) because Bun's fetch has no h2c support. Certificates are
-// verified except on loopback (see tlsFor), per request, so
-// NODE_TLS_REJECT_UNAUTHORIZED is not needed.
 export function serverFetch(url: string, init?: RequestInit): Promise<Response> {
   if (!url.startsWith("https://")) {
     return fetch(url, init);
@@ -191,9 +133,6 @@ export function serverFetch(url: string, init?: RequestInit): Promise<Response> 
       });
   }
 
-  // Unknown origin: probe HTTP/3 with a short timeout so h3-less origins
-  // (or the game server, whose UDP port is owned by WebTransport) do not
-  // stall requests for the full QUIC handshake timeout.
   const callerSignal = init?.signal ?? null;
   const probe = new AbortController();
   const forwardAbort = () => probe.abort();
@@ -287,9 +226,6 @@ export function startHttpsServers(config: HttpsServerConfig): HttpsServerStack {
       headers.set("X-Real-Client-IP", ip);
       headers.set("X-Forwarded-For", ip);
       headers.set("X-Forwarded-Proto", sslEnabled ? "https" : "http");
-      // Request identity encoding upstream: Bun's fetch transparently
-      // decompresses gzip responses but passes the upstream Content-Encoding
-      // header through, so a client would double-decompress (ZlibError).
       headers.set("Accept-Encoding", "identity");
 
       try {

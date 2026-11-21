@@ -3,12 +3,6 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { databaseModule } from "./setup";
 
-// The protocol packet wave:
-//   A. SPRITE_SHEET_POSE: a pose change alone, for viewers that hold the player's sheets (socket/looks.ts).
-//   B. CREATURE_MOVE as a binary datagram (socket/creature_move_codec.ts), split by the transport.
-// The client's decoders are tested by the Gateway repository, which owns them (its src/modules/protoclient.test.ts), against
-// the same layout: the bytes of a known datagram are pinned below.
-
 mock.module("../controllers/sqldatabase", () => databaseModule({
   default: async (_sql: string, _params?: any[]) => [],
 }));

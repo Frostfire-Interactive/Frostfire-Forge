@@ -8,8 +8,6 @@ import assetCache from "../services/assetCache";
 import playerCache from "../services/playermanager";
 import { linkPair } from "./cluster-fakelink";
 
-// The receiver sets its applier once, when it loads, and every test file shares one process: put it back afterwards.
-// A stand-in for it is set for the whole file, so that afterAll can see that every test put it back.
 const outer = setPlayerHitApplier(null);
 const sentinel: PlayerHitApplier = async () => ({ outcome: "missing" });
 setPlayerHitApplier(sentinel);
@@ -196,9 +194,6 @@ test("refusalOf counts a hit that takes health away as harm, whatever the flag s
 });
 
 test("a caster this node mirrors from another node, or a player of this node, is refused; one it does not mirror is accepted from the peer", async () => {
-  // Not mirrored here (a spell's range can reach past the mirror band): the authenticated peer's word is taken, the
-  // hit is still cleaned, and the stand-in is marked as a remote player of the asking node.
-  // It happens in real play, so it is a debug line and not a warning.
   const debug = spyOn(log, "debug").mockImplementation((() => {}) as any);
   const warn = spyOn(log, "warn").mockImplementation((() => {}) as any);
   try {

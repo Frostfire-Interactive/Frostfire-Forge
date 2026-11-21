@@ -1,11 +1,6 @@
 import { CREATURE_CELL_PX } from "./constants";
 import type { CreatureInstance } from "./types";
 
-/**
- * Authoritative store of live creatures, bucketed per map into a coarse grid
- * so visibility and aggro scans only touch nearby cells.
- */
-/** A grid cell: its coordinates (cell units) and the creatures in it. */
 interface Cell {
   cx: number;
   cy: number;
@@ -28,10 +23,6 @@ export class CreatureRegistry {
   private maps = new Map<string, Map<string, Cell>>();
   private cellOf = new Map<number, string>();
   private wantedCells = new Map<string, WantedCells>();
-  /**
-   * Called when a creature's position is set by `move`, and by `touch`. Cluster mode uses it to tell the mirror layer
-   * which creatures moved. Null leaves both a no-op.
-   */
   onMoved: ((instance: CreatureInstance) => void) | null = null;
 
   constructor(private readonly cellSize: number = CREATURE_CELL_PX) {}
@@ -64,10 +55,6 @@ export class CreatureRegistry {
     }
   }
 
-  /**
-   * Creatures on `map` in the cells `wanted` accepts (given a cell's left, top and size in px). The registry has
-   * no index by block, so this visits the map's cells, not its creatures: a cell that is not wanted costs one call.
-   */
   *onMapCells(map: string, wanted: (left: number, top: number, size: number) => boolean): IterableIterator<CreatureInstance> {
     const cells = this.maps.get(map);
     if (!cells) return;
@@ -80,11 +67,6 @@ export class CreatureRegistry {
     }
   }
 
-  /**
-   * Like onMapCells, with the cells that passed kept per map between calls. `token` says what `wanted` depends on
-   * (the border band's token for the map): while it is the same object the answer for a cell is the same, so the
-   * list is kept and only updated for cells that appear or go. A different token starts the list over.
-   */
   *onBandCells(map: string, token: object, wanted: (left: number, top: number, size: number) => boolean): IterableIterator<CreatureInstance> {
     const cells = this.maps.get(map);
     if (!cells) return;

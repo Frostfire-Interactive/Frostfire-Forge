@@ -1,8 +1,5 @@
 import query from "../controllers/sqldatabase";
 
-// Character names and look-ups. The name rule is for names players choose; stored names that predate it (guests
-// are 30 characters) still resolve, because look-ups go by nameKey, the lowercased name.
-
 export type CharacterRow = {
   id: number;
   accountId: number;

@@ -74,10 +74,6 @@ export function isGatherRateLimited(id: string): boolean {
   return fresh.length > GATHER_RATE_MAX;
 }
 
-/**
- * Guild edits, each kind once a second for each player: each one sends the guild to every member online. Kinds are
- * counted apart, so one Save that sends a public and an officer note together has both go through.
- */
 const guildEditTimes = new Map<number, Map<string, number>>();
 const GUILD_EDIT_INTERVAL = 1000;
 
@@ -92,12 +88,6 @@ export function guildEditOk(wt: any, kind: string): boolean {
   return true;
 }
 
-/**
- * Who of a party or guild receives a line from one of its members, in lower
- * case: the sender always (a muted player sees their own line as sent), and
- * the members the chat gate lets it through to. `muted` says the line went
- * to nobody else.
- */
 export async function chatHearing(sender: string, channel: "party" | "guild", message: string, members: string[]): Promise<Set<string> & { muted: boolean }> {
   const me = sender.toLowerCase();
   const others = members.map((member) => String(member).toLowerCase()).filter((member) => member !== me);
@@ -131,8 +121,6 @@ export async function kickedFromGuild(actor: any, guildId: number, kickedUsernam
   listener.emit(Events.GUILD_CHANGED, { type: "kick", guildId, guildName: actor.guild_name, playerUsername: actor.username, kickedUsername });
 }
 
-// What a party or guild change does to a member: their cached player is changed and their client told. Each runs on
-// the node that holds the member (cluster/deliver.ts), at once when that is this one.
 registerPlayerAction("guild-update", (p, { guildId, members, guildName, packet }) => {
   // A join made on another node (the player editor): the guild name over their head changes for those who see them.
   const joined = p.guild_id !== guildId || p.guild_name !== guildName;
@@ -188,11 +176,6 @@ registerPlayerAction("party-update", async (p, { members, notice }) => {
 });
 /** An admin disconnected (/kick) or banned (/ban) the player: their session ends and their connection is closed. */
 registerPlayerAction("admin-kick", (p) => player.kick(p.username, p.wt));
-// Cluster mode: a player of another node inspected this node's player. The answer goes to the asker by name.
-/**
- * Whether the player `asker` names is an admin, by their account and not by anything the bus carried; null when the
- * name is no player online (nobody to answer, so nothing is sent). A failed look-up is no admin.
- */
 async function inspectAskerAdmin(asker: unknown): Promise<boolean | null> {
   if (typeof asker !== "string" || !asker) return null;
   if (!(await isOnline(asker))) return null;
@@ -212,8 +195,6 @@ registerPlayerAction("cells-inspect", async (p, args) => {
   if (p.isStealth && !admin) return;
   await deliverToPlayer(String(asker), packetManager.inspectPlayer(inspectPlayerData(p, !!admin)));
 });
-// Cluster mode: a player of a neighbouring node acts on a corpse, ground loot or a chest this node owns (spec §4).
-// `actor` is that player's mirror here, so the checks below run on where this node sees them.
 serveItems("LOOT_OPEN", (actor, body) => {
   const opened = creatures.openCorpseFor(actor, Number(body.creatureId));
   return typeof opened === "string" ? { ok: false, reason: opened } : { ok: true, items: opened.items, copper: opened.copper };
@@ -236,11 +217,6 @@ function takeIndices(raw: unknown): number[] | null {
   }
   return [...places];
 }
-/**
- * The room in a looter's bags as a call carried it, or null when it is not a room: free slots must be a whole
- * number (NaN would make every item fit), and what the bags hold a list of names. Fewer than none free is none; a
- * longer list of names than MAX_HELD_NAMES is cut, which only makes items need a slot.
- */
 function bagRoomOf(raw: any): { free: number; held: string[] } | null {
   if (!raw || typeof raw !== "object" || !Number.isInteger(raw.free) || !Array.isArray(raw.held)) return null;
   const held = raw.held.filter((name: unknown) => typeof name === "string").slice(0, MAX_HELD_NAMES);
@@ -290,11 +266,6 @@ registerPlayerAction("displaced-login", (p, args) => {
 registerPlayerAction("cells-editor", (p, args) => trackPacket(String(p.id), () => playerEditor.ownerNodeEdit(args)));
 /** The player editor took the player out of their guild, from another node. */
 registerPlayerAction("guild-cleared", (p, { message }) => playerEditor.clearLiveGuild(p, message));
-
-// Cells phase 6: an admin's REVIVE, SUMMON or TELEPORT of a player on this node, sent from the admin's node (Task 15).
-// Each runs counted in flight, so a handoff that starts meanwhile waits for it, and none starts on a player whose
-// handoff is under way: what it changed could miss the snapshot. Every field the link brought is checked before it
-// is used (socket/arrival.ts); an action with a bad one is logged and dropped, and nobody is moved.
 
 export const busyNote = (name: string) => packetManager.notify({ message: `${shownName(name)} is changing server node; try again` });
 
@@ -350,8 +321,6 @@ registerPlayerAction("cells-summon", guardedAction("cells-summon", (target, args
     else if (target.wt) sendPacket(target.wt, packetManager.notify({ message: heldNote(target, target.username) }));
     return;
   }
-  // Told before the move: the move may switch the player to another node (a warp into another node's block is a
-  // handoff, transitionPlayerToMap), and the SWITCH closes this connection after what was sent before it.
   if (target.wt) {
     sendPacket(target.wt, packetManager.notify({
       message: teleport ? `Teleported to ${shownName(by)}'s location` : "You have been summoned by an admin",
@@ -421,21 +390,12 @@ export async function officerChat(wt: any, currentPlayer: any, message: unknown)
   if (!hearing.muted) listener.emit(Events.OFFICER_CHAT, { player: currentPlayer, message, officers, guildId } as any);
 }
 
-/**
- * An invitation (to a party, a guild, a friendship or a trade) reaches the one invited
- * unless they ignore who sent it. The sender sees it as sent either way.
- * Whether it could be sent: false when the one invited is not online (on any node).
- */
 async function sendInvitation(from: any, toUsername: string, invitation: any): Promise<boolean> {
   // An ignore list that cannot be read holds nothing back.
   if (await ignores.blocks(toUsername, from.username).catch(() => false)) return true;
   return await deliverToPlayer(toUsername, packetManager.invitation(invitation));
 }
 
-/**
- * A party, guild or friend invitation: kept for its answer (cluster/invitations.ts), wherever the
- * one invited answers it, and sent. Whether it could be sent; one that could not is not kept.
- */
 export async function offerInvitation(from: any, toUsername: string, invitation: { action: string; message: string; originator: string; authorization: string }): Promise<boolean> {
   await invitations.add({
     action: invitation.action,
@@ -504,36 +464,18 @@ export async function sendReport(wt: any, reporter: any, name: unknown, category
   noticeRegion(notice, { permission: "admin.reports" });
 }
 
-/**
- * The player online under a name: who the trade rules ask about. The asked player of a trade held here
- * may be on a neighbouring node, and is then read from their mirror (cluster/tradelink.ts).
- */
 const traderNamed = (username: string) =>
   playerCache.getByUsername(username) ?? (tradeLink.partnerPeer(username) ? mirrorByUsername(username) : undefined);
 export const shownName = (username: string) => username.charAt(0).toUpperCase() + username.slice(1);
 
-/**
- * Whether a player is on their way to another node (a handoff has begun, or this node's connection of theirs was
- * released): what they do here is lost or dangles there.
- */
 const inHandoff = (player: any): boolean => !!(player?.handoff || player?.wt?.data?.handedOff);
 
-/**
- * Whether a DoT's caster (an arrival's record, arrival.ts) is a player this node knows: one in the player cache, or
- * the mirror of one on a neighbouring node, under that id and that name.
- */
 function knownDotCaster(id: string, username: string): boolean {
   const player = playerCache.get(id) ?? mirrorPlayers.get(id);
   return !!player && typeof player.username === "string" && player.username.toLowerCase() === username.toLowerCase();
 }
 
-/**
- * Why `asker` cannot start a trade with `asked` now, in words for `asker`: the two may not trade,
- * or one of them already is. Null when they can.
- */
 export function tradeRefusal(asker: any, asked: any): string | null {
-  // A player in a handoff is frozen (their packets are refused) and then released: a trade begun with them would
-  // dangle on this node (final review M2).
   for (const player of [asker, asked]) {
     if (player?.handoff || player?.wt?.data?.handedOff) return "That player is busy.";
   }
@@ -577,10 +519,6 @@ export async function sendTradeState(trade: Trade): Promise<void> {
   for (const name of trade.players) await sendTradeViewTo(trade, name, now);
 }
 
-/**
- * Tells each of a trade's players that it ended, in the words meant for them. A player of a neighbouring
- * node is told through their node, which reads their bags and coins again when `reload` is set.
- */
 function sendTradeClosed(trade: Trade, completed: boolean, messages: Record<string, string>, reload = false): void {
   for (const name of trade.players) {
     const online = playerCache.getByUsername(name);
@@ -591,11 +529,6 @@ function sendTradeClosed(trade: Trade, completed: boolean, messages: Record<stri
   }
 }
 
-/**
- * After a player's items and coins changed together (a trade, a deal with a vendor): their bags and coins as they now are.
- * `fromDatabase` when another node wrote the rows (the host of a trade across a border): the copies held here are let go
- * first, so what is read and shown is what was written, and not a copy that a later write here would put back.
- */
 export async function sendBelongingsOf(online: any, fromDatabase = false): Promise<void> {
   if (!online) return;
   if (fromDatabase) await Promise.all([dropRows("inventory", online.username), dropRows("currency", online.username)]);
@@ -612,10 +545,6 @@ async function sendBelongingsAfterTrade(trade: Trade): Promise<void> {
   for (const name of trade.players) await sendBelongingsOf(playerCache.getByUsername(name));
 }
 
-/**
- * A player's offer in the trade held here: from their TRADE_OFFER, or from their node (TP_UPDATE).
- * `tell` gives them a message.
- */
 async function offerInTrade(username: string, raw: unknown, tell: (message: string) => void): Promise<void> {
   const offered = await trades.offer(username, raw);
   if (offered.ok && offered.changed) {
@@ -671,12 +600,6 @@ function endTradeOf(username: string): void {
   sendTradeClosed(ended, false, Object.fromEntries(ended.players.map((name) => [name, gone])));
 }
 
-/**
- * Host side (cluster/tradelink.ts): a player of a neighbouring node answered a trade invitation that a
- * player of this node sent. These are INVITATION_RESPONSE's checks, against the mirror of the one who
- * answered. Their node has already checked what only it knows: their subscription, and a trade of theirs
- * held elsewhere.
- */
 async function answerTradeHere(body: TradeAnswer, from: string): Promise<TradeReply> {
   const inviter = playerCache.get(String(body?.askerId ?? ""));
   if (!inviter || inviter.username.toLowerCase() !== String(body.asker).toLowerCase()) {
@@ -751,11 +674,6 @@ async function closeTradeFromHost(body: TradeClosedCast): Promise<void> {
   if (online.wt) sendPacket(online.wt, packetManager.tradeClosed({ completed: body.completed, message: body.message }));
 }
 
-/**
- * A player marked unsettled after a lost trade (cluster/tradesettle.ts) is shown their bags and coins again once the
- * mark has run out: a swap the host finished in the meantime is then in what they see. Nothing is done for a player
- * who is not marked. The player is looked up when the mark ends, since they may have left by then.
- */
 function reloadWhenSettled(username: string): void {
   if (tradeSettle.unsettledUntil(username) === null) return;
   void settled(username)
@@ -763,12 +681,6 @@ function reloadWhenSettled(username: string): void {
     .catch((error) => log.error(`The bags and coins of ${username} could not be read again after their lost trade settled: ${error}`));
 }
 
-/**
- * The link to another node went down with a trade across it (cluster/tradelink.ts, Task 10). Host: the trade held
- * here ends, unless it is being swapped (trades.cancel leaves a settling trade: the swap's own database write is the
- * truth). Partner: the window closes, and the bags and coins are read again from the database, now and once more
- * after the mark that peerDown set has run out.
- */
 async function loseTrade(body: TradeLost): Promise<void> {
   if (body.role === "host") {
     endTradeOf(body.username);
@@ -788,11 +700,6 @@ async function loseTrade(body: TradeLost): Promise<void> {
 // Cluster mode: trades between a player of this node and a player of a neighbouring node (cluster/tradelink.ts).
 tradeLink.setHandlers({ answer: answerTradeHere, update: updateTradeHere, state: showTradeFromHost, closed: closeTradeFromHost, lost: loseTrade });
 
-/**
- * Ends one session on this node: closes only that row's connection, whose disconnect cleans up that row and saves it
- * fenced on its owner epoch (the SAVE loop's refusal does the same). Never player.kick by username: that logs out
- * whichever session the name has here now, which may be a newer one.
- */
 function endSessionOf(row: any, why: string): void {
   try {
     row?.wt?.close?.(1000, why);
@@ -801,8 +708,6 @@ function endSessionOf(row: any, why: string): void {
   }
 }
 
-// Cluster mode (cells phase 7): startCluster calls these. A login claimed here takes the owner epoch its saves are
-// fenced on (cluster/ownerepoch.ts); a fenced node sends its players away. Nothing calls them with the cluster off.
 useEngineHooks({
   claimed: (p, entry, directory) => adoptOwnerEpoch(p, entry.epoch, {
     directory,
@@ -816,28 +721,16 @@ useEngineHooks({
   lost: (p) => void tellContactsOffline(p),
 });
 
-// Cells phase 6: the player handoff's trigger. Registered at load; it runs only while startCluster has the links
-// attached, so outside cluster mode handoffCtx stays null and no warp or tick looks at another node.
-
 /** How often the watch looks for players who crossed into another node's block. */
 export const HANDOFF_WATCH_MS = 250;
 
 /** The links of the running cluster while they are attached; null otherwise. */
 let handoffCtx: LinkContext | null = null;
 
-/**
- * Whether the shared store is reachable (R12). Handoffs wait while it is not: the arrival and the ticket live there.
- * A store without isUp, or a context that carries no store, counts as up.
- */
 function storeUp(ctx: LinkContext | null): boolean {
   return ctx?.store?.isUp?.() !== false;
 }
 
-/**
- * The handoff blocks that need the receiver (cluster/handoffwatch.ts has the rest). No `settling` check is given:
- * handoffBlocked asks this node's marks (cluster/tradesettle.ts) itself, and reports a player marked unsettled after
- * a lost trade as "settling", not "trading".
- */
 const handoffChecks: HandoffChecks = {
   trading: (username) => isTrading(username),
   dragged: draggedCheck(draggedPlayersMap),
@@ -847,10 +740,6 @@ const handoffChecks: HandoffChecks = {
   dwellingFrom: (username, peer) => playerHandoff.dwellingFrom(username, peer),
 };
 
-/**
- * Asked by a running handoff once the player is drained: why they may not go after all (a trade or a cast begun while
- * the target's answer was awaited), or null. The handoff's own pending flag and the freeze are not a reason.
- */
 export function handoffRecheck(player: any, target: string): string | null {
   return handoffBlocked(player, target, { ...handoffChecks, pending: () => false, coolingDown: () => false }, { draining: true });
 }
@@ -876,10 +765,6 @@ onLinksAttached((ctx) => {
   };
 });
 
-/**
- * A player asks another to trade. The one asked may be a player of a neighbouring node: the trade is held
- * here, on the asker's node, and the invitation reaches them wherever they are.
- */
 export async function requestTrade(wt: any, asker: any, askedId: unknown): Promise<void> {
   const asked = entityById(askedId as string);
   const refusal = tradeRefusal(asker, asked);
@@ -909,16 +794,8 @@ export async function requestTrade(wt: any, asker: any, askedId: unknown): Promi
   sendPacket(wt, packetManager.notify({ message: `Trade request sent to ${shownName(asked.username)}` }));
 }
 
-/**
- * TRADE_OFFER, TRADE_ACCEPT and TRADE_CANCEL of a player: on the trade held here, or, when their trade is
- * held on a neighbouring node (cluster/tradelink.ts), relayed to it.
- */
 export async function tradeAction(wt: any, player: any, op: "offer" | "accept" | "cancel", offer?: unknown): Promise<void> {
   if (tradeLink.hostOf(player.username)) {
-    // Each relay is a call to another node, and a failed one adds a cancel and a wait: a client cannot send them without
-    // limit. Over the limit it is not sent, and not dropped in silence either: the player is told, and their window is
-    // given the trade as its host last sent it, so it never shows an offer other than the one a swap would make (a
-    // dropped removal would leave the old offer there). The trade held here is not limited (no call).
     if (isQuestRateLimited(`trade-relay:${player.id}`)) {
       sendPacket(wt, packetManager.notify({ message: "You are doing that too fast. Try again in a moment." }));
       const held = tradeLink.lastState(player.username);
@@ -943,8 +820,6 @@ async function relayTradeUpdate(wt: any, username: string, op: TradeOp, offer?: 
   // The end of the trade arrived while it was waited for: it was shown, and the bags were read again, as it came.
   if (reply.closed) return;
   if (reply.gone) {
-    // A swap that started there before the link failed may still commit (cluster/tradesettle.ts): the player's
-    // writes here wait for it, and their bags and coins are read again once it has had the time to end.
     await unsettle(username, `their trade update "${op}" came back gone`, peer ?? "the node that held their trade");
     reloadWhenSettled(username);
     // Whatever became of the trade there (a swap may have been made before the link failed), the bags and coins shown are the database's.
@@ -957,10 +832,6 @@ async function relayTradeUpdate(wt: any, username: string, op: TradeOp, offer?: 
   } else if (reply.reason) sendPacket(wt, packetManager.notify({ message: reply.reason }));
 }
 
-/**
- * An answer to a trade request whose asker is not on this node: when they are a player of a neighbouring
- * node, it is answered across (answerTradeAcross) and this is true. False when nobody mirrors the asker here.
- */
 export async function answerTradeIfAcross(wt: any, answerer: any, originator: unknown, authorization: string, response: unknown): Promise<boolean> {
   const across = entityById(originator as string);
   if (!across?.remote || !answerer) return false;
@@ -970,10 +841,6 @@ export async function answerTradeIfAcross(wt: any, answerer: any, originator: un
   return true;
 }
 
-/**
- * Partner side: a player of this node answered a trade invitation from a player of a neighbouring node.
- * That node holds the invitation, and holds the trade if one opens. What only this node knows is checked here first.
- */
 async function answerTradeAcross(wt: any, answerer: any, inviter: any, authorization: string, accepted: boolean): Promise<void> {
   const tell = (message: string) => {
     sendPacket(wt, packetManager.notify({ message }));
@@ -1001,11 +868,6 @@ async function answerTradeAcross(wt: any, answerer: any, inviter: any, authoriza
   if (!reply.ok && reply.reason) tell(reply.reason);
 }
 
-/**
- * The NPC a vendor packet names, when the player may deal with it now. When they may not (it is no
- * vendor, they walked off, they died, they are trading with a player), they are told why and their
- * vendor window is closed.
- */
 export async function vendorFor(wt: any, shopper: any, npcId: unknown): Promise<Npc | null> {
   const npc = (await readNpcList()).find((held) => Number(held.id) === Number(npcId));
   const reason = isTrading(shopper.username) ? "You cannot use a vendor while trading." : cannotShop(shopper, npc);
@@ -1016,25 +878,13 @@ export async function vendorFor(wt: any, shopper: any, npcId: unknown): Promise<
   return npc!;
 }
 
-/**
- * A chat line as it is sent, and the links in it: each `[Name]` that names a real item (from the
- * in-memory item list) or, failing that, an enabled achievement (from the achievements cache) is
- * written with its exact name and comes with the link's data. A line with no links is returned as
- * it is, with `links` empty.
- */
 export async function chatLinksOf(text: string): Promise<{ message: string; links: ChatLink[] }> {
-  // Every channel caps a line at the chat cap before it gets here; one over it all the same is sent
-  // as it is, with no links, instead of being scanned.
   if (typeof text !== "string" || text.length > MAX_CHAT_LENGTH || !text.includes("[")) return { message: text, links: [] };
   const items = ((await assetCache.get("items")) || []) as Item[];
   const links = await findChatLinks(text, items, achievementDefinitions, MAX_ITEM_LINKS, getIconUrl);
   return { message: canonicalLinks(text, links), links };
 }
 
-/**
- * What an NPC stocks, as the NPC editor sent it: the entries that name an item and a price. The
- * editor is told what was wrong with any that were left out.
- */
 export async function vendorStockFrom(wt: any, sent: unknown): Promise<VendorItem[]> {
   const names = (((await assetCache.get("items")) || []) as Item[]).map((item) => item.name);
   const read = readVendorItems(sent, names);
@@ -1063,26 +913,16 @@ export async function sendVendorAnswer(wt: any, shopper: any, npc: Npc, answer: 
   listener.emit(event, { player: shopper, npcId: Number(npc.id), item: answer.item, quantity: answer.quantity, coins: answer.coins });
 }
 
-// A trade ends when its players may no longer trade: one walked away, entered combat, died, changed
-// map or left. Looked at once a second, and only while there is a trade.
 listener.on(Events.SERVER_TICK, () => {
   if (trades.count === 0) return;
   for (const { trade, reasons } of trades.sweep(traderNamed)) sendTradeClosed(trade, false, reasons);
 });
 
-// A player who logs out or loses their connection ends their trade at once. The look above would
-// find them gone too, but only once they are out of the players held, which waits on their saves:
-// until then the other player could still accept.
 function endTradeOfLeaver(event: { player?: any }): void {
   const username = event?.player?.username;
   if (!username) return;
   // What they sold to vendors can no longer be bought back.
   vendors.forget(String(username));
-  // A trade held on a neighbouring node (cluster/tradelink.ts) is ended there. Its host is let go at once. A swap
-  // there may commit after the player left: when the trade showed an accept, the player sent an accept the host has
-  // not shown back yet (tradeLink.acceptSent), or the link to it is down, the player is marked unsettled before the
-  // leave goes out (the mark is set synchronously), so a write of their bags or coins here (a relog within the mark)
-  // waits for it. A leave that came back gone marks them too, or extends the mark from the reply. The mark runs out.
   const peer = tradeLink.hostOf(String(username));
   if (peer) {
     const shown = tradeLink.lastState(String(username)) as Partial<TradeView> | null;
@@ -1116,12 +956,6 @@ function worldSpawn(): { map: string; x: number; y: number } {
   };
 }
 
-/**
- * The world's start area, for the backdrop of the gateway's character page (socket/server.ts: GET /start-area): the
- * default map's size and tilesets and where players start. The page reads the tiles from the asset server; nothing
- * about who is in the world is here. USER REQUEST 2026-10-14 ("I want the character creator to pan over the starting
- * area of the world (don't show players or creatures)"). Null while the default map is not loaded.
- */
 export function startArea(): Record<string, unknown> | null {
   const spawn = worldSpawn();
   const map = (maps as MapData[] | null)?.find((m: MapData) => m.name === `${spawn.map}.json`);
@@ -1144,12 +978,6 @@ export function startArea(): Record<string, unknown> | null {
 /** Whether a player is casting their home item now: its cast is the one they are in. */
 const castingHome = (player: any) => !!player?.casting && player.homeCastId !== undefined && player.homeCastId === player.castId;
 
-/**
- * A player casts their home item: HOME_CAST_MS standing still, and then they are at home (see
- * systems/homes), or at the world's spawn when they have none. A step, any damage, a stun, dying
- * or cancelling breaks the cast, and a broken cast starts no cooldown.
- */
-// (the one who casts is `caster`, not `player`: that name is the player system's in this file, which the cast saves through)
 export async function castHome(caster: any, itemName: string): Promise<void> {
   const wt = caster.wt;
   if (!wt) return;
@@ -1202,8 +1030,6 @@ export async function castHome(caster: any, itemName: string): Promise<void> {
   let to;
   try {
     to = (await homes.where(after.username)) ?? worldSpawn();
-    // Saved as standing there before the move, as every other way of moving a player between maps does: until the
-    // next save, the account would otherwise still be where the stone was used.
     await player.setLocation(after.id, to.map, { x: to.x, y: to.y, direction: here?.direction || "down" });
     await teleportPlayerWrapper(after, to.map, to.x, to.y);
   } catch (error) {
@@ -1224,11 +1050,6 @@ export async function castHome(caster: any, itemName: string): Promise<void> {
 /** Whether a player is gathering now: its cast is the one they are in. */
 const castingGather = (player: any) => !!player?.casting && player.gatherCastId !== undefined && player.gatherCastId === player.castId;
 
-/**
- * A player gathers a node (systems/gathering): GATHER_CAST_MS standing still, then the node is claimed, and the item
- * goes into their bags. Players whose casts end within the same claim window get one winner, picked at random. A step,
- * any damage, a stun or dying breaks the cast, as a cast home is broken.
- */
 export async function castGather(caster: any, nodeId: unknown): Promise<void> {
   const wt = caster.wt;
   if (!wt) return;
@@ -1308,25 +1129,14 @@ listener.on(Events.PLAYER_DEBUFF_ADDED, (event: { target?: any; effectType?: str
 /** Whether a player is fishing now: its cast is the one they are in (castFish). */
 export const castingFish = (player: any) => !!player?.casting && player.fishCastId !== undefined && player.fishCastId === player.castId;
 
-/**
- * The equipment a player is drawn with. A player who is fishing holds the rod they cast with, which is the weapon they
- * have equipped (systems/fishing: a tile is fished only with a weapon it names), so it is their own equipment.
- */
 function drawnEquipment(target: any): any {
   return target?.equipment || null;
 }
 
-/**
- * A FISHING packet, for everyone on a map who can see the angler. An admin in stealth (or a vanished player) is seen
- * only by themselves, admins and their party, as broadcastToAOI has it (USER REPORT 2026-10-20: "Non admins can see
- * admins fishing in stealth").
- */
 function broadcastFishing(map: unknown, data: Parameters<typeof packetManager.fishing>[0]): void {
   const packets = packetManager.fishing(data);
   const angler = playerCache.get(data.id);
   const hidden = !!(angler?.isStealth || angler?.isVanished);
-  // The line as it stands, for a viewer across a block border who comes into view of the angler later: the
-  // angler's mirrors carry it (cluster/kinds/players.ts), and sendAnimationTo sends it from there.
   if (angler) {
     const line = angler.fishLine;
     angler.fishLine = data.state === "cast" ? { x: data.x, y: data.y, bit: false, reeled: false }
@@ -1367,20 +1177,12 @@ function leftLine(p: any, session: { map: string; from: { x: number; y: number }
   return Math.hypot(Number(here.x) - session.from.x, Number(here.y) - session.from.y) > fishing.FISH_WALK_RANGE;
 }
 
-/**
- * Takes the staff away after `ms`: long enough for the clients to draw the line coming in (the bobber, or the fish, to
- * the staff's tip). Nothing is done when the player cast again, or the cast was broken, in the meantime.
- */
 async function releaseFishCastAfter(target: any, castId: number, ms: number): Promise<void> {
   if (ms > 0) await new Promise((resolve) => setTimeout(resolve, ms));
   const p = (target?.id && playerCache.get(target.id)) || target;
   if (p && castingFish(p) && p.castId === castId) await releaseFishCast(p);
 }
 
-/**
- * Ends a player's fishing, if they are fishing: the line is taken in, for everyone on the map. `holdMs` keeps the staff
- * in their hands that long while it comes in (a line reeled in by the player); a broken cast puts it away at once.
- */
 export async function stopFishing(target: any, holdMs = 0): Promise<void> {
   const p = (target?.id && playerCache.get(target.id)) || target;
   if (!p?.id) return;
@@ -1391,13 +1193,6 @@ export async function stopFishing(target: any, holdMs = 0): Promise<void> {
   else await releaseFishCast(p);
 }
 
-/**
- * A player casts a line (systems/fishing) at a point (px) they clicked: a fishable tile within FISH_RANGE. They face
- * it and hold the rod in the cast pose; the bobber floats there until a fish bites (fishBite), and then they reel it
- * in (landFish). Casting again while fishing casts the line somewhere else. They may walk a little while fishing, still
- * turned to the water (USER REQUEST 2026-10-20): walking further than FISH_WALK_RANGE from where they cast, any
- * damage, a stun, dying or leaving the map takes the line in.
- */
 export async function castFish(caster: any, data: unknown): Promise<void> {
   const wt = caster.wt;
   if (!wt) return;
@@ -1473,10 +1268,6 @@ function fishBite(playerId: string, castId: number): void {
   session.timer = setTimeout(() => fishEscape(playerId, castId), fishing.BITE_ESCAPE_MS);
 }
 
-/**
- * The fish was not reeled in within BITE_ESCAPE_MS of its bite: it gets away. The bobber comes up again, for everyone
- * on the map, and the line stays out: another fish bites in time, maybe of another kind.
- */
 function fishEscape(playerId: string, castId: number): void {
   const session = fishing.session(playerId);
   if (!session || session.castId !== castId || !session.bitAt || session.reeledAt) return;
@@ -1492,10 +1283,6 @@ function fishEscape(playerId: string, castId: number): void {
   session.timer = setTimeout(() => fishBite(playerId, castId), fishing.biteDelay(Math.random()));
 }
 
-/**
- * The player began reeling in the fish on the line (FISH_REEL): it no longer gets away for waiting, only if it is not
- * landed within HOOKED_MAX_MS.
- */
 export function fishReel(playerId: string): void {
   const session = fishing.session(playerId);
   if (!session || !session.bitAt || session.reeledAt) return;
@@ -1512,10 +1299,6 @@ export function fishReel(playerId: string): void {
   }, fishing.HOOKED_MAX_MS);
 }
 
-/**
- * The client has reeled the fish in (FISH_LAND): it goes into the bags, and everyone on the map sees it pulled out of
- * the water. Taken only once the fish has been on the line MIN_REEL_MS: a land that comes sooner waits until then.
- */
 export async function landFish(caster: any): Promise<void> {
   const first = fishing.session(caster.id);
   if (!first || !first.bitAt) return;
@@ -1544,8 +1327,6 @@ export async function landFish(caster: any): Promise<void> {
     log.error(`[Fishing] ${item} could not be given to ${p.username}: ${error}`);
   }
   broadcastFishing(session.map, given ? { id: p.id, state: "catch", item, icon: fishing.iconOf(item), quality: fishing.qualityOf(item) } : { id: p.id, state: "end" });
-  // the staff stays out while the fish (or the empty line) comes up to its tip, then is put away; not awaited, so the
-  // bags are sent at once
   releaseFishCastAfter(p, castId, given ? fishing.CATCH_HOLD_MS : fishing.LINE_IN_MS).catch((error) => log.error(`A fishing cast could not be ended: ${error}`));
   const live = playerCache.get(p.id)?.wt;
   if (!live) return;
@@ -1567,8 +1348,6 @@ for (const event of [Events.MAP_ENTER, Events.PLAYER_DEATH]) {
     if (target?.id && fishing.session(target.id)) stopFishing(target).catch((error) => log.error(`A fishing line could not be taken in: ${error}`));
   });
 }
-// So does walking too far from where the line was cast, or taking off the rod it was cast with (by any means: the
-// equipment window, a trade, an admin), looked at every tick (100 ms)
 listener.on(Events.FIXED_UPDATE, () => {
   for (const [id, session] of fishing.allSessions()) {
     const p = playerCache.get(id);
@@ -1580,11 +1359,6 @@ listener.on(Events.FIXED_UPDATE, () => {
   }
 });
 
-/**
- * Sends a player what a map marks, for their minimap and world map: its inns and merchants (the
- * doors that lead to a house an innkeeper or a vendor is in), its caves (the ways into another
- * world) and its houses. See systems/mapmarkers. A world is open country; any other map is indoors.
- */
 async function sendMapMarkers(wt: any, map: unknown): Promise<void> {
   try {
     const name = String(map ?? "").replaceAll(".json", "");
@@ -1624,10 +1398,6 @@ export function mailboxEditorWorld(who: any): mailboxEditor.EditorWorld {
   };
 }
 
-/**
- * The mailboxes of a map: the ones placed by hand (/mailbox) when it has any list of them, else in
- * front of its inns (see systems/mail), clear of what is solid on a world.
- */
 async function mailboxesOf(map: unknown): Promise<Mailbox[]> {
   const name = String(map ?? "").replaceAll(".json", "");
   if (!name) return [];
@@ -1690,10 +1460,6 @@ export async function resendMapMarkers(): Promise<void> {
   }
 }
 
-/**
- * An NPC edit, for the players of its map: the NPC as the client draws it (added or changed), or the id of one deleted.
- * `markers`: it touched an inn or a shop, so everyone's map markers are sent again.
- */
 export type NpcChange = { map: string; updated?: Record<string, any>; removed?: number; markers?: boolean };
 
 /** Shows this node's players of the map an NPC edit. */
@@ -1711,8 +1477,6 @@ export function npcChanged(change: NpcChange): void {
   void tellPeers("npc", change);
 }
 
-// Cluster mode: an NPC edited on another node of the region. The list is shared and this node was told it was
-// written (services/assetCache.ts): its players of the map are shown the edit.
 onPeerNews("npc", (news: { map?: unknown; updated?: unknown; removed?: unknown; markers?: unknown }) => {
   const map = typeof news?.map === "string" ? news.map : "";
   if (!map) return;
@@ -1755,10 +1519,6 @@ export const MAX_COMMAND_LENGTH = MAX_CHAT_LENGTH + 100;
 /** One RSA-4096 block is 512 bytes; this leaves room and no more. */
 const MAX_CIPHERTEXT_BYTES = 1024;
 
-/**
- * The chat rate limit, one for every channel (say, party, guild, whisper): true
- * when the player may send another line now, which counts it. When not, they are told.
- */
 export function chatRateOk(wt: any): boolean {
   const now = Date.now();
   const recent = (chatRateLimit.get(wt.data.id) || []).filter((t: number) => now - t < CHAT_RATE_WINDOW);
@@ -1958,9 +1718,6 @@ const BENCHMARK_ENABLED = !!(settings as any)?.webtransport?.benchmarkenabled;
 
 const useSpriteSheets = (settings as any).animation_system?.use_sprite_sheets ?? true;
 
-// Resolve a spell's comma-separated particle names to full particle objects for projectile rendering
-// Pass the latest particle cache so editor updates are reflected immediately.
-
 export function resolveSpellParticles(spell: SpellData, particleList: Particle[] | null): Particle[] | null {
   if (!spell?.particles || !particleList || particleList.length === 0) return null;
   const names = spell.particles.split(",").map((n) => n.trim()).filter(Boolean);
@@ -1971,8 +1728,6 @@ export function resolveSpellParticles(spell: SpellData, particleList: Particle[]
   return resolved.length > 0 ? resolved : null;
 }
 
-// The current worlds list. `worlds.update` stores it back as a JSON string, so
-// accept both shapes.
 async function getLiveWorlds(): Promise<WorldData[]> {
   const worldsResult = await assetCache.get("worlds").catch(() => worldsCache) as WorldData[] | string;
   return Array.isArray(worldsResult) ? worldsResult : JSON.parse(worldsResult as string);
@@ -2017,21 +1772,10 @@ const lookOf = (weather: string) => (weather === TORNADO ? "thunderstorm" : weat
 export const rowOf = (all: WeatherData[] | null | undefined, name: string): WeatherData | null =>
   all?.find((w) => w.name === name) || (name === TORNADO ? all?.find((w) => w.name === "thunderstorm") || null : null);
 
-/**
- * What WEATHER and CHANGE_WEATHER carry: the weather under the name the client draws it by. USER REPORT 2026-10-17
- * ("tornado weather is not causing a sandstorm in the desert biome"): a "tornado" is told as a thunderstorm, so its
- * values say `sandstorm: true` as well, and the client blows a sandstorm in the desert zones too, as harsh as its wind.
- */
 export const weatherShown = async (weather: string, weatherData: WeatherData | null) => {
   const look = lookOf(weather);
   let data = weather === TORNADO && weatherData ? { ...weatherData, sandstorm: true, blizzard: true } : weatherData;
-  // USER REQUEST 2026-10-19 ("make similar weather but for a blizzard in the snow biome"): the snow zones have their own
-  // storm, "blizzard", drawn only there (the client's blizzard.ts). A tornado's storm blows one there, as it blows a
-  // sandstorm in the deserts; and so does any wind of the real weather (weather_api), as any of it blows sand in a
-  // desert: snow lifted off the ground and driven, harsher the faster it blows, whatever falls from the sky.
   if (weather === weatherApi.WEATHER_API && data && Number(data.wind_speed) >= weatherApi.SANDSTORM_WIND) data = { ...data, blizzard: true };
-  // USER REQUEST 2026-10-17 (weather sounds chosen in the weather editor, systems/weathersounds.ts): a weather with no
-  // sounds of its own (the real weather, weather_api, which is no row) sounds like the weather it is drawn as.
   if (data && !data.sounds) data = { ...data, sounds: rowOf(await assetCache.get("weather") as WeatherData[], look)?.sounds ?? null };
   return { weather: look, weatherData: data };
 };
@@ -2049,9 +1793,6 @@ async function showWeatherHere(worldName: string, weatherName: string, weatherDa
   }
 }
 
-// What the weather editor (systems/weathereditor.ts) needs from the socket
-// layer: which weather each world shows, and the players to show a change to.
-// Cluster mode: the region's other nodes are told of each, for their players of the world (the news below).
 const weatherBridge: weatherEditor.WeatherEditorBridge = {
   worlds: async () => (await getLiveWorlds()).map((world) => ({
     name: world.name,
@@ -2074,9 +1815,6 @@ const weatherBridge: weatherEditor.WeatherEditorBridge = {
 };
 weatherEditor.setWeatherEditorBridge(weatherBridge);
 
-// Cluster mode: a weather set (/weather, the weather editor) or shown (an edited row) on another node of the region.
-// The worlds table and the weather rows are shared, and already hold it: this node takes the setting into what it keeps
-// of the world, and shows its own players of the world what it shows now.
 onPeerNews("weather", async (news: { world?: unknown; set?: unknown; shown?: unknown }) => {
   const world = typeof news?.world === "string" ? news.world : "";
   if (!world) return;
@@ -2092,8 +1830,6 @@ onPeerNews("weather", async (news: { world?: unknown; set?: unknown; shown?: unk
   await showWeatherHere(world, weather, weatherData);
 });
 
-// A world on "weather_api" follows a real place (systems/weatherapi.ts): a
-// reading that differs from the last is shown at once on every such world.
 void weatherApi.startWeatherApi(async (row) => {
   try {
     for (const world of await weatherBridge.worlds()) {
@@ -2104,8 +1840,6 @@ void weatherApi.startWeatherApi(async (row) => {
     log.error(`Weather API: the reading could not be shown: ${error}`);
   }
 }, (utcOffset) => {
-  // The time of day is that place's too: everyone online is given the clock again when its shift from UTC is first
-  // known, and when it changes with daylight saving.
   const time = packetManager.serverTime(utcOffset);
   for (const player of Object.values(playerCache.list()) as any[]) {
     if (player?.wt && player.wt.readyState === 1) sendPacket(player.wt, time);
@@ -2122,10 +1856,6 @@ async function waitForSpritesReady() {
 
 export const spriteDataCacheReady = waitForSpritesReady();
 
-// Commands the control panel is running (runForControlPanel). The packet that
-// stands for one carries no chat text: its command and arguments are kept
-// here, already split. What the command tells the admin while it runs is
-// collected as the panel's answer.
 export const panelCommands = new WeakMap<object, { name: string; args: string[] }>();
 const panelReplies = new Map<any, string[]>();
 const PANEL_REPLY_MS = 3_000;
@@ -2156,27 +1886,16 @@ const receiverSetCache = new Map<string, { revision: number; receivers: Set<stri
 let flushOffset = 0;
 let flushTick = 0;
 
-// Per-receiver probe sequence numbers: loss accounting on the client requires
-// a monotonic sequence for each receiver's own frame stream. A global counter
-// would make every client count the other players' frames as "lost".
 const movementProbeSeqs = new Map<string, number>();
 
-// Per-layer worker pool: keeps the movement batch encoding off the main event
-// loop.
 const workerLayerSynced = new Set<string>();
 
 setOnWorkerRetired((layerId: string) => {
   workerLayerSynced.delete(layerId);
 });
 
-// Packet type validation runs on every inbound packet; a Set lookup replaces
-// building an array with Object.values() and scanning it with indexOf().
 const validPacketTypes = new Set<string>(Object.values(packetTypes) as string[]);
 
-// Movement direction offsets. The per-tick movement callback previously built
-// a fresh 9-object literal every tick for every moving player; at 2000 movers
-// @30Hz that was 540k object allocations per second. Offsets only depend on
-// speed, and speed only changes on mount/slow, so the tables are memoized.
 const DIRECTION_UNIT_OFFSETS: Record<string, { dx: number; dy: number }> = {
   up: { dx: 0, dy: -1 },
   down: { dx: 0, dy: 1 },
@@ -2188,8 +1907,6 @@ const DIRECTION_UNIT_OFFSETS: Record<string, { dx: number; dy: number }> = {
   downright: { dx: 1, dy: 1 },
 };
 
-// Direction validation for inbound MOVEXY; was an array literal rebuilt and
-// linearly scanned on every movement packet.
 export const VALID_DIRECTIONS = new Set(Object.keys(DIRECTION_UNIT_OFFSETS));
 
 const directionOffsetCache = new Map<number, Record<string, { dx: number; dy: number }>>();
@@ -2204,8 +1921,6 @@ export function getDirectionOffsets(speed: number): Record<string, { dx: number;
     table[key] = { dx: unit.dx * speed, dy: unit.dy * speed };
   }
 
-  // Distinct speeds are few (base, mounted, and a handful of slow tiers), but
-  // cap the cache so an unusual slowMultiplier stream can't grow it unbounded.
   if (directionOffsetCache.size < 64) {
     directionOffsetCache.set(speed, table);
   }
@@ -2213,18 +1928,12 @@ export function getDirectionOffsets(speed: number): Record<string, { dx: number;
 }
 
 const MAX_BUFFER_BACKPRESSURE = 1024 * 32; // 32KB - aggressive at high loads
-// Spawn payloads are much larger than movement frames; gate them with a
-// higher threshold - but keep it BELOW the transport's per-stream queue limit
-// (~256KB) so bursty spawn batches can never destroy the stream.
 const SPAWN_BACKPRESSURE_THRESHOLD = 1024 * 128; // 128KB
 
 // Track recent flush latencies for adaptive batch scheduling
 const LATENCY_HISTORY_SIZE = 5; // Keep last 5 flushes for fast recovery
 const recentFlushLatencies: number[] = [];
 
-/**
- * Calculate average flush latency from recent history
- */
 function getAverageFlushLatency(): number {
   if (recentFlushLatencies.length === 0) return 0;
   const sum = recentFlushLatencies.reduce((a, b) => a + b, 0);
@@ -2287,18 +1996,8 @@ export async function getInventorySlots(player: any): Promise<number> {
   return slots;
 }
 
-// Event-loop lag: the single most honest measure of whether the one JS thread
-// that runs all game logic is keeping up. A timer set for `PROBE_INTERVAL_MS`
-// that actually fires `PROBE_INTERVAL_MS + N` late means the loop was blocked
-// for N ms - by a long SERVER_TICK, GC, a synchronous burst, anything.
-//
-// This replaces the old process.cpuUsage() check, which divided busy time by
-// the logical CPU count (20 on a typical box). Single-threaded work pegged at
-// 100% of one core reported as ~5% "busy" and never tripped the throttle.
 const LOOP_PROBE_INTERVAL_MS = 250;
 let eventLoopLagMs = 0;
-// A block of a second or more has the thread sampled for 30 s and the functions it ran named in the log (at most once
-// in 15 minutes): the code behind a lag the dashboard shows, on a server whose code cannot be stepped through.
 const stallReporter = new StallReporter({
   thresholdMs: 1000,
   windowMs: 30_000,
@@ -2312,8 +2011,6 @@ const stallReporter = new StallReporter({
     const now = performance.now();
     const lag = Math.max(0, now - expected);
     stallReporter.late(lag);
-    // EMA so a single GC pause doesn't slam the throttle, but sustained lag
-    // ramps it within a second or two.
     eventLoopLagMs = eventLoopLagMs * 0.6 + lag * 0.4;
     expected = now + LOOP_PROBE_INTERVAL_MS;
   }, LOOP_PROBE_INTERVAL_MS);
@@ -2323,9 +2020,6 @@ export function getEventLoopLagMs(): number {
   return eventLoopLagMs;
 }
 
-// Opt-in load diagnostics. `BENCHMARK_PROFILE=1` emits a one-line breakdown
-// every 5s of where the single JS thread's time is going at scale, so a load
-// test tells us the actual bottleneck instead of us guessing per run.
 export const PROFILE = process.env.BENCHMARK_PROFILE === "1" || process.env.BENCHMARK_PROFILE === "true";
 export const prof = {
   moveCbCount: 0,
@@ -2378,19 +2072,6 @@ if (PROFILE) {
   }, 5000).unref();
 }
 
-/**
- * Adaptive movement-flush interval. Driven by two signals:
- *   - event-loop lag: is the game-logic thread itself falling behind?
- *   - flush latency: how long the flush's own bookkeeping takes.
- * Whichever is worse wins. The interval climbs monotonically with load so a
- * saturated server sheds movement cadence (fewer, larger updates) instead of
- * queueing work it can't drain.
- */
-/**
- * A map read again here after it changed (on the asset server, or by /reloadmap): what this node worked out from the
- * old one is forgotten (its collision cache, fishing spots, NPC chunk grid, unsaved editor edits), a map new to this
- * server joins the region's maps (cluster mode), and this node's players on it load it again where they stand.
- */
 export async function takeInMapChange(change: MapChange): Promise<void> {
   const name = change.name;
   clearMapCache(name);
@@ -2410,10 +2091,6 @@ export async function takeInMapChange(change: MapChange): Promise<void> {
   await refreshPlayersOnMap(name);
 }
 
-/**
- * Has this node's players on a map load it again where they stand: its new tiles, collision, NPCs and particles. One
- * changing server node, or without a connection, is left alone.
- */
 export async function refreshPlayersOnMap(mapName: string): Promise<void> {
   for (const p of filterPlayersByMap(mapName)) {
     if (!p?.wt || (CELLS_ON && inHandoff(p))) continue;
@@ -2433,19 +2110,10 @@ export async function refreshPlayersOnMap(mapName: string): Promise<void> {
   }
 }
 
-// Maps changed on the asset server and read again here (by the check below, or the one at registration with the
-// gateway) reach this node's players.
 onMapsChanged(async (changes) => {
   for (const change of changes) await takeInMapChange(change);
 });
 
-// Maps and worlds changed on the asset server by something other than this server (a restart of the asset server with
-// new files, the Tiled extension, another game server's editor save) are taken in without a restart: a map is written
-// here and read again; a world gets its new collision and no-pvp bits, warps, graveyards and objects. Their particle and
-// placed NPCs are read again, and the players on them load them again. The asset server pushes them on one connection
-// (followAssetServerMapChanges): nothing is asked while it is open, and after a restart of the asset server only the
-// maps that differ from its last run are sent. An asset server without that connection (an older one) is asked every
-// WORLD_SYNC_INTERVAL seconds instead. WORLD_SYNC_INTERVAL=0 turns both off.
 async function takeInWorldChanges(): Promise<void> {
   for (const world of await checkWorldChanges()) {
     await takeInWorldChange(world);
@@ -2484,9 +2152,6 @@ async function takeInWorldChanges(): Promise<void> {
   }
 }
 
-// A change the asset server told of while a map editor save of the map was under way is left to that save
-// (modules/mapsaves.ts). A save that ended without saving (it failed after the asset server wrote it, or its node never
-// sent its news) has the change taken in after all: a world by the world check, a map by comparing every map.
 onLeftChangeMissed(async (name) => {
   try {
     if (getWorldMap(name)) await takeInWorldChanges();
@@ -2496,10 +2161,6 @@ onLeftChangeMissed(async (name) => {
   }
 });
 
-// The movement volume sets the flush floor: none (a flush after every tick)
-// when the server is nearly idle, 50ms (20 Hz) once there's real outbound
-// volume (MovementVolume, movement_batch.ts). The interval is a back-off on the
-// flush that follows each tick (afterTickFlush), not a timer.
 const movementVolume = new MovementVolume();
 let movementHighVolume = false;
 setInterval(() => { movementHighVolume = movementVolume.sample(); }, 1000).unref();
@@ -2508,8 +2169,6 @@ function getAdaptiveBatchInterval(): number {
   const avgLatency = getAverageFlushLatency();
   const lag = eventLoopLagMs;
 
-  // Event-loop lag dominates: if the thread is blocked, flushing more often
-  // just adds to the backlog. These thresholds are deliberately aggressive.
   if (lag > 120) return 150; // loop badly behind - ~7 Hz, let it recover
   if (lag > 60) return 100;  // ~10 Hz
   if (lag > 30) return 66;   // ~15 Hz
@@ -2540,8 +2199,6 @@ async function flushMovementBatches(backoffMs: number = 0) {
 
   let skippedDueToLoad = 0;
 
-  // One tick per flush cycle, shared by every layer group in it, so a far
-  // mover's every-Nth-tick slot lines up for all the receivers that see it.
   const movementTick = flushTick++;
   // How many flushes a far mover waits, at the spacing the flushes are running at (one a tick, or the back-off's).
   const farEvery = farUpdateEvery(Math.max(TICK_MS, backoffMs));
@@ -2563,15 +2220,8 @@ async function flushMovementBatches(backoffMs: number = 0) {
 
     const allPlayers = playerCache.list();
 
-    // Only players who can see at least one mover need a batch: the movers
-    // themselves (their own echo) and everyone who has a mover in their AOI.
-    // Walking the whole layer instead made every flush cost O(layer), and one
-    // layer can hold thousands of players on a big map.
     const groupReceiverIds = collectGroupReceivers(playerMovements.keys(), aoiReverse.getViewers);
 
-    // Look receivers up directly in the live player cache. The previous code
-    // copied every player in the group into a throwaway `mapPlayers` object on
-    // every flush, even when only a few were moving.
     const receiverSets = new Map<string, Set<string>>();
     const changedSets: ReceiverDiff[] = [];
 
@@ -2599,8 +2249,6 @@ async function flushMovementBatches(backoffMs: number = 0) {
       if (!oldSet) {
         changedSets.push({ playerId, add: [...receivers], remove: [] });
       } else {
-        // Direct Set iteration; the previous [...set].filter(...) spread both
-        // sets into throwaway arrays before filtering.
         const add: string[] = [];
         for (const id of receivers) {
           if (!oldSet.has(id)) add.push(id);
@@ -2635,35 +2283,17 @@ async function flushMovementBatches(backoffMs: number = 0) {
     let sentCount = 0;
     let processedReceivers = 0;
 
-    // Cap the non-mover receivers processed per flush when the loop is behind,
-    // so a single flush can't monopolise a struggling thread. Movers are always
-    // processed (see isSelfReceiver below). Was gated on the broken cpuBusy
-    // metric; now on real event-loop lag.
     const maxReceiversPerFlush =
       eventLoopLagMs > 60 ? 100 : eventLoopLagMs > 30 ? 300 : Number.MAX_SAFE_INTEGER;
 
     const receiverArray = Array.from(receiverSets.entries());
     const startIndex = flushOffset % Math.max(receiverArray.length, 1);
 
-    // Layers above this size offload batch encoding to a per-layer worker
-    // thread (keeps the main event loop free at high player counts). Decided
-    // by the layer's size, not by how many receivers this flush happens to
-    // visit: that changes every flush and made a layer flip between the worker
-    // and the inline path.
     const useWorker = (layerManager.getLayerInfo(groupKey)?.playerCount ?? receiverArray.length) > 20;
 
     let workerDiffs: ReceiverDiff[] = [];
     if (useWorker) {
       if (!workerLayerSynced.has(groupKey)) {
-        // First flush for this layer's worker: send a full snapshot of the
-        // layer's receiver sets so the worker mirror starts correct.
-        // Iterate the group's members and look each up, rather than scanning
-        // the whole global receiverSetCache (O(all players)) to filter it down.
-        // This needs every member, not just this flush's receivers: a member
-        // skipped now keeps an unchanged cache entry, so the worker would never
-        // be sent its set otherwise. It runs once per worker engagement only.
-        // Snapshot entries replace the worker's set, and receivers outside the
-        // layer (a viewer that is not a member) are included too.
         const snapshotIds = new Set<string>(
           groupKey.includes(":layer_") ? layerManager.getPlayersInLayer(groupKey) : mapIndex.getPlayersOnMap(groupKey)
         );
@@ -2698,13 +2328,6 @@ async function flushMovementBatches(backoffMs: number = 0) {
 
       const receiver = allPlayers[receiverId];
       if (!receiver || !receiver.wt || receiver.wt.readyState !== 1) continue;
-
-      // No stream-queue backpressure gate here: movement batches are delivered
-      // as DATAGRAMS, which never touch the reliable stream's queue. Skipping
-      // receivers with a busy stream queue (e.g. mid spawn-burst) froze their
-      // view of other players - the exact clients that need updates most. QUIC
-      // datagram flow control drops datagrams itself when a receiver can't
-      // keep up, so this costs nothing.
 
       selectedReceiverIds.push(receiverId);
       selectedSets.set(receiverId, receiversForPlayer);
@@ -2742,8 +2365,6 @@ async function flushMovementBatches(backoffMs: number = 0) {
               const receiver = allPlayersRef[batch.receiverId];
               if (!receiver?.wt || receiver.wt.readyState !== 1) continue;
 
-              // One receiver's failing send must not cost everyone after it
-              // their batch.
               try {
                 const data = batch.data;
                 const parts: Uint8Array[] = [];
@@ -2766,8 +2387,6 @@ async function flushMovementBatches(backoffMs: number = 0) {
           },
         });
       } else {
-        // Layer served inline: its worker mirror (if any) goes stale. Forget
-        // the sync flag so the next worker engagement starts with a full sync.
         workerLayerSynced.delete(groupKey);
 
         const moverIndex = indexMovers(movers);
@@ -2775,8 +2394,6 @@ async function flushMovementBatches(backoffMs: number = 0) {
           const receiver = allPlayers[receiverId];
           if (!receiver?.wt || receiver.wt.readyState !== 1) continue;
 
-          // One receiver's failing send must not cost everyone after it
-          // their batch.
           try {
             const tally: EntryTally = { full: 0, far: 0 };
             const entries = collectReceiverEntries(selectedSets.get(receiverId)!, movers, receiverInfo[receiverId], movementTick, NEAR_TIER_DISTANCE, farEvery, moverIndex, tally);
@@ -2827,19 +2444,11 @@ async function flushMovementBatches(backoffMs: number = 0) {
 
 export const spawnBatchQueue = new Map<string, Map<string, any>>();
 
-// Sprite/animation payload caches live at module scope: spawn data for a given
-// player+animation is identical across receivers and flushes, so rebuilding it
-// per flush was pure repeated work during churn.
-// Keyed by player, pose and equipment revision. A local player's entries go when the player does (the cleanup
-// below); a mirror's, and the poses a long session has left behind, do not, so the oldest are dropped past this many
-// (an entry dropped is built again on its next miss).
 const SPRITE_CACHE_MAX = 5000;
 const spriteDataCache = new Map<string, any>();
 const animationDataCache = new Map<string, any>();
 
 export function queueSpawnForReceivers(spawnedPlayer: any, receivers: any[], spriteData: any = null) {
-  // Build the snapshot ONCE per call - the same player object is identical for
-  // every receiver, and rebuilding it per receiver was O(N^2) work per wave.
   const spawnData = queueSpawnPlayerPacket(spawnedPlayer);
   if (!spawnData) return;
   if (spriteData) spawnData.spriteData = spriteData;
@@ -2851,12 +2460,6 @@ export function queueSpawnForReceivers(spawnedPlayer: any, receivers: any[], spr
   }
 }
 
-/**
- * Runs `change`, a change of the player's party, and then shows or hides the hidden (stealthed, vanished) players in
- * their view to match: a party member is shown them (canSee). Visibility is checked only when a player enters a view
- * or their hidden flag flips (socket/aoi.ts, and cluster/kinds/players.ts for the players of other nodes), so nothing
- * else would. Covers both the players of this node and the mirrors of other nodes' players.
- */
 export async function partyViewChanged(p: any, change: () => unknown): Promise<void> {
   const hidden: { other: any; held: () => any }[] = [];
   for (const id of p?.aoi?.playersInAOI ?? []) {
@@ -2894,21 +2497,9 @@ async function flushSpawnBatches() {
 
   const allPlayers = playerCache.list();
 
-  // Pre-serialized spawn/animation JSON, shared across receivers within this
-  // flush: every receiver sees the same snapshots, so each player's deep
-  // sprite-laden object is stringified once instead of once per receiver.
   const spawnJsonCache = new Map<string, string>();
   const animJsonCache = new Map<string, { json: string; signature: string }>();
 
-  // Snapshot the receiver list up front: receivers that log in mid-flush are
-  // picked up by the next flush 50ms later. Several receivers are flushed at once: one waits for its own
-  // sprite data, not for the receivers ahead of it. A receiver's spawns still go out in its own order (each is
-  // one task), and the receivers share nothing but the JSON caches, whose entries are the same for all.
-  //
-  // flushSpawnQueue claims each entry BEFORE the first await (spawns queued by a player logging in mid-flush land
-  // in a fresh entry, never in the snapshot being processed), puts a claimed batch back if its flush throws, and
-  // stops starting receivers once SPAWN_FLUSH_BUDGET_MS of the pass is used: the rest wait for the next flush. A
-  // receiver already started finishes its batch.
   await flushSpawnQueue(
     spawnBatchQueue,
     (receivingPlayerId, claimed) => flushOneSpawnBatch(receivingPlayerId, claimed, allPlayers, spawnJsonCache, animJsonCache),
@@ -2925,19 +2516,12 @@ async function flushOneSpawnBatch(
 ): Promise<void> {
   const receivingPlayer = allPlayers[receivingPlayerId];
 
-  // Receiver is gone / not connected: drop their queued spawns entirely.
-  // Previously this only `continue`d, leaving the entry in spawnBatchQueue
-  // forever - after a load test the map held thousands of dead receivers and
-  // the 50ms flush re-scanned all of them (~110ms/flush doing nothing).
   if (!receivingPlayer || !receivingPlayer.wt || receivingPlayer.wt.readyState !== 1) {
     return;
   }
 
   const spawnsForThisPlayer = Array.from(claimed.values());
 
-  // Spawn batches are the largest stream payloads. Use a FRESH queue reading
-  // (not the 250ms cache) so a burst can't pile past the transport limit
-  // before the gate notices. Skipped spawns stay queued for a later flush.
   if (receivingPlayer.wt.getFreshQueuedBytes() > SPAWN_BACKPRESSURE_THRESHOLD) {
     requeueSpawnBatch(spawnBatchQueue, receivingPlayerId, claimed);
     return;
@@ -3048,8 +2632,6 @@ async function flushOneSpawnBatch(
     const animationDataArray = (await Promise.all(animationPromises)).filter(a => a !== null);
 
     if (animationDataArray.length > 0) {
-      // The json is cached per player for the flush and may come from an earlier receiver's data: the look is
-      // signed from the data that was serialised, so the record is what the packet holds.
       const animEntries = animationDataArray.map((animData) => {
         const key = String(animData.id);
         let entry = animJsonCache.get(key);
@@ -3060,14 +2642,9 @@ async function flushOneSpawnBatch(
         return { id: key, entry };
       });
       const queued = sendPacketQueued(receivingPlayer.wt, packetManager.batchSpriteSheetAnimationJson(animEntries.map((e) => e.entry.json)));
-      // The sheets this viewer now holds: later pose changes of these players can go out as the pose alone.
-      // Nothing is recorded for a packet the transport dropped.
       if (queued) for (const { id, entry } of animEntries) noteLook(receivingPlayer.wt, id, entry.signature);
     }
 
-    // Re-queue remaining spawns for the next flush, merged with anything
-    // that arrived while this receiver was awaiting sprite/animation data.
-    // The old code cleared the live entry here, dropping those arrivals.
       const remainder = new Map<string, any>();
       for (const r of remaining) {
         remainder.set(r.id, r);
@@ -3084,10 +2661,6 @@ function flushDespawnBatches() {
   const allPlayers = playerCache.list();
 
   for (const receivingPlayerId of Array.from(despawnBatchQueue.keys())) {
-    // Claim (detach) up front so the tail clear below cannot drop entries for
-    // receivers skipped on backpressure - the old code `continue`d past them
-    // and then wiped them with a blanket clear, leaving ghost entities stuck
-    // on the client's screen.
     const claimed = claimDespawnEntry(despawnBatchQueue, receivingPlayerId);
     if (!claimed || claimed.size === 0) continue;
 
@@ -3109,39 +2682,18 @@ function flushDespawnBatches() {
       sendPacket(receivingPlayer.wt, packetManager.batchDisconnectPlayer(despawnData));
     }
 
-    // Anything re-queued for this receiver while its despawns were sending
-    // (e.g. a player disconnecting mid-flush) is already in a fresh entry and
-    // is left for the next flush.
   }
 }
 
-// Movement is flushed by the game loop, decoupled from spawn/despawn. A spawn
-// burst (sprite data, JSON stringify) previously sat in the same await chain
-// ahead of the next movement flush, so a login wave would stutter everyone's
-// movement. The two flush families touch disjoint queues and disjoint state.
-//
-// The batches go out right after the tick that produced them: one flush per
-// tick, at any TICK_RATE (it used to be a timer of its own, which drifted
-// against the ticks: a tick's steps waited up to a flush interval, or two
-// ticks' steps went in one flush). The adaptive back-off only skips a flush
-// when ticks run late, the flush is slow or overloaded, or outbound volume is
-// high (getAdaptiveBatchInterval); a flush still running skips the next.
+// Movement is flushed by the game loop, once per tick, apart from spawns and despawns.
 const flushMovementAfterTick = afterTickFlush(flushMovementBatches, getAdaptiveBatchInterval);
 
-// Spawn and despawn are less latency-critical and much heavier per flush, so
-// they run on a fixed, slower cadence.
 const SPAWN_FLUSH_INTERVAL = 50;
 let spawnFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
 async function scheduleSpawnFlush() {
   try {
     const _qSize = PROFILE ? spawnBatchQueue.size : 0;
-    // Despawns drain BEFORE spawns every cycle (removal-before-add). On a
-    // rapid refresh the kick queues despawn(old session) and the relogin
-    // queues spawn(new session) for the same viewer; if both land in one
-    // cycle the old order sent spawn-then-despawn, and any client matching
-    // the despawn to the same user dropped the just-added entity - leaving
-    // the refresher permanently invisible until the next AOI retrigger.
     const _s1 = PROFILE ? performance.now() : 0;
     flushDespawnBatches();
     if (PROFILE) {
@@ -3165,8 +2717,6 @@ async function scheduleSpawnFlush() {
 gameLoop.addAfterTickHook(flushMovementAfterTick);
 spawnFlushTimer = setTimeout(scheduleSpawnFlush, SPAWN_FLUSH_INTERVAL);
 
-// Cluster mode: players on neighbouring nodes near a border, mirrored here and sent to viewers through the
-// same queues as local players. Registering does nothing until startCluster attaches the ghost layer.
 ghosts.register(playerGhostKind({ queueMove: queueRemoteMovement, spawnQueue: spawnBatchQueue, despawnQueue: despawnBatchQueue }));
 
 export function constructMapMetadata(
@@ -3206,18 +2756,12 @@ export function constructMapMetadata(
     warps: mapProps?.warps || null,
     graveyards: mapProps?.graveyards || null,
     shadowLayerNames: mapProps?.shadowLayerNames || null,
-    // Rectangles in tiles a map is made of, when it says so (the cave systems of a world's underworld,
-    // modules/worldmaps.ts): the client's world map shows only the one the player is in
     sections: Array.isArray(map?.data?.sections) ? map.data.sections : null,
     // The desert zones of a world, as outlines in tiles (modules/worldmaps.ts): a sandstorm is only drawn inside them
     deserts: Array.isArray(map?.data?.deserts) ? map.data.deserts : null,
     // and its snow zones: a blizzard is only drawn inside them
     snowfields: Array.isArray(map?.data?.snowfields) ? map.data.snowfields : null,
-    // The named zones of the map, as outlines in tiles (modules/zones.ts): the client shows a zone's text on entry
-    // and plays its music inside it
     zones: Array.isArray(map?.data?.zones) ? map.data.zones : null,
-    // The inside of a building (isInteriorMap): the client shows no world map there and keeps its minimap zoomed
-    // all the way in
     interior: isInteriorMap(normalizedName),
     hasWeather: !!worldsArr.find((w) => w.name === normalizedName),
     objectLayers,
@@ -3228,10 +2772,6 @@ export function constructMapMetadata(
   return metadata;
 }
 
-/**
- * Whether a map is the inside of a building: it says so with the Tiled map property "interior" (the houses' rooms
- * have it). No mount is ridden there.
- */
 export function isInteriorMap(mapName: string): boolean {
   const name = String(mapName ?? "").replace(".json", "");
   const map = (maps as MapData[]).find((m: MapData) => m.name === `${name}.json` || m.name === name);
@@ -3247,11 +2787,6 @@ export async function transitionPlayerToMap(
   spawnBatchQueue: Map<string, Map<string, any>>,
   despawnBatchQueue: Map<string, Set<string>>
 ): Promise<void> {
-  // Cells phase 6: a warp whose destination another node owns hands the player to that node, with a full map load
-  // there (Deviation 26). The location is set to the destination first, so the snapshot and the new node's owner
-  // check read it; saveHandedOff (Task 13) counts the player off the old map through handoffFromMap. A refused or
-  // busy handoff puts the player back, and the warp happens here as before; the watch then hands them on once
-  // nothing blocks it. handOff answers and does not throw (Task 6); the finally puts the player back all the same.
   const owner = warpTarget(handoffCtx, newMapName, newPosition.x, newPosition.y);
   if (owner && player.wt && handoffBlocked(player, owner, handoffChecks) === null) {
     const before = player.location;
@@ -3275,8 +2810,6 @@ export async function transitionPlayerToMap(
 
   loot.cancelCleanup(player.username);
 
-  // Mounts stay outside: whoever rides into a building gets off at the door. Done before the move, so the players
-  // inside are shown someone on foot.
   const dismounted = player.mounted === true && isInteriorMap(newMapName);
   if (dismounted) {
     player.mounted = false;
@@ -3296,8 +2829,6 @@ export async function transitionPlayerToMap(
   const direction = newPosition.direction || updatedPlayer.location.position?.direction || "down";
   const mapMetadata = constructMapMetadata(newMapName, newPosition.x, newPosition.y, direction, maps, mapPropertiesCache);
   sendPacket(wt, packetManager.loadMap(mapMetadata));
-  // Loading a map clears the client's creatures, even when it is the same map
-  // again: resend every creature around the player.
   creatures.resyncPlayer(player.id);
   // and its gathering nodes, which it clears the same way
   gathering.resyncPlayer(player.id);
@@ -3314,9 +2845,6 @@ export async function transitionPlayerToMap(
   setImmediate(async () => {
     try {
       const normalizedMap = newMapName.replace(".json", "");
-      // A map with no entry in the worlds table (the inside of a house) is clear and has no day and night: the
-      // client drops both when it loads a map, and is sent nothing here that would turn them on again. Sending
-      // it "clear" did: any WEATHER packet starts the day and night cycle. (The login path below does the same.)
       if ((await getLiveWorlds()).some((w) => w.name === normalizedMap)) {
         const resolved = await resolveWorldWeather(normalizedMap);
         if (resolved.weather) {
@@ -3337,8 +2865,6 @@ export async function transitionPlayerToMap(
       log.warn(`Failed to fetch NPC data for ${newMapName}: ${e}`);
     }
 
-    // Quest markers for the new map. Map-wide explore objectives credit via
-    // the MAP_ENTER listener in the quest objectives module.
     await sendQuestMarkersFor(wt, player.username, newMapName);
     // And where the new map's inns are, for the minimap.
     await sendMapMarkers(wt, newMapName);
@@ -3369,8 +2895,6 @@ export async function transitionPlayerToMap(
       const playerPos = newPosition || player.location?.position;
       const playerRadius = player.aoi?.aoiRadius || AOI_CONFIG.DEFAULT_RADIUS;
       const skeletonsInAOI = skeletons.getInRadius(newMapName, playerPos.x, playerPos.y, playerRadius, layerManager.getPlayerLayer(player.id));
-      // Always sent, even when empty: this replaces the client list, clearing
-      // markers from the map or layer the player just left.
       sendPacketBestEffort(wt, packetManager.loadSkeletons(skeletonsInAOI.map((s) => toSkeletonPacket(s))));
     } catch (e) {
       log.warn(`Failed to sync skeletons for ${newMapName}: ${e}`);
@@ -3493,22 +3017,11 @@ export function clearBatchQueuesForPlayer(playerId: string) {
 
 }
 
-/**
- * Clean up target cycling state when a player disconnects
- */
 export function clearPlayerTarget(playerId: string) {
   currentTargetMap.delete(playerId);
 }
 
-/**
- * Untarget when a player changes maps. The moving player can no longer see
- * their previous target, and any players that were targeting the mover can no
- * longer see them, so clear both server-side target state and notify clients.
- */
 export function clearTargetOnMapChange(playerId: string) {
-  // The AOI keeps a selected player visible past the visibility cap; that
-  // selection ends with the map. (A stale selection of the mover held by
-  // someone else is harmless: it only counts while in range on one layer.)
   const moving = playerCache.get(playerId);
   if (moving) moving.selectedPlayerId = null;
 
@@ -3532,11 +3045,6 @@ export function clearTargetOnMapChange(playerId: string) {
   }
 }
 
-/**
- * Lets go of every player this admin is dragging and tells the players on
- * their maps, as stopping the drag by hand does. Run when the admin's
- * connection ends: nobody else can release the players they were holding.
- */
 export function releaseDraggedBy(adminId: string | number) {
   for (const [draggedId, dragByAdminId] of [...draggedPlayersMap.entries()]) {
     if (String(dragByAdminId) !== String(adminId)) continue;
@@ -3594,9 +3102,6 @@ export async function resyncNpcChunks(playerObj: any, wt: any): Promise<void> {
 export async function teleportPlayerWrapper(playerObj: any, mapName: string, x: number, y: number): Promise<void> {
   const wt = playerObj.wt;
   if (!wt) return;
-  // A move outside a packet (a plugin's teleportPlayer) must not run for a player whose snapshot is taken or who was
-  // released: it would warp them here while the new node keeps the first point (final review M1). The packet-driven
-  // paths refuse a handoff inside trackPacket before they get here.
   if (CELLS_ON && inHandoff(playerObj)) {
     log.info(`Teleport of ${playerObj.username} to ${mapName} (${x}, ${y}) skipped: the player is changing server node`);
     return;
@@ -3611,11 +3116,6 @@ export async function teleportPlayerWrapper(playerObj: any, mapName: string, x: 
   );
 }
 
-/**
- * Puts a player at a place. Another map is a teleport; the map they are on is a jump within it, like an admin teleport,
- * which does not reload the map (a reload wipes everything the client shows). The creature editor's go-to, the cutscene
- * editor's go-to and the end of a cutscene move players this way.
- */
 export async function placePlayer(playerObj: any, mapName: string, x: number, y: number): Promise<void> {
   const wt = playerObj.wt;
   if (!wt) return;
@@ -3645,14 +3145,8 @@ export async function placePlayer(playerObj: any, mapName: string, x: number, y:
   await resyncNpcChunks(playerObj, wt);
 }
 
-// Cluster mode: every login asks which node owns its spawn block (cluster/route.ts), so the live nodes are read at
-// most once a second.
 const liveNodes = new LiveNodeCache(async () => (await clusterNodes()?.live()) ?? []);
 
-/**
- * Cluster mode: a login whose spawn block another live node owns is handed to that node (SWITCH, with a ticket this
- * node signs for it) and its connection closed. True when it was; false to log in here.
- */
 async function switchLoginIfElsewhere(wt: any, sessionId: string, username: string, spawn: { map: string; x: number; y: number }): Promise<boolean> {
   const blocks = clusterEnabled() ? clusterBlocks() : null;
   if (!blocks) return false;
@@ -3667,14 +3161,10 @@ async function switchLoginIfElsewhere(wt: any, sessionId: string, username: stri
   }
   if (route === "here") return false;
   const target = route.switchTo;
-  // A login another node has already handed over is not handed on again: two nodes whose tables disagree (blocks that
-  // move, phase 7) would pass it back and forth. It plays here until they agree.
   if (wt.data?.switched) {
     log.warn(`Login of ${username} was handed here by another node, but ${target.nodeId} owns ${spawn.map} at ${spawn.x},${spawn.y}: it plays here`);
     return false;
   }
-  // The account was marked online here by the authentication: it never got into the game here, so it is not (as for a
-  // login with no character). The next node then claims the session as for a fresh login.
   await player.clearSessionId(sessionId).catch((e) => log.error(`Session of ${username} not cleared: ${e}`));
   const ticket = nodeTicket(secret, String(wt.data?.ticketOrigin ?? ""), String(wt.data?.ticketAccount ?? ""), target.nodeId);
   log.debug(`Login of ${username} goes to node ${target.nodeId}, which owns ${spawn.map} at ${spawn.x},${spawn.y}`);
@@ -3683,16 +3173,9 @@ async function switchLoginIfElsewhere(wt: any, sessionId: string, username: stri
   return true;
 }
 
-// The auth-worker pool, used as one worker: a login is posted to the worker with the fewest in flight, and the
-// answers of every worker, a replacement's too, arrive at the handler below (authdispatch.ts).
 export const authWorker = await getAuthPool();
 /** The rows of players arriving by handoff, read on the pool before their AUTH (started by server.ts's handoff deps). */
 export const loginPrefetch = new LoginPrefetch((job) => authWorker.postMessage(job));
-/**
- * A login by handoff between takeArrival and the player cache (cells phase 6). The arrival is spent once taken, so a
- * login that fails in that stretch is told to the client and its connection is closed: the client goes back to the
- * start page at once, and its next login reads the database, instead of waiting for the idle close. `username` is set while the stretch runs.
- */
 interface ArrivingLogin {
   wt: any;
   username: string | null;
@@ -3734,9 +3217,6 @@ authWorker.on("message", (result: any) => {
   });
 });
 
-// A worker that stopped with this login in flight may have claimed the account's session for the connection before
-// it did. The login fails (the answer that follows goes through completeLogin like any failed login), and the claim
-// is let go, as for a login that cannot go on (it only matches the session claimed for this connection).
 authWorker.on("lost", (job) => LoginPrefetch.owns(job) ? undefined : player.clearSessionId(job.id).catch((error) => log.error(`Session of connection ${job.id} not cleared after its login worker stopped: ${error}`)));
 
 async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void> {
@@ -3750,8 +3230,6 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
   // The worker has answered: a handoff arrival's mark (the line is said at the player's first move).
   playerHandoff.landed(String(wt.data?.ticketToken ?? ""), "worker_done");
 
-  // The token is the arriving player's, and their rows were read once the old node had saved them. A read that failed
-  // is done now, as for any login: the job claims the session again, which this connection already holds.
   if (status.prefetched) {
     const data = await pending.prefetched;
     if (pendingAuthentications.get(sessionId) !== pending) return;
@@ -3769,8 +3247,6 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
   authentication_queue.delete(token);
   authentication_session_queue.delete(sessionId);
 
-  // The account has no active character to play (none chosen, deleted, or another account's): the client goes to the
-  // Gateway's character page. The worker has let the session go already.
   if (status.characterRequired) {
     sendPacket(wt, packetManager.characterRequired());
     wt.close(1008, "Choose a character first");
@@ -3791,8 +3267,6 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
 
   const playerData = status.data as PlayerData;
   if (status.authenticated && status.completed && playerData) {
-    // Check realm whitelist
-    // The whitelist names accounts.
     if (isWhitelistEnabled() && !realmWhitelist.has(playerData.accountUsername.toLowerCase())) {
       log.warn(`[Whitelist] Access denied for ${playerData.username} - not in whitelist`);
       sendPacket(wt, packetManager.loginFailed());
@@ -3808,23 +3282,13 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
       return;
     }
 
-    // USER REQUEST 2026-10-14 (character creation): no character yet, and there are classes to choose from. The
-    // client goes to the gateway's character page (CHARACTER_REQUIRED) and comes back once one is made.
     if (await classes.characterRequired(playerData.characterClass)) {
-      // Authentication marked the account online; it never got into the game, so it is not. Else the character page
-      // refuses ("Your account is in the game right now").
       await player.clearSessionId(sessionId).catch((e) => log.error(`Session of ${playerData.username} not cleared: ${e}`));
       sendPacket(wt, packetManager.characterRequired());
       wt.close(1008, "Create your character first");
       return;
     }
 
-    // Cells phase 6: a connection that opened with a handoff ticket brings the player from the old node. takeArrival
-    // answers once, and only after the old node committed; any other login is a normal one from the database
-    // (Deviation 5). The snapshot is the truth for where the player stands and what they carry beside the rows. The
-    // name is the one the database gave for the account the ticket names (session.ts refuses a token that is not the
-    // ticket's account), never a name the client sent. A session of this account still here is kicked just below,
-    // as for any second login.
     const arrival = clusterEnabled()
       ? playerHandoff.takeArrival(String(wt.data?.ticketToken ?? ""), playerData.username, String(wt.data.id), playerData.characterId)
       : null;
@@ -3840,9 +3304,6 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
 
     const assetServerUrl = process.env.ASSET_SERVER_URL || "http://localhost:8081";
 
-    // Kick any existing session of this account, whichever character it plays (duplicate login prevention). Each is
-    // saved first, then left as a disconnect leaves (its PLAYER_DISCONNECT listeners, before this login's player is
-    // added), then told, then taken out of the world.
     await kickDuplicateSessions(sessionsOfAccount(Object.values(playerCache.list()), playerData.accountId), {
       save: saveKickedPlayer,
       leave: leaveKickedPlayer,
@@ -3855,12 +3316,6 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
         }
       },
       drop: async (p: any) => {
-        // World-index hygiene for the kicked session. The later onDisconnect
-        // for the closing socket early-returns on the cache miss below, so
-        // nothing else removes the stale id from viewers' AOI sets, the
-        // reverse index, its layer, the map index or the spatial grid.
-        // The session leaves the cache whatever throws below: marked leftByKick, its close would skip it, and it
-        // would stay in the cache.
         try {
           cleanupKickedSession(p, despawnBatchQueue);
           gameLoop.unregisterMovingPlayer(p.id);
@@ -3874,11 +3329,6 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
           const map = p.location?.map;
           if (map) {
             for (const [, other] of Object.entries(playerCache.list()) as [string, any][]) {
-              // Map-wide notify so bystanders whose AOI missed the old session
-              // still drop it. This MUST be a DESPAWN_PLAYER: the previous
-              // packetManager.disconnect (DISCONNECT_MALIFORMED) reads as "you
-              // are disconnected" client-side and blanks the bystander's screen,
-              // swallowing the replacement session's spawn that follows.
               if (other.location?.map === map && other.id !== p.id && other.wt?.readyState === 1) {
                 forgetLook(other.wt, p.id);
                 sendPacket(other.wt, packetManager.despawnPlayer(p.id, "disconnect"));
@@ -3896,10 +3346,6 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
       },
     });
 
-    // Cells phase 7: a login from the database after a crash plays from the last snapshot when it is newer than the
-    // last save (cluster/recovery.ts). It runs before the player is cached, because the cache's add claims the owner
-    // epoch (cluster/presence.ts) and the stamp must be the one from before the claim. It runs before the spawn point
-    // is worked out, so the routing below routes on the recovered point.
     if (clusterEnabled() && !arrival && !Number(playerData.isDead) && !playerData.isGuest) {
       const store = clusterStore();
       if (store) {
@@ -3950,10 +3396,6 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
       };
     }
 
-    // Dead players never resume at a spawn point: a corpse awaiting release
-    // resumes at the corpse, a ghost resumes where it logged out. Both stay
-    // at 0 HP/stamina until revived. An arrival brings its own state and stays
-    // at the snapshot's point.
     const loginDeadState = arrivalState ? arrivalState.deadState : Number(playerData.isDead) || 0;
     if (!arrival && loginDeadState === 1 && playerData.corpse?.map) {
       spawnLocation = {
@@ -3970,13 +3412,8 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
 
     const savedMap = maps.find((m: MapData) => m.name === spawnLocation.map);
     const map = savedMap || maps.find((m: MapData) => m.name === `${defaultMap}.json`);
-    // The client keeps its world only when it arrives on a map this node has (a map gone here is a full load at the
-    // default map, as for any login).
     const resume = !!arrival?.resume && !!savedMap;
     if (map) {
-      // A saved map that no longer exists (removed from the asset server) falls
-      // back to the default map. Its coordinates mean nothing there, so the
-      // player starts at the default map's spawn point instead.
       if (!savedMap) {
         spawnLocation.x = default_map_spawnpoint.x;
         spawnLocation.y = default_map_spawnpoint.y;
@@ -3984,9 +3421,6 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
       }
       spawnLocation.map = map.name;
 
-      // Cluster mode: the spawn point is final. A login whose spawn block another node owns goes there, before anything
-      // of it is done or kept here (the noclip/stealth reset, the auth event, the player cache, the world count, packets).
-      // An arrival is never switched on: this node accepted it for this point, and a second switch could loop.
       if (!arrival && (await switchLoginIfElsewhere(wt, sessionId, playerData.username, spawnLocation))) return;
     }
 
@@ -4035,9 +3469,6 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
       const worldPlayerCount = await worlds.adjustPlayerCount(spawnLocation.map, 1);
       if (arriving.username !== null) arriving.countedMap = spawnLocation.map;
       if (worldPlayerCount !== null) {
-        // log.info(
-        //   `World: ${world.name} now has ${worldPlayerCount} players. (player_join)`
-        // );
       }
     }
 
@@ -4049,17 +3480,11 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
       }
     }
 
-    // What the caches hold of this player is read again: the gateway, or an
-    // admin's edit on another server, may have written it since they left.
-    // A handoff's login (resume) skips it: the rows the auth worker has just read are the ones the old node saved before
-    // the SWITCH, and the row caches are the cluster's one shared copy, written through by every writer.
     if (!resume) await refreshPlayer(playerData.username);
     // A settle mark taken from another node at this login (Task 20b): the bags are shown again when it runs out.
     reloadWhenSettled(playerData.username);
     if (arrival) playerHandoff.landed(String(wt.data?.ticketToken ?? ""), "rows_done");
 
-    // The spells of the character's class up to its level that it does not know: a new character's first ones, and
-    // any a class was given after the character passed its level.
     if (playerData.characterClass != null) {
       try {
         const learned = await classes.learnUpTo(playerData.username, playerData.characterClass, Number(playerData.stats?.level) || 1);
@@ -4075,8 +3500,6 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
     const limitedCollectables = Array.isArray(playerData.collectables) ? playerData.collectables.slice(0, 50) : [];
     const limitedLearnedSpells = Array.isArray(playerData.learnedSpells) ? playerData.learnedSpells.slice(0, 100) : (playerData.learnedSpells || []);
 
-    // Seeded first: the add below reads the cooldowns and lockout, and the restore after the first AOI pass reads the
-    // effects and the sickness.
     if (arrivalState) seedArrival(playerData.username, arrivalState);
     const fields = arrivalState
       ? arrivalFields(arrivalState)
@@ -4136,12 +3559,6 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
       interruptableSpell: false,
       castId: 0,
       stunnedUntil: 0,
-      // Monotonic MOVEXY generation. Every inbound MOVEXY (direction or "abort")
-      // bumps it; a handler that suspended on an await is stale once a newer
-      // MOVEXY has bumped past the value it captured, and must not register the
-      // player as moving. Prevents rapid start/stop taps from leaving a player
-      // stuck walking (an older direction packet's deferred registration landing
-      // after a newer "abort").
       _moveSeq: 0,
       // The pose revision (socket/posedgram.ts) counts on from the old node's, so a handed-off player never sends a lower one.
       poseRev: arrival ? arrivedPoseRevision(arrival.snapshot.state) : 0,
@@ -4175,11 +3592,7 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
     if (arrivalState?.cutscene) adoptCutscene(_pcache, arrivalState.cutscene);
     if (arrivalState?.cutsceneChain) adoptCutsceneChain(_pcache, arrivalState.cutsceneChain);
 
-    // The mirror of this player that this node held (from the old node) gives way to the player, with no despawn to
-    // its viewers.
     if (arrival) ghosts.dropMirror("player", arrival.snapshot.id);
-    // Any login here, a handoff's or a fresh one: calls for this player run here from now on, not where a forward
-    // left from an earlier handoff away from this node would send them (Task 8).
     if (clusterEnabled()) forwardTable.forgetPlayer(String(_pcache.id), playerData.username);
 
     // Send initial packets immediately - stats sync and effect restoration follow asynchronously
@@ -4193,9 +3606,6 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
       creatures.sync.adopt(String(_pcache.id), _pcache.location.map, layerId, arrival!.snapshot.creatureIds);
     }
 
-    // Where the player is placed, not the stored position: they differ for a new character (stored at 0,0, placed at
-    // the world's spawn), a corpse, or a map that is gone. The client loads the chunks round this point and puts its
-    // camera there before the loading screen lifts; any other point and the chunks stream in after it.
     const mapMetadata = constructMapMetadata(
       spawnLocation?.map,
       spawnLocation?.x || 0,
@@ -4207,17 +3617,9 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
     // The resumed walk's start, so the spawn below is built after the walk has begun (it reads `moving` and the pose).
     let resumedWalk: Promise<void> | null = null;
     if (resume) {
-      // The mover stood still from the old node's drain to here while the client walked on: the resumed walk makes
-      // that time up (movement.ts, resumeCatchUpSteps), so the server is not steps behind the client from here on.
       const resumeCatchUp: ResumeCatchUp | null = arrivalState?.walk
         ? { walk: arrivalState.walk, idleMs: arrivalState.walkIdleMs, committedAt: arrival?.committedAt ?? Date.now() }
         : null;
-      // The client walked that time from where the old node left the player, as its keys said, and reported it as it
-      // logged in here (the `gap` of its AUTH, session.ts, and a HANDOFF_GAP at each change of key since). A key it let
-      // go of or turned in the gap is walked here the way the client walked it, before the client is told where it
-      // stands: the walk then goes on the way the client holds, or stops. Without a report, the walk goes on the way it came.
-      // The replay and the resumed walk step on the map's collision: it is loaded first, so nothing from the report's
-      // read to the walk's first step waits (a stop the client sends after HANDOFF_DONE would come before that step).
       const movement = await import("./handlers/movement");
       await player.preloadMapCollision(_pcache.location.map);
       const gap: GapUpdate | undefined = wt.data.gapUpdate;
@@ -4260,8 +3662,6 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
         gapSeq: applied.seq,
       }));
       applied.at = Date.now();
-      // The player was walking when handed off: they walk on from the committed position (or the replay's), as if the
-      // client had just sent the move. A different direction or a stop from the client after this wins as usual.
       if (walk) {
         // (movement.ts undoes a stray stop of the superseded mover for this long, for this arrival only)
         wt.data.walkRecoverUntil = Date.now() + RESUME_WALK_RECOVER_MS;
@@ -4280,14 +3680,10 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
     }
     if (arrival) playerHandoff.landed(String(wt.data?.ticketToken ?? ""), "done_sent");
 
-    // Anchor the client's clock once. It advances time locally from here, so
-    // this is not re-pushed on the server tick.
     sendPacket(wt, packetManager.serverTime(weatherApi.utcOffsetSeconds()));
 
     setTimeout(deferredStep(`The spawn of ${playerData.username}`, async () => {
 
-      // A resumed walk has begun (moving set, its pose sent) before the spawn is built: it never fails (it logs).
-      // (Bounded: a walk that hangs must not hold the spawn back.)
       if (resumedWalk) await waitFor(resumedWalk, RESUME_WALK_WAIT_MS);
 
       const currentPlayer = playerCache.get(wt.data.id);
@@ -4305,8 +3701,6 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
       await updatePlayerAOI(currentPlayer, spawnBatchQueue, despawnBatchQueue);
 
       if (resume && arrival) {
-        // Mirrors join a newcomer's AOI at their own next update. Those the client already shows join now, so they
-        // are not despawned below and spawned again a moment later.
         for (const id of arrival.snapshot.playerIds) {
           const mirror = mirrorPlayers.get(String(id));
           if (mirror) updateMirrorViewers(mirror, spawnBatchQueue, despawnBatchQueue);
@@ -4388,9 +3782,6 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
       for (const p of playersInAOI) {
 
         const animationName = getAnimationNameForDirection(p.location.position?.direction || "down", !!p.moving, !!p.mounted, p.mount_type, !!p.casting);
-        // Reuse the shared sprite-data cache (same key the spawn flush uses).
-        // At a login ramp this loop runs ~50x per login x hundreds of logins/s;
-        // an uncached async sprite lookup each time was a main-thread hotspot.
         const spriteCacheKey = `${p.id}:${animationName}:${p.equipmentRevision || 0}`;
         let playerSpriteData = spriteDataCache.get(spriteCacheKey);
         if (playerSpriteData === undefined) {
@@ -4451,9 +3842,6 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
         playerDataForLoad.push(loadPlayerData);
       }
 
-      // Chunk the initial player snapshot: a single frame with 50 sprite-laden
-      // players can exceed the transport's per-stream queue limit (~256KB) and
-      // destroy the stream during login.
       sendLoadPlayersChunked(sendPacket, wt, playerDataForLoad, snapshotRevision);
 
       // Batch animation data for all existing players into one packet for the new player
@@ -4496,8 +3884,6 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
       }
 
       if (resume) {
-        // The pose as it is now, from the live record: the stored point's direction (a "down" default) and an idle
-        // pose would replace the walk the arrival is in, and nothing sends the walk again until a key changes.
         const poseNow = resumeSelfSpawn(currentPlayer, getAnimationNameForDirection, gameLoop.isPlayerMoving(currentPlayer.id));
         if (poseNow) await sendAnimationTo(wt, poseNow.animationName, wt.data.id);
       } else if (position?.direction) {
@@ -4540,9 +3926,6 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
           currentPlayer.slowMultiplier = 1 - currentPlayer.slowPercent / 100;
         }
 
-        // Resurrection Sickness restores like any other debuff (in-memory
-        // handoff, so it survives relog but not a server restart). Totals
-        // were already synced above; push the scaled values to the client.
         if (resurrection.restoreOnLogin(currentPlayer)) {
           sendPacket(
             wt,
@@ -4590,8 +3973,6 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
         sendPacketBestEffort(wt, packetManager.loadSkeletons(skeletonsInAOI.map((s) => toSkeletonPacket(s))));
       }
 
-      // Relogging while dead: restore the phase. The corpse gets its popup
-      // back; the ghost is re-announced so others keep rendering it.
       const relogPlayer = playerCache.get(wt.data.id);
       if (relogPlayer?.isDead) {
         sendPacket(wt, packetManager.playerDied({ id: relogPlayer.id }));
@@ -4605,8 +3986,6 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
       }
     }), 200);
 
-    // Build cooldown data to include with CLIENTCONFIG so the client can display
-    // partially-expired cooldown overlays on reconnect.
     const clientConfig: any[] = (playerData.config || []).slice();
     if (clientConfig.length > 0) {
       const spellCooldownsForClient: Record<string, number> = {};
@@ -4656,8 +4035,6 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
           is_thrown: (spellData as any).is_thrown ?? null,
           charge_distance: (spellData as any).charge_distance ?? null,
           teleport_behind: (spellData as any).teleport_behind ?? null,
-          // Lets the client skip its optimistic cast bar for stand-still
-          // spells pressed while moving (the server ignores those).
           can_move: (spellData as any).can_move ? 1 : 0,
         };
       }
@@ -4673,8 +4050,6 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
     sendPacket(wt, packetManager.inventory(inventoryWithIconUrls, inventorySlots));
     sendPacket(wt, packetManager.equipment(playerData.equipment || {}));
 
-    // Every player has the home item: one who holds none (a new account, or one from before there
-    // was such an item) is given it now, and sent their bags again with it in them.
     void consumables.giveHomeItem(playerData.username)
       .then((given) => (given ? sendBelongingsOf(playerCache.get(wt.data.id)) : undefined))
       .catch((error) => log.error(`${playerData.username} could not be given the home item: ${error}`));
@@ -4717,10 +4092,6 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
 /** The handler modules, loaded at the first packet (they import this module). */
 let handlerRoutes: typeof import("./handlers/index") | null = null;
 
-/**
- * A resumed handoff arrival goes on walking: the MOVEXY handler is run for the direction they walked in, so the mover
- * is registered the same way a move from the client registers it. Counted in flight, like a packet of theirs.
- */
 async function resumeArrivalWalk(wt: any, direction: string): Promise<void> {
   try {
     const handler = (handlerRoutes ??= await import("./handlers/index")).route("MOVEXY");
@@ -4735,16 +4106,6 @@ async function resumeArrivalWalk(wt: any, direction: string): Promise<void> {
   }
 }
 
-/**
- * A gap report that came after the login walked the gap (HANDOFF_GAP: a change of key the client made while the login
- * ran, or as HANDOFF_DONE was on its way). The arrival is walked through the gap again from where it stood, as this
- * report says, and the walk goes on in the direction now held, or stops: as if the login had read this report. The
- * client walks the gap on until the answer (HANDOFF_GAP_DONE, which says where the player is as HANDOFF_DONE does), so
- * nothing it drew is set back; it drops the echoes sent before it. An older report than one walked is ignored. Every
- * report is answered: one that cannot be walked (the arrival did not walk, it changed map, MAX_GAP_LATE_MS passed, or
- * it died or was stunned) is answered with where the player is and the walk they are in. One report is walked at a
- * time: a newer one that comes meanwhile waits, and replaces any older one waiting.
- */
 export async function applyLateGap(wt: any, update: GapUpdate): Promise<void> {
   const applied: GapApplied | undefined = wt.data?.gapApplied;
   if (!applied || update.seq <= applied.seq) return;
@@ -4803,10 +4164,6 @@ export async function applyLateGap(wt: any, update: GapUpdate): Promise<void> {
   if (resumed) await resumed;
 }
 
-/**
- * Whether this process runs as a cluster node, read once at load: the packet path checks it on every packet, and a
- * single node must pay nothing for the handoff's freeze and in-flight count. CLUSTER does not change while running.
- */
 const CELLS_ON = clusterEnabled();
 
 export default async function packetReceiver(
@@ -4819,14 +4176,10 @@ export default async function packetReceiver(
 
     if (!message) return wt.close(1008, "Empty message");
 
-    // Size check BEFORE parsing (the transport checks the same before its
-    // parse): a player who uses no tools has no reason to send a large packet.
     if (message.length > frameLimitFor(playerCache.get(wt.data.id), MAX_FRAME_BYTES, BENCHMARK_ENABLED)) {
       return wt.close(1009, "Message too large");
     }
 
-    // The transport layer already parsed this frame to route it; reuse that
-    // result instead of parsing the same JSON a second time.
     const parsedMessage: Packet = (preParsed ?? tryParsePacket(message)) as Packet;
     if (!parsedMessage) return wt.close(1007, "Malformed message");
 
@@ -4842,13 +4195,8 @@ export default async function packetReceiver(
 
     const currentPlayer = playerCache.get(wt.data.id) || null;
 
-    // Cells phase 6: a player being handed to another node is frozen (Task 6 sets handoff; the release marks the
-    // connection). What they send now is dropped; the keepalive still answers until the SWITCH closes the connection.
-    // CELLS_ON is read once at load, so a single node looks at nothing more per packet.
     if (CELLS_ON && (wt.data?.handedOff || currentPlayer?.handoff) && type !== "PING" && type !== "PONG") return;
 
-    // A player held in a cutscene sends nothing that acts on the world (systems/cutsceneheld.ts); chat, PING and PONG, the
-    // editors, logout and the CUTSCENE_* packets still flow. Only a player in a scene has `cutscene`, so this costs the rest nothing.
     if (currentPlayer?.cutscene && refusedWhileHeld(String(type), data, currentPlayer)) return;
 
     for (const interceptor of packetInterceptors) {
@@ -4899,10 +4247,6 @@ export default async function packetReceiver(
   }
 }
 
-// Queue the position a player stopped at as one last movement entry. A far
-// mover is otherwise only sent every few flushes, so one that stops on an
-// off-slot tick would never show where it ended up. The entry is flagged
-// final so the flush never throttles it.
 export function queueFinalMovement(player: any) {
   if (!player?.aoi || !player.location?.position) return;
   const groupKey = player.aoi.layerId || layerManager.getPlayerLayer(player.id) || player.location.map;
@@ -4924,8 +4268,6 @@ export function queueFinalMovement(player: any) {
   });
 }
 
-// Cluster mode: a mirrored player's step (GHOST_MOVE), batched with the local walkers of its layer so its
-// viewers here get it in the same flush. A mirror is in no layer here, so its own layer id is the key.
 export function queueRemoteMovement(mirror: any, final: boolean) {
   if (!mirror?.aoi || !mirror.location?.position) return;
   const groupKey = mirror.aoi.layerId || mirror.location.map;
@@ -4947,9 +4289,6 @@ export function queueRemoteMovement(mirror: any, final: boolean) {
   });
 }
 
-// Force a player to stop moving server-side, independent of any client ABORT.
-// Used by the MOVEXY "abort" branch, on-collision, and when a stun lands on a
-// player who is mid-movement (the client may never send ABORT in that case).
 export async function forceStopPlayerMovement(target: any) {
   if (!target) return;
 
@@ -4985,8 +4324,6 @@ export async function forceStopPlayerMovement(target: any) {
   }
 }
 
-// Interrupt a player's in-progress cast: aborts the pending cast promise via castId,
-// broadcasts the interrupted cast bar, and reverts the casting animation.
 export async function interruptPlayerCast(target: any) {
   // fishing (castFish) ends with its line taken in, not with an interrupted cast bar: it never showed one
   const fishingCast = castingFish(target) || castingFish(playerCache.get(target.id));
@@ -5039,9 +4376,6 @@ export async function interruptPlayerCast(target: any) {
   }
 }
 
-// Spirit-tongue for ghosts: random short O-words ("OooOoo ooOoo Oooo").
-// Word count and lengths are purely random so nothing leaks about the real
-// message's length.
 export function generateGhostSpeak(): string {
   const wordCount = 1 + Math.floor(Math.random() * 4);
   const words: string[] = [];
@@ -5057,16 +4391,8 @@ export function generateGhostSpeak(): string {
   return message.charAt(0).toUpperCase() + message.slice(1);
 }
 
-// Shared player death handling: mark dead-awaiting-release at 0 HP, leave a
-// skeleton marker, and notify the victim (Release Spirit popup). The corpse
-// stays where it fell until release; the graveyard teleport happens in the
-// RELEASE_SPIRIT handler. Used by direct spell damage and DoT ticks.
 export const REVIVE_OFFER_RADIUS = 100;
-// Release timing: the client plays a ~5s cinematic (orb + fade) on release.
-// The teleport lands mid-black at +3s so it is never seen.
 export const GHOST_TELEPORT_DELAY_MS = 3000;
-// Hide band: wider than the offer radius so small client/server position
-// desync at the boundary can't flap the popup. Re-entry re-offers.
 const REVIVE_OFFER_HIDE_RADIUS = 120;
 
 export function checkGhostReviveProximity(player: any): void {
@@ -5084,8 +4410,6 @@ export function checkGhostReviveProximity(player: any): void {
       sendPacket(player.wt, packetManager.reviveOffer({ x: player.corpse.x, y: player.corpse.y }));
     }
   } else if (dist2 > REVIVE_OFFER_HIDE_RADIUS * REVIVE_OFFER_HIDE_RADIUS) {
-    // Outside the hide band: re-arm so walking back in re-offers. The client
-    // hides its popup itself once past the same radius.
     player.reviveOffered = false;
   }
   // Between offer and hide radius: sticky, neither offer nor re-arm.
@@ -5128,8 +4452,6 @@ export async function handlePlayerDeath(target: any, killer: any, info: { damage
   // Leave a skeleton marker where the player died.
   skeletons.spawn(deathMap, deathX, deathY, target.username, layerManager.getPlayerLayer(target.id));
 
-  // Dead-awaiting-release: no teleport, no revive yet. The corpse stays where
-  // it fell at 0 HP until the player releases their spirit.
   target.stats.health = 0;
   target.stats.stamina = 0;
   target.mounted = false;
@@ -5142,9 +4464,6 @@ export async function handlePlayerDeath(target: any, killer: any, info: { damage
   spellEffects.clearStuns(target.id);
   spellEffects.clearSlows(target.id);
   spellEffects.clearVanishes(target.id);
-  // Death clears the effect lists, but the derived combat stats baked into
-  // the player object survive unless reset here. A lingering slow would
-  // otherwise shrink the ghost's movement speed forever.
   target.slowPercent = 0;
   target.slowMultiplier = 1;
   target.stunnedUntil = 0;
@@ -5155,9 +4474,6 @@ export async function handlePlayerDeath(target: any, killer: any, info: { damage
   target.corpse = { map: deathMap, x: deathX, y: deathY };
   target.reviveOffered = false;
   playerCache.set(target.id, target);
-  // Persistence must never break the live death flow: if the accounts
-  // migration hasn't run, the session still works and only relog-restore
-  // degrades until the columns exist.
   try {
     await player.setDeadState(target.username, 1, target.corpse);
   } catch (e: any) {
@@ -5199,9 +4515,6 @@ export async function handlePlayerDeath(target: any, killer: any, info: { damage
   // Cluster mode: the viewers of the target's mirrors on neighbouring nodes see them fall, with the killing number.
   relayToMirrorViewers(target, deathPacket, false);
 
-  // The victim stays a corpse at 0 HP until they release. No teleport, no
-  // revive yet — the client shows the Release Spirit popup from this.
-  // Corpse included so the client can mark it past skeleton expiry.
   if (target.wt) {
     sendPacket(target.wt, packetManager.playerDied({ id: target.id, corpse: target.corpse }));
   }
@@ -5213,16 +4526,6 @@ export async function handlePlayerDeath(target: any, killer: any, info: { damage
   listener.emit(Events.PLAYER_DEATH, { player: target, killer });
 }
 
-/**
- * Single-target damage spell cast at a server-authoritative creature. Mirrors
- * the player spell flow (cooldown, mana, cast bar, cancel/move interrupts) but
- * resolves the hit through the creature combat system (threat, evade, death).
- */
-/**
- * AoE and splash damage from a player spell onto creatures around a point.
- * Rolls spell hit and damage per creature like a direct cast, then applies
- * the spell's effects. Healing spells never touch creatures.
- */
 export function splashCreatures(caster: any, spell: SpellData, x: number, y: number, radius: number, excludeCreatureId: number | null) {
   const base = Number(spell.damage) || 0;
   if (base < 0 || !radius || radius <= 0) return;
@@ -5268,11 +4571,6 @@ export function directionToward(fromX: number, fromY: number, toX: number, toY: 
   return "upright";
 }
 
-/**
- * Turn a caster to face their spell target, as WoW does when you cast at
- * something behind you, so the cast never fails for facing the wrong way.
- * Only the stored facing changes; the cast's animation packets show it.
- */
 export function faceToward(caster: any, x: number, y: number): void {
   const pos = caster?.location?.position;
   if (!pos || !Number.isFinite(x) || !Number.isFinite(y)) return;
@@ -5281,11 +4579,6 @@ export function faceToward(caster: any, x: number, y: number): void {
   playerCache.set(caster.id, caster);
 }
 
-/**
- * Undo faceToward once the cast no longer needs it: a caster still walking
- * (a can_move spell) turns back to the way they are walking, including any
- * direction they switched to mid-cast. Returns true if the facing changed.
- */
 function restoreWalkingFacing(caster: any): boolean {
   const pos = caster?.location?.position;
   const walking = String(caster?._movementState?.targetDirection ?? "");
@@ -5295,11 +4588,6 @@ function restoreWalkingFacing(caster: any): boolean {
   return true;
 }
 
-/**
- * Refuse equipping or removing any equipment (armor and weapons) while the
- * PvP flag is set, and resend equipment + inventory so a client that moved the
- * item optimistically snaps back. Returns true when the change was blocked.
- */
 export async function blockEquipmentChangeWhilePvp(wt: any, currentPlayer: any, slot: unknown): Promise<boolean> {
   if (!currentPlayer?.pvp || !slot) return false;
   sendPacket(wt, packetManager.notify({ message: "You can't change equipment while in combat." }));
@@ -5396,8 +4684,6 @@ export async function castSpellOnCreature(wt: any, currentPlayer: any, spell: Sp
   if (!spell.can_move && !after.casting) return resetCooldown();
   after.casting = false;
   playerCache.set(after.id, after);
-  // The creature may have moved during the cast: finish facing where it is
-  // now, unless still walking, in which case turn back to the walk direction.
   const creatureNow = creatures.getCreature(creatureId);
   if (creatureNow) faceToward(after, creatureNow.x, creatureNow.y);
   restoreWalkingFacing(after);
@@ -5426,8 +4712,6 @@ export async function castSpellOnCreature(wt: any, currentPlayer: any, spell: Sp
     }
   }
 
-  // Projectile visual from the caster to the creature, same as player targets:
-  // travel time scales with distance and the damage lands when it arrives.
   const travelMs = projectileTravelMs(Math.hypot(after.location.position.x - target.x, after.location.position.y - target.y));
   const creatureParticles = resolveSpellParticles(spell, (await readHeldList<Particle>("particles")));
   const projectile = packetManager.projectile({
@@ -5532,8 +4816,6 @@ setMirrorZoneHitHandler((caster, mirror, zone, damage) => hitRemotePlayer(caster
   harmful: zone.damageType !== "heal",
 })));
 
-// What the cutscene sessions (systems/cutsceneplayer.ts) need of the socket layer: packets to a player, a walk stopped and a
-// cast interrupted for a scene that holds them, and a player moved when a chain of scenes or a scene's end places them.
 setCutsceneBridge({
   send: (target, packets) => sendPacket(target.wt, packets),
   hold: async (target) => {
@@ -5545,8 +4827,6 @@ setCutsceneBridge({
   teleport: (target, map, x, y) => placePlayer(target, map, x, y),
 });
 
-// What the achievements (systems/achievements) need of the receiver after a reward: the player's bags, collectables
-// and mail count sent again, as the player editor's bridge below does after an admin's change.
 achievements.setBridge({
   syncInventory: async (target) => {
     target.inventory = await patchInventoryBagSlots(await inventory.get(target.username), target.username);
@@ -5565,8 +4845,6 @@ achievements.setBridge({
   sendMailNotice: (target) => sendMailNotice(target),
 });
 
-// What the player editor (systems/playereditor.ts) needs from the socket layer
-// to bring an online player's client, and the clients around them, up to date.
 playerEditor.setPlayerEditorBridge({
   syncInventory: async (target) => {
     target.inventory = await patchInventoryBagSlots(await inventory.get(target.username), target.username);
@@ -5601,8 +4879,6 @@ playerEditor.setPlayerEditorBridge({
   announce: (target) => broadcastPlayerUpdate(target),
   syncPartyLayers: (leader, members) => syncPartyLayers(leader, members, playerCache, sendAnimationTo),
   relocate: async (target, map, x, y, direction) => {
-    // A player in a handoff is moved by no one here: the move (and its saved location) would be lost or clash with the
-    // new node's (security review M3). The editor's own answer is unchanged.
     if (CELLS_ON && inHandoff(target)) {
       log.info(`Relocation of ${target.username} skipped: the player is changing server node`);
       return;
@@ -5614,8 +4890,6 @@ playerEditor.setPlayerEditorBridge({
       await teleportPlayerWrapper(target, map, x, y);
       return;
     }
-    // Already on that map: move there like an admin teleport, without
-    // reloading the map (a reload wipes everything the client shows).
     target.location.position = { ...target.location.position, x, y, direction };
     ghosts.touch("player", target.id);
     globalStateRevision++;
@@ -5632,8 +4906,6 @@ playerEditor.setPlayerEditorBridge({
   },
 });
 
-// What the control panel (systems/controlpanel.ts) needs from the socket
-// layer: the state only this file holds.
 controlPanel.setControlPanelBridge({
   restartScheduled: () => !!restartState.scheduled,
   status: () => ({
@@ -5643,8 +4915,6 @@ controlPanel.setControlPanelBridge({
     creatures: creatures.stats(),
   }),
   worlds: async () => {
-    // What each world has over it now, and what that reads: a "random" world the weather it settled on, a world on
-    // "weather_api" the last reading of the place it follows.
     const rows = (await assetCache.get("weather") as WeatherData[]) || [];
     const live = { look: weatherApi.shownAs(weatherApi.WEATHER_API), row: weatherApi.currentWeather() };
     return (await getLiveWorlds()).map((world) => ({
@@ -5655,12 +4925,6 @@ controlPanel.setControlPanelBridge({
   },
 });
 
-/**
- * Runs one admin command (or one of the admin packets) for the control panel
- * through this receiver, exactly as if the admin had sent it, so the panel
- * and the chat command are one implementation. Resolves with what the
- * command told the admin. The panel runs one at a time per admin.
- */
 export async function runForControlPanel(wt: any, run: controlPanel.PanelRun, options: controlPanel.PanelRunOptions = {}): Promise<string[]> {
   const replies: string[] = [];
   const stood = "command" in run ? { type: "COMMAND", data: { command: "" } } : { type: run.packet, data: null };
@@ -5681,8 +4945,6 @@ export async function runForControlPanel(wt: any, run: controlPanel.PanelRun, op
 
 hearDeliveries(panelHears);
 
-// When a stun lands on a moving player, stop their movement server-side
-// immediately - the client may never send a MOVEXY "abort".
 spellEffects.setStunMovementHandler(forceStopPlayerMovement);
 
 spellEffects.setVanishRemovedHandler(async (player) => {
@@ -5729,9 +4991,6 @@ spellEffects.setVanishRemovedHandler(async (player) => {
 
 const DEFAULT_INTERRUPT_LOCKOUT_SECONDS = 3;
 
-// Interrupt spell effect: cancels the target's in-progress cast and locks out
-// all of their spell casting for the effect's duration.
-// Only applies when the target is actually casting an interruptable spell.
 registerSpellEffect("interrupt", ({ target, effect }) => {
   if (!target?.stats) return; // players only - entities do not cast
   const fresh = playerCache.get(target.id) || target;
@@ -5776,22 +5035,6 @@ function parsePos(pos: any): { x: number; y: number } {
   return { x: pos?.x ?? 0, y: pos?.y ?? 0 };
 }
 
-// Players within `distance` of the caller, on the caller's own layer (players
-// on other layers of the same map are separate instances - they can't see or
-// interact with each other, so targeting/attack range must not consider them).
-// The caller IS included in the result when within range of itself (distance 0)
-// - callers that don't want self filter it out (see TARGETCLOSEST); the
-// attack-range check relies on self being present for self-targeted spells.
-//
-// Candidates come from the spatial grid cells round the caller, so the cost is
-// the local crowd. TARGETCLOSEST / SELECTPLAYER / attack range fire this per
-// packet, and a layer is per block now (one layer of a big map can hold the
-// whole map's population), so scanning layer membership was O(map) per packet.
-// The grid is not layer aware: other-layer players are dropped by the same
-// layer check as before. When the range covers more grid cells than the layer
-// has players (a very long range), the layer membership is scanned instead.
-// Both give the same players: the grid follows every movement tick and the
-// query is padded for the rest.
 const TARGET_GRID_PAD_PX = Math.max(128, (Number(AOI_CONFIG.UPDATE_THRESHOLD) || 100) + 32);
 const TARGET_GRID_CELL_PX = Number(AOI_CONFIG.GRID_CELL_SIZE) || 512;
 
@@ -5801,15 +5044,6 @@ function stillHere(player: any): boolean {
   return !!live && live.wt === player.wt;
 }
 
-/**
- * Items and money another node handed over for a player here (LOOT_TAKE, CHEST_TAKE), written in one batch.
- * Answers the items that were really added: inventory.add answers nothing for a name that is not an item, and such
- * an item is logged by name. Null when none could be written (the session ended meanwhile, or the write failed):
- * the owner has already let them go, so they go back to the grant store when nothing of them was written, and are
- * logged by name as lost when they cannot be parked, or may have been written. Nothing is checked against the room in
- * the bags again: inventory.add does not count slots, so an item is never dropped for want of one, and bags that
- * filled during the round trip hold the extra.
- */
 async function receiveHanded<T extends { name: string; quantity: number }>(player: any, items: T[], copper: number, call = "hand-over", grantId?: unknown): Promise<T[] | null> {
   if (items.length === 0 && copper <= 0) return [];
   // The hand-over this node claimed, if the owner parked one: its id is written with the items (grantwrites.ts).
@@ -5824,9 +5058,6 @@ async function receiveHanded<T extends { name: string; quantity: number }>(playe
   try {
     const balance = await atomically([player.username], async (batch) => {
       added.length = 0;
-      // Security review M2: the claimed hand-over's id is written with it, first in the batch, so a store that brings
-      // the grant back after this write cannot have it written again by its owner. Guard (test "a claimed hand-over is
-      // written with its grant id, and one written before is not written again").
       if (id) await recordGrantWrite(batch, id);
       for (const item of items) {
         if (await inventory.add(player.username, { name: item.name, quantity: item.quantity } as any, batch)) added.push(item);
@@ -5847,26 +5078,12 @@ async function receiveHanded<T extends { name: string; quantity: number }>(playe
       return null;
     }
     const lost = `Items handed over by another node were lost for ${player.username}: ${lostText}: ${error}`;
-    // Thrown before the batch was sent (a lock check, an item check): nothing was written, and what was handed over
-    // goes back to the grant store whole. Any other throw may come after the commit (a kept step, a lost answer):
-    // parked again, it could be given twice, so it is logged as lost.
     if (nothingWritten(error)) await parkAgain(player.username, items, copper, call, lost, id);
     else log.error(lost);
     return null;
   }
 }
 
-/**
- * Items another node handed over (and this node claimed) that could not be written here go back to the grant store
- * as a grant (cells phase 7): its owner's recovery gives them to the player on whichever node they are, or writes
- * them to their rows. Only when they cannot be parked (no cluster store, or the store failed) are they lost, and then
- * `lost` names them. A grant holds at most MAX_GRANT_ITEMS rows: more are parked as several, the money with the first.
- *
- * `grantId`: the hand-over this node claimed. The first grant is parked again under it (security review Important 3),
- * so a copy of the hand-over the store brings back and this re-park share one grant_writes row. A claimed hand-over
- * holds at most MAX_GRANT_ITEMS rows (its owner parked it so, and the bounds refuse more), so it is one grant. Guard
- * (test "the receiver parks a hand-over it could not write again under its grant id").
- */
 async function parkAgain(username: string, items: Array<{ name: string; quantity: number }>, copper: number, call: string, lost: string, grantId: string | null = null): Promise<void> {
   const parked: string[] = [];
   try {
@@ -5891,13 +5108,6 @@ const itemCallsUnderWay = new Set<string>();
 /** What a player is told when a call of theirs is refused for another being under way. */
 export const ITEM_CALL_BUSY = "You are already doing that. Try again in a moment.";
 
-/**
- * Runs the call of `player` on the items of the neighbouring node `owner` (null when this node owns them: `run`
- * goes on at once, as before). A player has one at a time: a client's packets run side by side, and each would be
- * a call that stays pending for seconds. While one is under way another is refused (`refused` makes the answer)
- * and sends nothing, so nothing is taken for it; the one under way is not touched, and it is still written whole
- * when it is answered.
- */
 async function oneItemCallAtATime<T, R>(owner: string | null, player: any, refused: () => R, run: () => Promise<T>): Promise<T | R> {
   if (!owner) return run();
   const key = String(player.username).toLowerCase();
@@ -5941,10 +5151,6 @@ export async function takeCorpseLootHere(player: any, creatureId: number, indice
   });
 }
 
-/**
- * Picks up ground loot for a player here: this node's as before, or a neighbouring node's (PICKUP_REQUEST), whose
- * item is added here. `added` says whether the item is in the inventory; `message` is what to tell the player when not.
- */
 export async function pickupLootHere(player: any, lootId: string): Promise<{ added: boolean; message?: string }> {
   return oneItemCallAtATime(itemOwner("PICKUP_REQUEST", String(lootId)), player, () => ({ added: false, message: ITEM_CALL_BUSY }), async () => {
     const asked = await askOwner("PICKUP_REQUEST", String(lootId), player, { lootId: String(lootId) });
@@ -5955,11 +5161,7 @@ export async function pickupLootHere(player: any, lootId: string): Promise<{ add
 
     const lootItem = result.item;
     const lost = `Loot handed over by another node was lost for ${player.username}: ${lootItem.item} x${lootItem.quantity}`;
-    // The owner has let the item go: an item that cannot be written here goes back to the grant store (parkAgain) when
-    // nothing of it was written, and is logged by name as lost when it cannot be parked, or may have been written.
     const handed = [{ name: String(lootItem.item), quantity: Number(lootItem.quantity) || 1 }];
-    // The hand-over this node claimed, if the owner parked one: its id is written with the item (grantwrites.ts, M2),
-    // and an item not written is parked again under it.
     const grantId = typeof asked?.grantId === "string" ? asked.grantId : null;
     if (asked && !stillHere(player)) {
       await parkAgain(player.username, handed, 0, "PICKUP_REQUEST", `${lost}, who left meanwhile`, grantId);
@@ -6075,11 +5277,6 @@ export function remoteHit(caster: any, spell: any, damage: number, isCrit: boole
   };
 }
 
-/**
- * A hit on a mirrored player: sent to its owner, which checks and applies it (spec §4). The caster's
- * side is done here once it lands: the caster's PvP flag, the damage number for viewers here, and on a
- * kill PLAYER_DEATH with the mirror as the player (its threat goes, and the killer's PvP kill counts).
- */
 export async function hitRemotePlayer(caster: any, target: any, hit: PlayerHit): Promise<boolean> {
   const result = await sendPlayerHit(target, hit);
   if (!result || (result.outcome !== "applied" && result.outcome !== "killed")) return false;
@@ -6087,9 +5284,6 @@ export async function hitRemotePlayer(caster: any, target: any, hit: PlayerHit):
   caster.last_attack = performance.now();
   if (hit.showsDamage && result.stats) {
     const packets = packetManager.updateStats({ id: caster.id, target: target.id, stats: result.stats, isCrit: hit.isCrit, damage: hit.damage, absorb: result.absorb || 0 });
-    // The owner showed the same number to the target's viewers (on a kill, its death flow did), and its relay
-    // (relayToMirrorViewers) already reached those on this node, the caster among them when they see the target.
-    // Only the receivers it did not reach are sent it.
     const relayed = new Set(findPlayersWithTargetInAOI(target.id).map((viewer: any) => String(viewer.id)));
     const receivers = new Map<string, any>();
     if (caster.wt) receivers.set(String(caster.id), caster);
@@ -6100,22 +5294,12 @@ export async function hitRemotePlayer(caster: any, target: any, hit: PlayerHit):
   return true;
 }
 
-/**
- * One victim of an area spell. A mirrored player's hit is started towards its owner (the promise is added
- * to `pending`, for the caller to await once the local victims are done) and true is returned: the caller
- * must not apply it here. A local player is left alone and false is returned.
- */
 export function routeSplashToMirror(pending: Promise<boolean>[], caster: any, victim: any, spell: any, damage: number, how: { skipEffects?: boolean; showsDamage: boolean; harmful: boolean }): boolean {
   if (!victim.remote) return false;
   pending.push(hitRemotePlayer(caster, victim, remoteHit(caster, spell, damage, false, how)));
   return true;
 }
 
-/**
- * Inspecting a player of a neighbouring node: that node holds their inventory, so the request is sent to it
- * (cells-inspect) and it answers the asker. `admin` is the asker's own, read here. False when `targetId` is a
- * player of this node or no mirror, which the caller then looks up locally.
- */
 export async function inspectOnOwner(asker: any, targetId: unknown): Promise<boolean> {
   const mirrored = targetId && !playerCache.get(targetId as string) ? mirrorPlayers.get(String(targetId)) : undefined;
   if (!mirrored) return false;
@@ -6123,11 +5307,6 @@ export async function inspectOnOwner(asker: any, targetId: unknown): Promise<boo
   return true;
 }
 
-/**
- * A hit on a player of this node from a player of a neighbouring node (APPLY_EFFECT player_hit). The
- * checks that protect the target are made here, where the target is; then it is applied as a splash
- * hit is. `caster` is casterFor's stand-in.
- */
 async function applyRemotePlayerHit(targetId: string, hit: PlayerHit, caster: any): Promise<EffectResult> {
   const target = playerCache.get(targetId);
   const allowed: PvpAllowed = (position) => player.isInPvPZone(target.location.map, position as PositionData, PVP_BODY);
@@ -6269,9 +5448,6 @@ export function sendPacketBestEffort(wt: any, packets: any[]) {
   }
 }
 
-// Loot and chests go to the whole map, all layers: login and map change send a
-// player every item on the map, so a despawn has to reach all of them or a
-// stale icon never clears. Nearby-only waits for a resync when a player walks in.
 export function sendToWholeMap(map: string, packets: any[]) {
   for (const playerId of mapIndex.getPlayersOnMap(String(map ?? "").replaceAll(".json", ""))) {
     const p = playerCache.get(playerId);
@@ -6297,9 +5473,6 @@ function toSkeletonPacket(skeleton: any) {
   };
 }
 
-// The layer a summoned or teleported player moves to at their new spot, or
-// null to stay: the other player's layer when it has room in the destination
-// block, else the lower layer the block change offered (never a higher one).
 export function destinationLayerFor(player: any, wantedLayerId: string | null | undefined, lowerLayerId: string | null): string | null {
   if (!player?.aoi) return null;
   const currentLayerId = player.aoi.layerId;
@@ -6314,10 +5487,6 @@ export function destinationLayerFor(player: any, wantedLayerId: string | null | 
   return lowerLayerId && lowerLayerId !== currentLayerId ? lowerLayerId : null;
 }
 
-// Death skeletons are position-static, low importance markers, so both spawn
-// and expiry fan out as datagrams to exactly the players whose AOI radius
-// covers the marker.
-/** Resend the death markers a player should see on their current map and layer. */
 function resyncSkeletonsFor(playerId: string): void {
   const viewer = playerCache.get(playerId);
   const pos = viewer?.location?.position;
@@ -6328,9 +5497,6 @@ function resyncSkeletonsFor(playerId: string): void {
   sendPacketBestEffort(viewer.wt, packetManager.loadSkeletons(visible.map((s) => toSkeletonPacket(s))));
 }
 
-// Layer moves (party sync, layer condensation, warps) change which markers and
-// ground zones a player should see, so both are rebuilt for them (zones of the
-// layer they left are despawned, those of the new one near them are sent).
 setLayerChangeHandler((playerId) => {
   resyncSkeletonsFor(playerId);
   resyncZonesFor(playerCache.get(playerId));
@@ -6356,8 +5522,6 @@ skeletons.setOnDespawn((skeleton) => {
   );
 });
 
-// When Resurrection Sickness wears off, recompute clean totals and push
-// fresh stats + effects to the player, their map, and their party.
 resurrection.setOnSicknessExpiry(async (p) => {
   const synced = await player.synchronizeStats(p.username);
   if (!synced) return;
@@ -6414,8 +5578,6 @@ export function reviveDeps(): ReviveDeps {
   };
 }
 
-// src/tests/packet-srv.test.ts cuts the code from the next line down to the end marker below out of this file and runs it: keep both markers.
-/** The layer fields of a SPRITE_SHEET_ANIMATION packet, in the order they are written. */
 const POSE_LAYER_FIELDS = [
   "mountSprite", "bodySprite", "headSprite", "armorHelmetSprite", "armorShoulderguardsSprite", "armorNeckSprite",
   "armorHandsSprite", "armorChestSprite", "armorFeetSprite", "armorLegsSprite", "armorWeaponSprite",
@@ -6424,13 +5586,6 @@ const POSE_LAYER_FIELDS = [
 /** The equipment slots getPlayerSpriteSheetData draws. */
 const POSE_EQUIPMENT_SLOTS = ["helmet", "shoulderguards", "necklace", "gloves", "chestplate", "boots", "pants", "weapon"] as const;
 
-/**
- * The SPRITE_SHEET_ANIMATION packets last built for a player (the one the player gets and the one their observers
- * get), with the frames the observers' queues share. They hold while every input of the packet is unchanged:
- * the pose, the mount, the worn items and the item-to-sheet table (key / sheets). A player keeps the last
- * POSE_CACHE_PER_PLAYER poses (a walker alternates a few), the oldest dropped first, and the list is weakly held by the
- * player, so it goes with the player (logout, handoff) and there is nothing else to clear.
- */
 interface PoseEntry {
   key: string;
   sheets: object | null;
@@ -6456,12 +5611,6 @@ function poseKey(name: string, mountType: string, equipment: any): string {
   return key;
 }
 
-/**
- * The packet data of a pose. The player's own copy carries every layer, null for an empty one: the client keeps its
- * character sheet preview by the fields present (noteSelfSpritesChanged), so an emptied slot has to be sent as null.
- * Observers' copies leave out the empty layers, which the client reads as null all the same, and `revision`, which
- * the client reads only for the legacy ANIMATION packet.
- */
 export function poseData(id: string, spriteSheetData: any, mountSprite: any, forObservers: boolean): Record<string, any> {
   const layers: Record<string, any> = { mountSprite, ...spriteSheetData };
   const data: Record<string, any> = { id };
@@ -6481,8 +5630,6 @@ export async function sendSpriteSheetAnimation(wt: any, name: string, playerId?:
   const mountType: string = currentPlayer.mounted && currentPlayer.mount_type ? String(currentPlayer.mount_type) : "";
   const key = poseKey(name, mountType, playerEquipment);
   notePoseCall(currentPlayer, name, key);
-  // Read before the sheets are asked for: getPlayerSpriteSheetData uses this table when it is held, so what it
-  // builds is valid for exactly as long as this token is.
   const sheets = playerEquipment ? equipmentSheetsToken() : null;
 
   const kept = poseCache.get(currentPlayer);
@@ -6518,14 +5665,6 @@ export async function sendSpriteSheetAnimation(wt: any, name: string, playerId?:
     }
   }
 
-  // Split delivery: the player's own copy rides the reliable stream (their
-  // sprite state must never desync). So do the full sheets of an observer
-  // that does not hold the player's look yet. An observer that already holds
-  // the sheets gets the pose alone, as a datagram with the pose revision and
-  // again 100 and 400 ms after (broadcastPoseToAOI, socket/posedgram.ts): animation
-  // is state, so the current pose is repeated rather than queued, and a client
-  // applies only a newer revision. One reliable write per observer and pose
-  // change (150-190 us each) is what stalled a node at 800 players.
   if (currentPlayer.wt) {
     sendPacket(currentPlayer.wt, entry.self);
     notePoseSelf();
@@ -6685,8 +5824,6 @@ export async function sendAnimationTo(targetWs: any, name: string, playerId?: st
   if (sendPacketQueued(targetWs, packetManager.spriteSheetAnimation(spriteSheetPacketData))) {
     noteLook(targetWs, String(targetPlayer.id), lookSignature(spriteSheetPacketData));
   }
-  // a player who comes into view while fishing comes with their line (castFish)
-  // A mirror (cluster mode) has no session here: its line comes with its state (broadcastFishing keeps it).
   const session = !targetPlayer.remote && castingFish(targetPlayer) ? fishing.session(targetPlayer.id) : undefined;
   const line = targetPlayer.remote ? targetPlayer.fishLine
     : session ? { x: session.x, y: session.y, bit: !!session.bitAt, reeled: !!(session.bitAt && session.reeledAt) } : null;
@@ -6701,8 +5838,6 @@ function scheduleLightning() {
   const delay = 2000 + Math.random() * 3000;
   setTimeout(async () => {
     try {
-      // Same list the rain comes from (resolveWorldWeather), not the startup
-      // snapshot in worldsCache.
       for (const world of await getLiveWorlds()) {
         const resolved = resolvedWeatherCache.get(world.name);
         const activeWeather = resolved ? resolved.weather : world.weather;
@@ -6736,8 +5871,6 @@ scheduleLightning();
 /** How far past the turn of a stretch the cycle runs: a timer that fires a little early still settles on the new one. */
 const WEATHER_CYCLE_SLACK_MS = 1000;
 
-// A "random" world settles again at the turn of each stretch (systems/weathercycle.ts), on every node of a cluster at
-// the same moment and on the same weather: each shows its own players of the world.
 function scheduleWeatherCycle() {
   setTimeout(async () => {
     try {
@@ -6822,8 +5955,6 @@ tornadoes.setTornadoBridge({
       send: (viewer, near) => {
         if (!onMap(viewer)) return;
         const packet = packetManager.tornadoes({ map, tornadoes: near });
-        // The list is replaced wholesale ten times a second, so the latest is all that matters; only the one that
-        // empties it must arrive, or the player is left with a tornado that is gone.
         if (near.length) sendPacketBestEffort(viewer.wt, packet);
         else sendPacket(viewer.wt, packet);
       },
@@ -6833,8 +5964,6 @@ tornadoes.setTornadoBridge({
 listener.on(Events.FIXED_UPDATE, () => {
   void tornadoes.tick(Date.now());
 });
-// The pull goes on the movement loop's own tick, before its steps: as smooth as a walk, and a walker's step goes on
-// from where it left them.
 gameLoop.addTickHook(() => tornadoes.pull(Date.now()));
 
 scheduleWeatherCycle();

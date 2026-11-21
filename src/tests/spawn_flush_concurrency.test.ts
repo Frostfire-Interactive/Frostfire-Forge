@@ -7,11 +7,6 @@ import {
 } from "../socket/batch_queue_utils";
 import { forgetLook, holdsLook, lookSignature, noteLook } from "../socket/looks";
 
-// The limit fix wave, fix 3: the spawn flush runs several receivers at once, hands a long queue 50 spawns a flush,
-// and keeps its sprite caches bounded. The pass itself (claim, restore, bounded concurrency, time budget) is
-// flushSpawnQueue in batch_queue_utils and is imported. The per-receiver step, flushOneSpawnBatch, lives in the
-// receiver, which a test cannot import (it starts the server), so that one function is cut out of its source and
-// run here with the names it uses handed in (line endings normalised, so a CRLF checkout cuts the same).
 const source = readFileSync(join(import.meta.dir, "..", "socket", "receiver.ts"), "utf8").replace(/\r\n/g, "\n");
 const from = source.indexOf("async function flushOneSpawnBatch(");
 const to = source.indexOf("export const despawnBatchQueue");

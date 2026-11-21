@@ -1,9 +1,5 @@
 import type { LinkChannel, LinkHandlers, LinkPeerAddress, LinkTransport } from "./linktransport";
 
-// Node links inside one process, for tests. Delivery is asynchronous (setImmediate) like a socket.
-// freeze() stands in for a node that died hard: nothing it sends or is sent arrives, and nobody is
-// told the link closed. Only the ping timeout of links.ts can notice.
-
 /** The real link refuses larger datagrams (Global Constraints: 1200 B). */
 export const MAX_DATAGRAM_BYTES = 1200;
 

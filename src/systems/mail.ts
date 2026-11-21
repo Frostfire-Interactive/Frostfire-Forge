@@ -1,18 +1,3 @@
-// Mail, as in World of Warcraft. At a mailbox a player writes to another
-// character by name, with items and coins attached, and pays postage. The mail
-// waits in the recipient's mailbox until they take what is attached. Mail left
-// MAIL_DAYS goes back to its sender while anything is still attached to it, and
-// is deleted when nothing is (or when it was sent back already).
-//
-// Mailboxes stand in front of inns: one beside the door of each house an
-// innkeeper is in, on open country (see mailboxesOn). Mail is only read, sent
-// or taken within reach of one; that is the caller's to check (atMailbox).
-//
-// Each player's mail is held in a per-player cache: reads are answered from it,
-// and every change is written to the database and then to it. A change that
-// also moves items or coins goes through a batch (services/batch), so the mail
-// and the belongings change together or not at all.
-
 import query from "../controllers/sqldatabase";
 import log from "../modules/logger";
 import assetCache from "../services/assetCache";
@@ -110,11 +95,6 @@ export interface Mailbox {
   y: number;
 }
 
-/**
- * Where a map's mailboxes stand: in front of each inn's door (see mapmarkers.innDoors), one tile
- * out from the door and beside the way in, on the right where that is clear, else on the left.
- * `blocked` says whether a point (map px) is in something solid.
- */
 export function mailboxesOn(
   map: string,
   npcs: Npc[],
@@ -153,10 +133,6 @@ export function atMailbox(boxes: Mailbox[], x: number, y: number): boolean {
 
 const sqlite = (): boolean => (process.env.DATABASE_ENGINE || "mysql") === "sqlite";
 
-/**
- * The mail table as it is once the setup scripts have run: theirs, then the character keys they add (the
- * character's own mailbox, character_id, and the id twins of sender and recipient). The names are kept beside the ids.
- */
 export const MAIL_TABLE: Record<"mysql" | "sqlite", string> = {
   mysql: `
     CREATE TABLE IF NOT EXISTS mail (
@@ -204,12 +180,6 @@ export const MAIL_TABLE: Record<"mysql" | "sqlite", string> = {
   `,
 };
 
-/**
- * Start-time safety step: the setup scripts make the mail table, but a database that is already
- * live may not have had its setup run before this version starts. The table it makes is the one the
- * setup leaves, character keys included (MAIL_TABLE), so mail by character works on it. Safe on every start. It never
- * throws: when the table cannot be made, one warning is logged and mail fails when it is used.
- */
 export async function ensureMailSchema(): Promise<boolean> {
   try {
     await query(MAIL_TABLE[sqlite() ? "sqlite" : "mysql"]);
@@ -258,8 +228,6 @@ const fromRow = (row: any): Mail => ({
   returned: Number(row.returned) === 1,
 });
 
-// Each character's mail, oldest first: the rows whose character_id is the character's. A mail is to a character, not
-// to its account, so another character of the same account does not see it.
 const rows = rowCache<Mail[]>("mail", async (username) => {
   const id = await characterIdOf(username);
   if (id === null) return [];
@@ -277,11 +245,6 @@ function insertedId(result: any): number | null {
 
 type Pending = { held: Mail[]; written: boolean; unknown: boolean };
 
-/**
- * A player's mail as `batch` has it so far, with this system's turn for them taken until the batch
- * ends. Once the batch is kept, what it left is the mail held; if it is not, the mail held is
- * forgotten and the next read asks the database.
- */
 async function pendingIn(batch: Batch, username: string): Promise<Pending> {
   await batch.hold(oneAtATime, username);
   return batch.pending(rows, username, async () => {
@@ -318,10 +281,6 @@ async function settle(what: string, work: () => Promise<string>): Promise<MailAn
   }
 }
 
-/**
- * Whether a mail's sender is a character still (not deleted): only then can a mail go back to them. An account's
- * username is not enough: the mail would have no character to be kept by.
- */
 const isCharacter = async (name: string): Promise<boolean> => (await characterIdOf(lower(name))) !== null;
 
 /** Text a player wrote, without control characters (a body keeps its line breaks). */
@@ -347,11 +306,6 @@ async function sendBack(batch: Batch, owner: string, mail: Mail, now: number): P
 }
 
 const mail = {
-  /**
-   * Sends a mail: `raw` is { to, subject, body, items: [{ name, quantity }], coins }. What is
-   * attached and the postage leave the sender's bags and purse, and the mail is in the recipient's
-   * mailbox, together or not at all.
-   */
   async send(from: Mailer, raw: any, now = Date.now()): Promise<SendAnswer> {
     if (from.isGuest) return { ok: false, message: "Please create an account to use that feature." };
     const to = cleaned(raw?.to, false).trim().slice(0, 64);
@@ -417,12 +371,6 @@ const mail = {
     return answer.ok ? { ok: true, message: answer.message, recipient } : answer;
   },
 
-  /**
-   * A mail from the game itself, as part of `batch` (the caller names `recipient` in its atomically): no postage,
-   * nothing leaves anyone's bags, and it is let in past INBOX_MAX so a reward is never turned away. For a reward that
-   * did not fit in the bags (systems/achievements). `sender` is a name shown as the sender, not an account. It is stored as
-   * already sent back (returned), so it is never returned to a sender, and one that expires is deleted.
-   */
   async deliverIn(batch: Batch, recipient: string, letter: { sender: string; subject: string; body: string; items: MailItem[] }, now = Date.now()): Promise<void> {
     const to = lower(recipient);
     const toId = await needCharacterId(to);
@@ -445,10 +393,6 @@ const mail = {
     box.written = true;
   },
 
-  /**
-   * Takes what is attached to one of a player's mails into their bags and purse: `part` is
-   * "all", "coins", or the index of one item. A mail with no text and nothing left is deleted.
-   */
   async take(owner: string, mailId: number, part: "all" | "coins" | number): Promise<MailAnswer> {
     const name = lower(owner);
     const found = ((await rows.get(name)) ?? []).find((held) => held.id === Number(mailId));
@@ -537,10 +481,6 @@ const mail = {
     }));
   },
 
-  /**
-   * Deals with a player's mail that waited too long: sent back to its sender while anything is
-   * attached (and it was not sent back already, and the sender still exists), deleted otherwise.
-   */
   async expire(owner: string, now = Date.now()): Promise<void> {
     const name = lower(owner);
     const due = ((await rows.get(name)) ?? []).filter((held) => held.expires_at <= now);

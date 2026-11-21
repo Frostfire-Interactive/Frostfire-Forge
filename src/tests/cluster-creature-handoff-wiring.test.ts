@@ -629,8 +629,6 @@ test("the handoff runs only while the links are attached: the sweep runs, the ti
   }
 });
 
-// Perf fix 3: a creature nobody observes and nobody fights is never ticked, so after its block moved out (exportSlots
-// marks it foreign) only the sweep of the dormant ones offers it to the handoff watch.
 const emptySpawnData = () => ({ templates: new Map([[1, wolf]]), spawns: new Map(), pools: new Map(), patrolPaths: new Map() });
 let sweepClock = Date.now() + 1_000_000_000;
 

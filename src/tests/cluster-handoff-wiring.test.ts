@@ -4,8 +4,6 @@ import { join } from "node:path";
 import { characterDatabaseModule, withLeaveSaves } from "./setup";
 import type { SealedStore } from "../cluster/storeseal";
 
-// The wiring of phase 6 into the engine. The AOI, presence, sickness and cluster start are run for real (only the
-// database is stubbed); server.ts cannot be imported (it starts the server), so its wiring is read from its source.
 mock.module("../controllers/sqldatabase", () => characterDatabaseModule({
   default: async (_sql: string, _params?: any[]) => [],
 }));
@@ -95,8 +93,6 @@ test("release takes the player out of every local index, and its viewers keep it
     expect(mapIndex.getPlayerMap("880002")).toBeUndefined();
     expect(layerManager.getPlayerLayer("880002")).toBeNull();
     expect(spatialGrid.hasPlayer("880002")).toBe(false);
-    // The preview's audience record is dropped (guard: forgetGroundPreview): a later clear for that caster id
-    // reaches only who sees it then, not the viewer who got the old preview.
     aoiReverse.clearViewer("880001");
     const clear = new TextEncoder().encode(JSON.stringify({ type: "GROUND_PREVIEW_CLEAR" }));
     clearGroundPreviewForAOI({ id: "880002" }, [clear]);
@@ -458,10 +454,6 @@ test("the consumable cooldown is read as time left and set from it, never past a
 
 const serverSource = readFileSync(join(import.meta.dir, "..", "socket", "server.ts"), "utf8");
 
-/**
- * The code only: comments taken out and every string literal emptied, so a match cannot be met by a comment or by
- * text inside a string. (server.ts has no regex literal that holds a quote or "//".)
- */
 function codeOf(source: string): string {
   let out = "";
   let i = 0;
@@ -578,8 +570,6 @@ test("the release of a handed-off player does none of a disconnect's leaving", (
   for (const forbidden of ["PLAYER_DISCONNECT", "clearSessionId", "forgetPlayer", "scheduleCleanup", "updateOnlineStatus", "combat.removeUnit", "despawnPlayerFromAllAOI"]) {
     expect(`${forbidden}: ${release.includes(forbidden)}`).toBe(`${forbidden}: false`);
   }
-  // Guard I1: both flags are set before any step runs. From the first, playerCache.set refuses the player; from the
-  // second, the receiver drops a new LOGIN or AUTH on the old connection (it stays open until the SWITCH closes it).
   const stepsAt = at(release, "const steps");
   for (const flag of ["p.handedOff = true;", "if (p.wt?.data) p.wt.data.handedOff = true;"]) {
     expect(at(release, flag)).toBeGreaterThanOrEqual(0);
@@ -587,8 +577,6 @@ test("the release of a handed-off player does none of a disconnect's leaving", (
   }
   // Each step runs on its own: one that throws cannot stop the ones after it.
   expect(release).toMatch(/for \(const \[what, step\] of steps\) \{\s*try \{\s*step\(\);\s*\} catch/);
-  // A cleanup that throws still takes the player out of the cache and the spatial indexes (guard M4), each removal
-  // on its own.
   const finallyAt = at(release, "} finally {");
   expect(finallyAt).toBeGreaterThan(at(release, "cleanupPlayerState(p, { despawn: false })"));
   const fin = release.slice(finallyAt, at(release, "() => cooldownManager.removePlayer(p.username)"));
@@ -616,8 +604,6 @@ test("the handed-off save names its twin, the disconnect's saves", () => {
   // A warp hands off with the location already at the destination: the count it leaves is the old map's.
   expect(has(save, 'await worlds.adjustPlayerCount(p?.handoffFromMap || p?.location?.map || "", -1)')).toBe(true);
   expect(save.includes("clearSessionId")).toBe(false);
-  const doc = serverSource.slice(serverSource.lastIndexOf("/**", serverSource.indexOf("async function saveHandedOff(")), serverSource.indexOf("async function saveHandedOff("));
-  expect(doc).toContain("onDisconnect");
 });
 
 test("a switch ticket is spent when its connection opens, and an arrival's id comes before a new one", () => {
@@ -700,11 +686,6 @@ const shutdownNames = [
 ];
 const makeShutdown = withNames(shutdownNames, `${sourceCut("async function gracefulShutdown(", /\r?\n}\r?\n/)}\n}\nreturn gracefulShutdown;`);
 
-/**
- * Runs server.ts's gracefulShutdown with its own constants and the real boundedStep, on a clock SPEED times as fast
- * (so 9 s take under a second). A step named in `hangs` never ends. Answers when each step started, in ms after the
- * signal.
- */
 async function runShutdown(cluster: boolean, hangs: string[]): Promise<Record<string, number>> {
   const SPEED = 10;
   const t0 = Date.now();

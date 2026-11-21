@@ -3,10 +3,6 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { databaseModule } from "./setup";
 
-// HANDOFF_DONE names the walk: the direction the new node walks the player in as it sends DONE, or null. The client
-// decides its resend from that (it no longer infers it from the facing, which is not the walk: mid-cast the facing stays
-// the cast direction while the player walks another way).
-
 mock.module("../controllers/sqldatabase", () => databaseModule({ default: async () => [] }));
 mock.module("../config/settings.json", () => ({ default: { creatures: {} }, creatures: {} }));
 

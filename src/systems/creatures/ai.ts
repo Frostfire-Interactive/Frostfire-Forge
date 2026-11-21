@@ -90,8 +90,6 @@ function tickPatrol(creature: CreatureInstance, grid: NavGrid, ctx: AIContext, p
     const result = advance(creature, grid, ctx.dtMs, place(ctx, creature));
     if (result === "moving") return;
     if (result === "stuck") {
-      // Re-planning from the same spot gives the same path, so retrying this
-      // point would freeze the patrol here; move on to the next one instead.
       creature.waitUntil = ctx.now + 1000;
       advancePatrolIndex(creature, patrol);
       return;
@@ -115,10 +113,6 @@ function tickPatrol(creature: CreatureInstance, grid: NavGrid, ctx: AIContext, p
   creature.waitUntil = ctx.now + 5000;
 }
 
-/**
- * How long a patrol stops at point `index`: its own wait, the path's pause
- * when it pauses at every point, and the end pause at the first and last point.
- */
 export function patrolWaitMs(patrol: CreaturePatrolPath, index: number): number {
   const point = patrol.points[index];
   if (!point) return 0;

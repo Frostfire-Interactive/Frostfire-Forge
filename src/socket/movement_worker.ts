@@ -3,8 +3,6 @@ import { applyReceiverDiffs, batchVolume, collectReceiverEntries, encodeBatch, i
 
 const receiverSets = new Map<string, Set<string>>();
 
-// Per-receiver probe sequence numbers (persist across flushes so the client's
-// loss accounting sees one monotonic stream per receiver).
 const probeSeqs = new Map<string, number>();
 
 function applyDiffs(diffs: ReceiverDiff[]): void {

@@ -1,11 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { receiverSource } from "./receiver-source";
 
-// Cluster mode: a save in the map editor's Sounds, Footprints or Fishing tab is sent to every player online in the
-// region, not only on the node it was saved on (peer news "tile-data"). The fishing tiles are read again first on
-// each node: a cast is worked out from what the node holds. socket/handlers/editors.ts cannot be imported: these
-// read its source.
-
 const receiver = receiverSource();
 const transpiler = new Bun.Transpiler({ loader: "ts" });
 

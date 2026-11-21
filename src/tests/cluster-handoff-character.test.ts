@@ -3,11 +3,6 @@ import { Database } from "bun:sqlite";
 import { readFileSync } from "node:fs";
 import { databaseModule, standInFor } from "./setup";
 
-// Many characters per account (Task 8): a handoff carries the character's id with the player, node B logs in that
-// character (never the account's active_character_id read again mid-session), the cluster locks are per character,
-// the owner epoch and save stamp are the account's, and a login of the account on another node displaces the
-// account's other character. The database is the engine's own SQLite setup, in memory.
-
 let db = new Database(":memory:");
 const run = (sql: string, params: any[] = []) => {
   if (/^\s*(SELECT|PRAGMA)/i.test(sql)) return db.query(sql).all(...params);

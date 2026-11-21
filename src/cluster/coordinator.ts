@@ -12,24 +12,6 @@ import { splitBlocks } from "./split";
 import type { ClusterStore } from "./store";
 import { refusedRecord } from "./storeseal";
 
-// The one process per region that hands out blocks. Several may run; one holds
-// the lock and acts, the others wait to take over. It gives out blocks that have
-// no owner, and takes over the blocks of a node that died (spec §7): the dead
-// node's live neighbours fill them as they fill any gap. A block a live node
-// owns moves only by a move order (rebalance.ts, blockmove.ts).
-//
-// The lock is `{ holder, epoch }` with an epoch drawn from a counter, so no two
-// holds share one. It is renewed with renewIfEpoch (our epoch, one atomic step
-// that only moves the ttl on): a renewal can only ever land on our own hold, and
-// the lock always keeps a ttl, so a coordinator that dies at any point lets a
-// standby lead once the ttl runs out.
-// A leader stalled for longer than the ttl can lose the lock without knowing it.
-// It reads the lock before each write and stops if it is not its own, and each
-// table is written only over the epoch it was read at (writeIfEpoch), so a stale
-// leader cannot write over a newer leader's table. What it can still do, in the
-// moment between that read of the lock and the write, is give out blocks of a
-// table no one else has changed since: the same blocks a new leader would give out.
-
 /** Held by the leading coordinator; a node that sees it leaves unowned blocks to it (cluster/index.ts). */
 export const LOCK_KEY = "cells:coordinator";
 const LOCK_EPOCH_KEY = "cells:coordinator:epoch";
@@ -43,43 +25,21 @@ export const TOMBSTONE_TTL_MS = 600_000;
 
 /** Left where a dead node's blocks were taken from: the node, if it was only stalled, finds it and stops. */
 export interface Tombstone { nodeId: string; startedAt: number; at: number }
-/**
- * Bus "node-dead": a node's run is over (dead, or restarted under the same id). It can come twice for one run (a
- * takeover cut short runs again whole, and a new leader may tell a restart again): receivers must be idempotent.
- */
 export interface NodeDeadMessage { nodeId: string; startedAt: number; restarted: boolean }
 /** An order its old owner has not started in this long is aborted: the bus message was lost, or the node is gone. */
 export const MOVE_START_TIMEOUT_MS = 30_000;
 /** An order started this long ago and not taken by its new owner is aborted; the old owner puts the state back. */
 export const MOVE_SEND_TIMEOUT_MS = 60_000;
-/**
- * A closed order is kept this long, so an old owner still deciding (blockmove.ts, close) reads how it ended. A block
- * whose order closed "too-big" is left out of rebalancing for as long (preflight D11).
- */
 export const ORDER_KEEP_MS = 300_000;
-/**
- * A block whose order ended aborted rests this long, and its old owner sends nothing to its new owner, before it is ordered again; the rest doubles
- * with each consecutive abort of that block (60 s, 120 s, 240 s ...) up to MOVE_BACKOFF_MAX_MS. A done order clears it.
- * An abort means the pair could not finish a move (a lagging node, a lost message), and the old owner may still be
- * deciding the order: ordering it again at once only finds it busy (blockmove.ts, "already sending a block").
- */
 export const MOVE_BACKOFF_MS = 60_000;
 export const MOVE_BACKOFF_MAX_MS = 600_000;
 /** The rest after the block's `fails`th consecutive abort. */
 export const moveBackoffMs = (fails: number) => Math.min(MOVE_BACKOFF_MAX_MS, MOVE_BACKOFF_MS * 2 ** Math.max(0, fails - 1));
-// The run of each node last seen live, kept in the store so a new leader still sees a restart that overlapped the
-// failover. `live` is false for a run only seen announced (a restart while the node was away): it is not judged
-// dead like a run that was seen beating.
 const RUN_KEY_PREFIX = "cells:noderun:";
 const runKey = (nodeId: string) => `${RUN_KEY_PREFIX}${nodeId}`;
 interface NodeRun { startedAt: number; live: boolean }
 // The settle wait when only expectedNodes is set: a node that never starts cannot hold back the split for good.
 const SETTLE_CAP_MS = 60_000;
-// A run never seen live (a cold start with a kept table, a node still booting after a restart) is given this long
-// before its blocks are taken. It covers the gap from a node's announce to its first beat. The maps are loaded before
-// the announce, so that gap holds only a few store calls (the catalogue, one read and one counter per map) and takes
-// milliseconds on a healthy store. The wide margin is for a slow store: a run that still has not beaten after this
-// is judged dead for good, and its node must be restarted to come back.
 const NEVER_LIVE_GRACE_MS = 60_000;
 const NEIGHBOURS = [[1, 0], [-1, 0], [0, 1], [0, -1]] as const;
 
@@ -88,17 +48,7 @@ export interface CoordinatorOptions {
   lockTtlMs?: number;
   tickMs?: number;
   now?: () => number;
-  /**
-   * A clock that never steps, for the waits before a takeover (deadConfirmMs, the hold). Default: `now` when it is
-   * given (tests move one clock), else performance.now.
-   */
   monotonic?: () => number;
-  /**
-   * The settle rule, for a cold start (CLUSTER_EXPECTED_NODES, CLUSTER_SETTLE_MS): an empty table is
-   * not split until `expectedNodes` nodes are live or `settleMs` has passed since this coordinator
-   * first saw a live node, whichever comes first. Neither set: split at once. `settleMs` alone: wait
-   * that long. `expectedNodes` alone: wait for them, but at most 60 s. Once met, it stays met.
-   */
   expectedNodes?: number;
   settleMs?: number;
   /** How long a node must have been missing (over at least two passes) before its blocks are taken over. Default 2000. */
@@ -135,8 +85,6 @@ export class Coordinator {
   private deadConfirmMs: number;
   // Announced owners seen not live: since when (monotonic), in how many full passes in a row, and which run is judged.
   private missing = new Map<string, { since: number; passes: number; run: NodeRun }>();
-  // Known nodes neither live nor owning a block, under a run never seen live: since when (monotonic), in how many full
-  // passes in a row, and which run (forgetLeftovers).
   private idle = new Map<string, { since: number; passes: number; startedAt: number }>();
   // Owners never announced, already warned about.
   private warned = new Set<string>();
@@ -144,9 +92,6 @@ export class Coordinator {
   private heldBack = new Set<string>();
   // A cache of the runs in the store (RUN_KEY_PREFIX), dropped when this coordinator gains the lead.
   private runs = new Map<string, NodeRun>();
-  // The hold: after a pass that could not reach the store, or on gaining the lead, every beat may have run out (or
-  // this coordinator's counts are stale). Why it is pending; then, from the first full pass after it, since when and
-  // over how many passes it has run. No node is confirmed dead while it holds.
   private holdCause: string | null = null;
   private holding = false;
   private holdSince = 0;
@@ -161,23 +106,10 @@ export class Coordinator {
   private orders: BlockMoveOrders;
   private rebalanceEveryMs: number;
   private sleep: (ms: number) => Promise<void>;
-  // When the last rebalance pass ran, on the monotonic clock (an interval on this host only): the first leading pass
-  // runs one.
   private rebalancedAt = Number.NEGATIVE_INFINITY;
-  // Orders closed "too-big", already logged: once per order (preflight D11). Kept in memory only, so a new leader
-  // after a failover logs a still-kept one once more.
   private tooBigLogged = new Set<string>();
-  // Blocks (map|bx,by) whose orders ended aborted: the run of aborts, when the rest ends, and the pair of the last one.
-  // The orders already counted are kept by id. Memory only: a new leader counts the aborted orders still kept.
-  // `pair`: whether the old owner is also barred from the new owner meanwhile (not for an order refused because its block is held).
   private moveFails = new Map<string, { fails: number; until: number; from: string; to: string; pair: boolean }>();
-  // The rest of the two nodes of an order that aborted unstarted because the old owner was busy ("busy", blockmove.ts),
-  // by order id. The block's own run of aborts (moveFails) is not lengthened by it. Dropped with the order.
   private busyRests = new Map<string, { until: number; from: string; to: string }>();
-  // The pairs that rest after an order that was given up on without a hold, or that could not be carried out because the
-  // new owner did not answer the probe ("unreachable", blockmove.ts), by order id: the old owner sends nothing to that new
-  // owner for MOVE_BACKOFF_MS. Neither node is otherwise out: the old owner is free (it holds nothing, or holds one block
-  // for its own order) and may send another block elsewhere. Dropped with the order.
   private pairRests = new Map<string, { until: number; from: string; to: string }>();
   private moveCounted = new Set<string>();
 
@@ -246,23 +178,17 @@ export class Coordinator {
     try {
       await this.assign();
     } catch (error) {
-      // Any throw, not only a store error: a store failure that shows up as something else must not let a takeover
-      // through. A bug that throws only delays takeovers.
       this.lostStore(error);
       throw error;
     }
   }
 
-  // The store failed part way: the absences counted so far say nothing (beats could not land), so they start over,
-  // and the first full pass after it starts the hold (see watchDead).
   private lostStore(error: unknown): void {
     this.holdCause ??= `the store failed (${error})`;
     this.missing.clear();
     this.idle.clear();
   }
 
-  // Counts kept from an earlier spell as leader are stale (the node may have beaten meanwhile), and a new leader
-  // cannot know how long a node has really been gone: it starts over, under the hold.
   private gainedLead(): void {
     this.holdCause ??= "it took the lead";
     this.missing.clear();
@@ -321,10 +247,6 @@ export class Coordinator {
     const live = liveNodes.map((node) => node.nodeId);
     if (live.length === 0) return;
     await this.watchRestarts(liveNodes);
-    // The move orders first, before any other table write of the pass: a block a new owner took in is committed to
-    // it before the old owner hears of another table change, on which its spawner reviews the slots it let go
-    // (preflight C5). A takeover then finds the block with the node that has its state. And a node whose order
-    // closed this pass may be planned again by the same pass.
     await this.settleMoves(live);
     if (!this.leader) return;
     const settled = this.settledWith(live.length);
@@ -362,8 +284,6 @@ export class Coordinator {
       const given = this.place(extent, table, live, loads);
       if (given.size === 0) continue;
       if (!(await this.confirm())) return;
-      // From the map's counter, so a table written after the stored one was deleted still has a higher epoch than
-      // any a node has cached (a node never takes a lower one); and never at or below the table it replaces.
       const next = this.withOwners(table, given, await this.blocks.nextEpoch(extent.name, table.epoch));
       // Over the table as it was read: if another (newer) leader wrote since, this one is out of date.
       if (!(await this.blocks.writeIfEpoch(extent.name, stored.state === "ok" ? stored.table.epoch : 0, next))) {
@@ -383,24 +303,6 @@ export class Coordinator {
     await this.rebalance(live, loads);
   }
 
-  // The stored table of a map. Block tables are sealed (storeseal.ts), and one whose seal does not open reads as
-  // missing through the sealed store. Here it is a table that cannot be read, never an absent one: an absent table is
-  // split afresh, which would give its blocks a second time while the nodes still hold them by the table they cached.
-  // Like a corrupt table, it is left alone (no split, no refill, no commit) and holds back the takeover of a dead node
-  // until it can be read: an operator puts the table back (a backup, or the cluster's own secret if it was changed).
-  // Guard (test "a block table whose seal does not open is never split afresh").
-  //
-  // The same holds for a table that is missing although the map was split before (security review sec7, Important
-  // 1): deleting a key needs no store key, so a party that can write Redis could otherwise make this coordinator split
-  // the map afresh while the nodes still serve its blocks. The evidence of an earlier split, either of:
-  // - the map's epoch counter is above 0 (every table write raises it, a first split included);
-  // - this coordinator run has read a table for the map (it survives the counter being deleted too).
-  // Not the nodes' load reports: they count where players stand, and a node hosts players on a map that has no table
-  // yet (the unowned grace), so they would hold back a first split. Guard (test "a block table deleted while the
-  // cluster runs is left alone: no block is given a second time").
-  //
-  // A real first split still runs: no counter and no table seen. Re-splitting a map on purpose is done with the
-  // cluster stopped: delete both its table and its counter, then start a coordinator.
   private async readTable(map: string): Promise<StoredBlocks> {
     const stored = await this.blocks.readStored(map);
     const key = blockTableKey(map);
@@ -441,18 +343,12 @@ export class Coordinator {
     return this.expectedNodes === undefined ? 0 : SETTLE_CAP_MS;
   }
 
-  // A live node with another startedAt than last seen restarted under the same id: what its last run held (mirrors,
-  // away slots, foreign creatures on its neighbours) is not true any more. Its blocks stay with it.
-  // A run is recorded live only on a beat that names it: the old run's beat outlives that run by up to ALIVE_TTL_MS,
-  // and a new run seen only through it is still judged as never seen live.
   private async watchRestarts(nodes: NodeInfo[]): Promise<void> {
     for (const node of nodes) {
       const run = await this.runOf(node.nodeId);
       if (run && run.startedAt === node.startedAt && run.live) continue;
       const beating = await this.registry.isAliveAs(node.nodeId, node.startedAt);
       if (run && run.startedAt === node.startedAt && !beating) continue;
-      // Read fresh: the view of this pass can be older than a run record another leader wrote since, and a notice
-      // from it could name the node's current run.
       const fresh = await this.registry.info(node.nodeId);
       if (fresh?.startedAt !== node.startedAt) continue;
       if (!(await this.confirm())) return;
@@ -485,9 +381,6 @@ export class Coordinator {
     this.runs.set(nodeId, run);
   }
 
-  // The run an absent node is judged by: the one last seen live. A node that announced a new run since (it restarted
-  // and has not beaten yet) has its old run told dead, keeps its blocks, and its new run is judged as never seen live.
-  // `known` is the node's announcement when the caller has just read it.
   private async judgedRun(nodeId: string, known?: NodeInfo): Promise<NodeRun> {
     const info = known ?? (await this.registry.info(nodeId));
     const run = await this.runOf(nodeId);
@@ -500,9 +393,6 @@ export class Coordinator {
     return next;
   }
 
-  // Run at the start of each full pass. A pending cause starts the hold; it ends once both the beat's ttl plus two
-  // passes of time and two more full passes have gone by. Both: the ttl is a time, and slow passes must not cut the
-  // number of looks a node gets.
   private advanceHold(clock: number): void {
     const length = ALIVE_TTL_MS + DEAD_PASSES * this.tickMs;
     if (this.holdCause !== null) {
@@ -518,8 +408,6 @@ export class Coordinator {
     if (this.holdPasses >= DEAD_PASSES && clock - this.holdSince >= length) this.holding = false;
   }
 
-  // Owners not live after a full pass: an announced one is taken over once confirmed dead; one never announced keeps
-  // its blocks, with one warning (a table written by hand, or a node id mistyped, is not a death).
   private async watchDead(absent: Map<string, number>, live: string[], loads: LoadReport[]): Promise<void> {
     const clock = this.monotonic();
     this.advanceHold(clock);
@@ -556,15 +444,6 @@ export class Coordinator {
     if (!cut) await this.forgetLeftovers(known, live, absent);
   }
 
-  // A takeover cut short after its last table write leaves the node announced but owning nothing, so it is never
-  // absent again: each known node that is not live, owns no block, and has a tombstone for its current run is
-  // forgotten here.
-  // A run never seen live that owns nothing is never absent either (a new run kept by a takeover that then died
-  // before its first beat, or a node that died while it booted): it is forgotten once it has not been live for
-  // NEVER_LIVE_GRACE_MS, the wait a run never seen live gets before its blocks are taken. Its node, if it was only
-  // slow, does not come back: its next beat finds its lease lapsed and its announcement gone, takes the run
-  // (nodes.ts), and the node fences itself and stays down until it is restarted. A run once seen live keeps its
-  // announcement, as a retired node does, so its old tickets still route.
   private async forgetLeftovers(known: Set<string>, live: string[], absent: Map<string, number>): Promise<void> {
     // A table that cannot be read may still hold its blocks.
     if (this.unreadable.size > 0) return;
@@ -598,13 +477,6 @@ export class Coordinator {
     for (const nodeId of [...this.idle.keys()]) if (!idle.has(nodeId)) this.idle.delete(nodeId);
   }
 
-  // Counts a known node that is neither live nor owns a block, under its announced run `info`, and forgets it once
-  // that run, never seen live, has been so for DEAD_PASSES passes and NEVER_LIVE_GRACE_MS. Whether it is still
-  // counted (false once forgotten, or when its run was seen live).
-  // "Seen live" means seen beating by a leading coordinator. A run that beat only while no coordinator led, then
-  // stalled for NEVER_LIVE_GRACE_MS or more while it owned no block, is forgotten here too; when it comes back, its
-  // beat finds the lease lapsed and the announcement gone and takes it (nodes.ts), so that node stays down until it
-  // is restarted. Accepted: the window needs a leaderless spell and a long stall, and no block is at stake.
   private async watchIdle(nodeId: string, info: NodeInfo, clock: number): Promise<boolean> {
     // Tells an older recorded run dead, as for an absent node: its node restarted and the new run never beat.
     const run = await this.judgedRun(nodeId, info);
@@ -622,8 +494,6 @@ export class Coordinator {
     return false;
   }
 
-  // Forgets the run `startedAt` only: a new run that announced while it was taken over keeps its announcement and is
-  // judged as never seen live from the next pass. The run record goes either way. Whether the node was forgotten.
   private async forgetNode(nodeId: string, startedAt: number): Promise<boolean> {
     // The run first: a crash in between leaves a tombstoned node, which forgetLeftovers finishes.
     await this.store.del(runKey(nodeId));
@@ -633,13 +503,7 @@ export class Coordinator {
     return forgotten;
   }
 
-  // Each step can run twice without harm, so a takeover cut short (a write that lost to a newer leader, Redis gone
-  // part way) runs again whole on the next pass. It acts only on the run `startedAt` that was judged dead.
-  // "done": taken over and forgotten. "kept": not now (the node is back, restarted, or a table cannot be read); the
-  // next pass looks again. "cut": the lock or a table write was lost.
   private async takeOver(nodeId: string, startedAt: number, live: string[], loads: LoadReport[]): Promise<"done" | "kept" | "cut"> {
-    // Read fresh, as late as can be: a beat or a new run since this pass read the registry means this run is not
-    // the one to end (a restart is told on the next pass, by judgedRun).
     if (await this.registry.isAlive(nodeId)) return "kept";
     if (((await this.registry.info(nodeId))?.startedAt ?? startedAt) !== startedAt) return "kept";
     // A table that cannot be read may hold blocks of the node: forgetting it would strand them there for good.
@@ -656,16 +520,11 @@ export class Coordinator {
     // First: a node that was only stalled finds it on its next beat and stops before it acts on what it lost.
     const tombstone: Tombstone = { nodeId, startedAt, at: this.now() };
     await this.store.set(deadKey(nodeId), JSON.stringify(tombstone), TOMBSTONE_TTL_MS);
-    // A beat of this run that landed after the read above holds the node's lease for up to ALIVE_TTL_MS plus
-    // LEASE_MARGIN_MS from when it was sent. Nothing of the node is given out until that lease has lapsed: its next
-    // beat finds the tombstone and the node stops acting as owner meanwhile. The lock is renewed on its own timer.
     if (await this.registry.isAliveAs(nodeId, startedAt)) {
       log.warn(`Node ${nodeId} beat while it was taken over: its blocks are given out once its lease has lapsed`);
       await this.sleep(ALIVE_TTL_MS + LEASE_MARGIN_MS);
       if (!(await this.confirm())) return "cut";
     }
-    // Its players may log in elsewhere at once; its neighbours drop what they held of it.
-    // Only the dead run's entries: a new run that announced since may already hold logins of its own.
     const stillDead = async () => ((await this.registry.info(nodeId))?.startedAt ?? startedAt) === startedAt;
     const cleared = await new PlayerDirectory(this.store, this.id).sweepNode(nodeId, stillDead);
     // Sent again if this takeover is cut short and runs again: receivers must be idempotent.
@@ -701,8 +560,6 @@ export class Coordinator {
     return "done";
   }
 
-  // Every rebalanceEveryMs: orders for the blocks planRebalance moves, each told to its old owner, which carries it
-  // out (blockmove.ts). A node already in an open order, or in one that was done within NODE_COOLDOWN_MS, is left out of the plan.
   private async rebalance(live: string[], loads: LoadReport[]): Promise<void> {
     if (this.rebalanceEveryMs <= 0) return;
     const clock = this.monotonic();
@@ -711,17 +568,12 @@ export class Coordinator {
     // Wall time for the plan: it is compared with each owner's `since`, stored by whichever coordinator gave the block.
     const now = this.now();
     const busy = new Set<string>();
-    // Blocks whose order closed "too-big" (map|bx,by): left out until that order is removed (preflight D11). Blocks
-    // resting after an aborted order (MOVE_BACKOFF_MS) are left out the same way.
     const tooBig = new Set<string>();
     const listed = ((await this.orders.all()) as EndedOrder[]).sort((a, b) => a.at - b.at);
     for (const order of listed) {
       this.countMove(order);
       if (!isOpen(order)) {
         if (order.reason === "too-big" && now - order.at <= ORDER_KEEP_MS) tooBig.add(`${order.map}|${blockKey(order.bx, order.by)}`);
-        // A block that moved lately: both nodes rest (rebalance.ts NODE_COOLDOWN_MS). `at` is when it closed. An aborted
-        // order moved nothing, but it rests the pair and the block for longer (countMove, MOVE_BACKOFF_MS). The orders are
-        // in the store, so a new leader keeps the rest.
         if (order.state === "done" && now - order.at < NODE_COOLDOWN_MS) {
           busy.add(order.from);
           busy.add(order.to);
@@ -752,15 +604,11 @@ export class Coordinator {
       busy.add(rest.to);
     }
     for (const [key, rest] of [...this.moveFails]) {
-      // A block's run of aborts is forgotten once its rest is over and a further full rest has passed with no new
-      // abort, so the count does not live as long as the coordinator.
       if (now >= rest.until + moveBackoffMs(rest.fails)) {
         this.moveFails.delete(key);
         continue;
       }
       if (now >= rest.until) continue;
-      // The block rests, and the old owner sends nothing to that new owner. The old owner itself is not out: an order
-      // that ended aborted may leave it holding the block (blockmove.ts), and it carries out another block's order meanwhile.
       tooBig.add(key);
       if (rest.pair) bar(rest.from, rest.to);
     }
@@ -789,8 +637,6 @@ export class Coordinator {
     }
   }
 
-  // Counts a closed order once towards its block's run of aborts: an aborted order lengthens the block's rest, a done
-  // one ends the run. One closed "too-big" has its own rule. Called oldest order first.
   private countMove(order: EndedOrder): void {
     if (isOpen(order) || this.moveCounted.has(order.id)) return;
     this.moveCounted.add(order.id);
@@ -801,22 +647,16 @@ export class Coordinator {
     }
     if (order.reason === "too-big") return;
     if (order.reason === "unreachable") {
-      // The new owner did not answer the probe: nothing was taken out and nothing is held, so the block is not at fault
-      // (its run of aborts is left as it is, and it may go to another new owner at once). The pair rests.
       this.pairRests.set(order.id, { until: order.at + MOVE_BACKOFF_MS, from: order.from, to: order.to });
       log.warn(`Move order ${order.id} (block ${order.bx},${order.by} of map ${order.map}, ${order.from} to ${order.to}) ended aborted, ${order.to} not answering: ${order.from} sends it nothing for ${MOVE_BACKOFF_MS} ms, the block's count is unchanged`);
       return;
     }
     if (order.reason === "busy") {
-      // Aborted unstarted: the old owner was already sending another block, or still held an earlier move of this one.
-      // That is not this block's failure, so its run is left as it is; the two nodes still rest.
       this.busyRests.set(order.id, { until: order.at + MOVE_BACKOFF_MS, from: order.from, to: order.to });
       log.warn(`Move order ${order.id} (block ${order.bx},${order.by} of map ${order.map}, ${order.from} to ${order.to}) ended aborted, the old owner being busy: the two nodes rest ${MOVE_BACKOFF_MS} ms, the block's count is unchanged`);
       return;
     }
     const fails = (this.moveFails.get(key)?.fails ?? 0) + 1;
-    // "held": the old owner still holds this block from an earlier order. Only the block rests (and longer each time), no node
-    // and no pair: the old owner can give another block meanwhile.
     const pair = order.reason !== "held";
     this.moveFails.set(key, { fails, until: order.at + moveBackoffMs(fails), from: order.from, to: order.to, pair });
     if (!pair) {
@@ -826,9 +666,6 @@ export class Coordinator {
     log.warn(`Move order ${order.id} (block ${order.bx},${order.by} of map ${order.map}, ${order.from} to ${order.to}) ended aborted: the block rests ${moveBackoffMs(fails)} ms, and ${order.from} sends nothing to ${order.to} meanwhile (${fails} in a row)`);
   }
 
-  // The table as the plan sees it: a block in `tooBig` counts as given out just now, so the plan's block-age rule
-  // passes it over (and picks another block), while it still counts as its owner's and as a neighbour. Only the
-  // plan's copy changes; the stored table is not written.
   private withoutTooBig(map: string, table: MapBlocks, tooBig: ReadonlySet<string>, now: number): MapBlocks {
     let owners: Record<string, BlockOwner> | null = null;
     for (const [key, owner] of Object.entries(table.owners)) {
@@ -839,9 +676,6 @@ export class Coordinator {
     return owners ? { epoch: table.epoch, owners } : table;
   }
 
-  // Carries the move orders on (blockmove.ts). A sent order is committed in the table; an order its old owner never
-  // started, or never got taken, is aborted; a closed one is removed once ORDER_KEEP_MS have passed. A sent order is
-  // never aborted: the new owner took its parts in, and an abort would let the old owner put them back.
   private async settleMoves(live: string[]): Promise<void> {
     const now = this.now();
     const orders = (await this.orders.all()) as EndedOrder[];
@@ -873,8 +707,6 @@ export class Coordinator {
       }
       if (age > ORDER_KEEP_MS) {
         if (!(await this.confirm())) return;
-        // Only the order as read, closed, at its revision: a closed order never opens again, and a key written since
-        // (at another revision) is left alone.
         if (await this.store.deleteIfEpoch(moveKey(order.id), order.epoch)) await this.store.removeFromSet(MOVES_KEY, order.id);
       }
     }
@@ -883,8 +715,6 @@ export class Coordinator {
     for (const id of [...this.tooBigLogged]) if (!listed.has(id)) this.tooBigLogged.delete(id);
   }
 
-  // The block to the order's new owner, over the table as read. True when the order is finished: committed, or found
-  // not to be committable (both logged). False to try again next pass: the table cannot be read, or it changed.
   private async commitMove(order: EndedOrder, live: string[]): Promise<boolean> {
     const stored = await this.readTable(order.map);
     if (stored.state !== "ok") return false;
@@ -893,21 +723,12 @@ export class Coordinator {
     const where = `block ${order.bx},${order.by} of map ${order.map}`;
     // A pass cut short after its write, or a takeover that gave the block to the new owner anyway.
     if (owner?.nodeId === order.to) return true;
-    // Only the block as it was when the order was made: rebalancing writes orders during this coordinator's hold, and
-    // a takeover or another order may have moved the block since.
     if (owner?.nodeId !== order.from || owner.epoch !== order.blockEpoch) {
       const parts = order.parts?.length ? order.parts.join(", ") : "its parts";
       log.error(`Move order ${order.id}: ${where} changed hands before the commit (it is ${owner ? `${owner.nodeId}'s at ${owner.epoch}` : "unowned"}): left as it is, and the ${parts} ${order.to} took in are stranded there`);
       return true;
     }
-    // A new owner already taken over (forgotten, or its run tombstoned) took the parts in after its takeover: a node
-    // stalled past it that handled the BLOCK_MOVE before its beat fenced it. watchDead leaves the blocks of a node it
-    // does not know with that node, so the block is refilled here, as a takeover would, and the parts are lost with it.
     if (await this.gone(order.to)) return await this.refillMove(order, stored.table, live);
-    // Whether or not the new owner is live: the block goes where its state is. A new owner that only missed beats
-    // keeps it; one that dies later is taken over (watchDead: tombstone, node-dead, refill), which drops the old
-    // owner's foreign creatures of it. Left on the old owner, the block would have its slots on both nodes
-    // (preflight C5).
     const epoch = await this.blocks.nextEpoch(order.map, stored.table.epoch);
     const next: MapBlocks = { epoch, owners: { ...stored.table.owners, [key]: { nodeId: order.to, epoch, since: this.now() } } };
     if (!(await this.blocks.writeIfEpoch(order.map, stored.table.epoch, next))) {
@@ -918,8 +739,6 @@ export class Coordinator {
     return true;
   }
 
-  // Whether a node is gone for good: forgotten, or its announced run has a tombstone (taken over, not yet forgotten).
-  // A tombstone of an older run names a node that restarted since: that one is not gone.
   private async gone(nodeId: string): Promise<boolean> {
     if (!(await this.registry.known()).includes(nodeId)) return true;
     const raw = await this.store.get(deadKey(nodeId));
@@ -935,10 +754,6 @@ export class Coordinator {
     return !info || info.startedAt === tombstone.startedAt;
   }
 
-  // The block of a sent order whose new owner is gone, over `table` as read (the block still the old owner's at the
-  // order's epoch): given to a live node as a takeover gives a block (fill), or back to the old owner when the fill
-  // gives it to no one. What the new owner took in is logged lost there by name. True when it is written (the order
-  // is finished); false to try again next pass.
   private async refillMove(order: EndedOrder, table: MapBlocks, live: string[]): Promise<boolean> {
     const key = blockKey(order.bx, order.by);
     const where = `block ${order.bx},${order.by} of map ${order.map}`;
@@ -963,11 +778,6 @@ export class Coordinator {
     return true;
   }
 
-  // A takeover's first table step: the dead node's open move orders are closed before its blocks are refilled. One its
-  // new owner has not taken in (ordered, sending) is aborted, so that owner, whose table may lag the refill, takes
-  // nothing in. One taken in (sent) is committed to its new owner, or refilled when that one is gone too (commitMove),
-  // so the refill that follows finds the block no longer the dead node's and leaves it out. False when the lock or a
-  // table write was lost: the takeover runs again next pass.
   private async settleOrdersOf(nodeId: string, live: string[]): Promise<boolean> {
     for (const listed of (await this.orders.all()) as EndedOrder[]) {
       if (listed.from !== nodeId || !isOpen(listed)) continue;
@@ -991,16 +801,8 @@ export class Coordinator {
     return true;
   }
 
-  /**
-   * The map's unowned blocks given out (block key to node id); empty when none are.
-   * An empty table is split among all live nodes; otherwise each unowned block
-   * goes to a live neighbour (see `fill`). Owned blocks never change.
-   */
   private place(extent: MapExtent, table: MapBlocks, live: string[], loads: LoadReport[]): Map<string, string> {
     if (Object.keys(table.owners).length === 0) {
-      // Weighed from the latest load reports: 1 + the block's reported load. That load is players + 0.1 x awake
-      // creatures (CREATURE_LOAD in index.ts), so the split uses the same creature weight as the rebalance; no
-      // weight of its own is set here.
       const players = new Map<string, number>();
       for (const load of loads) {
         for (const [key, count] of Object.entries(load.blocks ?? {})) {
@@ -1022,12 +824,6 @@ export class Coordinator {
     return { epoch, owners };
   }
 
-  /**
-   * Unowned blocks to the live node that owns the most of their four neighbours (ties:
-   * fewer players, then node id). It runs in waves, each judged on the owners before
-   * it, so a gap between two nodes fills from both sides. A block with no live
-   * neighbour left goes to the least loaded node and spreads from there.
-   */
   private fill(extent: MapExtent, table: MapBlocks, live: string[], loads: LoadReport[]): Map<string, string> {
     const players = new Map(loads.map((load) => [load.nodeId, load.players ?? 0]));
     const isLive = new Set(live);

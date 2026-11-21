@@ -1,8 +1,3 @@
-// What the game server's HTTP API refuses before a request reaches it: more
-// than `max` requests from one address in a window (settings.json
-// webserverRatelimit), and any path with a segment named in
-// src/config/security.cfg (probes for .env, wp-admin and the like).
-
 export interface HttpFilterOptions {
   enabled: boolean;
   /** The window, in milliseconds. */
@@ -12,10 +7,6 @@ export interface HttpFilterOptions {
   blockedSegments: string[];
 }
 
-/**
- * settings.json's webserverRatelimit.windowMs. The generated value is 5, which
- * as milliseconds would allow nothing: a value under 1000 is read as seconds.
- */
 export function windowFromSettings(value: unknown): number {
   const n = Number(value);
   if (!(n > 0)) return 60_000;

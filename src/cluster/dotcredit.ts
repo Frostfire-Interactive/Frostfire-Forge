@@ -6,9 +6,6 @@ import type { DotInstance, RemoteDotCaster } from "../systems/dots";
 import { registerPlayerAction, runOnPlayer } from "./deliver";
 import { mirrorPlayers } from "./mirrors";
 
-// Kill credit and PvP state for a DoT whose caster is on another node (cells phase 6). The DoT ticks on the
-// target's node; the caster's node is told through the bus (cells-dot-credit), as a party's XP share is.
-
 /** A caster is told about ticks on one target at most this often. A kill is always sent. */
 export const CREDIT_THROTTLE_MS = 2_000;
 const MAX_TRACKED = 4_096;
@@ -43,8 +40,6 @@ export class DotCredit implements RemoteDotCaster {
     this.last.delete(key);
     if (!killed) this.last.set(key, now);
     if (this.last.size > MAX_TRACKED) {
-      // Walk from the oldest and stop at the first entry that is both recent and inside the cap, so the sweep costs
-      // what it removes: a map full of fresh entries drops its oldest ones instead of being walked on every call.
       for (const [k, at] of this.last) {
         if (this.last.size <= MAX_TRACKED && now - at < CREDIT_THROTTLE_MS) break;
         this.last.delete(k);
@@ -85,17 +80,9 @@ export interface ApplyCreditDeps {
   setPvp(player: any): void;
   mirror(id: string): any | null;
   emitDeath(victim: any, killer: any): void;
-  /**
-   * Whether the id is a player on this node. A DoT on a local player ticks here and never reaches this node as a
-   * credit, so a peer that names one is lying about a death it cannot have caused. Without it nothing is refused.
-   */
   local?(id: string): boolean;
 }
 
-/**
- * The caster's node: the caster enters PvP as if the tick had landed here, and a kill is emitted as PLAYER_DEATH
- * with the caster as the killer and the victim's mirror (or a stub marked remote) as the player.
- */
 export function applyDotCredit(caster: any, body: unknown, deps: ApplyCreditDeps): boolean {
   const credit = checkedCredit(body);
   if (!credit || !caster || caster.remote || String(caster.id) === credit.victimId) return false;

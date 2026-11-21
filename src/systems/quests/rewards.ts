@@ -81,11 +81,6 @@ async function hasBagSpace(username: string, rewards: QuestReward[]): Promise<bo
   }
 }
 
-/**
- * Gives a player everything the quest pays: every reward is kept, or none. With a `batch` (see
- * services/batch) the writes are added to it instead, to be kept or not with the rest of it; a
- * caller that is answered `ok: false` must then leave the batch unsent.
- */
 export async function grant(
   username: string,
   quest: Quest,
@@ -115,8 +110,6 @@ export async function grant(
     return { ok: false, error: "Could not validate rewards.", code: "db_error" };
   }
 
-  // Bag-space precheck before mutating anything: a half-granted reward is the
-  // worst possible failure here.
   if (!(await hasBagSpace(username, itemRewards))) {
     return { ok: false, error: "You don't have enough bag space.", code: "bag_full" };
   }
@@ -129,9 +122,6 @@ export async function grant(
       granted.push({ name: r.item_name, quantity: r.quantity });
     }
     if (quest.xp_reward > 0) {
-      // Kept (not discarded): the caller merges these into the cached stats.
-      // synchronizeStats rebuilds from the stale in-memory copy and would
-      // otherwise wipe the fresh xp/level on the very next sync.
       const result = (await playerSystem.increaseXp(uname, quest.xp_reward, into)) as any;
       if (result && !Array.isArray(result)) {
         xpResult = { xp: result.xp, level: result.level, max_xp: result.max_xp };

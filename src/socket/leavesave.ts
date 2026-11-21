@@ -1,5 +1,3 @@
-// The leave saves (socket/leavesavecore.ts) written through the server's own effect manager, effects, sickness and
-// player rows.
 import effectManager from "../services/effectmanager";
 import dots from "../systems/dots";
 import { getStunsForPlayer, getSlowsForPlayer } from "../systems/spelleffects";

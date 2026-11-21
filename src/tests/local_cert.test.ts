@@ -86,14 +86,9 @@ test("getCertificateStatus reports a fresh self-signed cert truthfully", async (
   expect(status.daysRemaining).toBeGreaterThan(7);
 });
 
-// Regression test for the outage where an expired CA-signed certificate was
-// reported as "already valid": the status must say expired even though the
-// auto-regenerator deliberately leaves CA-signed files alone.
 test("getCertificateStatus reports expiry on CA-signed certs that needRegeneration ignores", async () => {
   const forge = await import("node-forge");
 
-  // Throwaway RSA CA plus an RSA leaf (all-RSA so this forge build, which
-  // cannot parse EC public keys, can build and re-sign both).
   const caKeys = forge.pki.rsa.generateKeyPair({ bits: 1024 });
   const ca = (forge.pki as any).createCertificate();
   ca.serialNumber = "01";
@@ -171,11 +166,6 @@ test("certificateSanHostnames lists SAN names in the form the scripts take them"
   expect(certificateSanHostnames("not a certificate")).toEqual([]);
 });
 
-// Regression test for the "Failed to fetch WebTransport certificate hash"
-// outage: bare `bun renew-lan-cert` loads .env.development, whose
-// PUBLIC_HOST/SERVER_HOST lack the LAN address a server started with
-// .env.production advertises. The renewal must keep the names already on the
-// certificate it replaces instead of silently dropping them.
 test("renew-lan-cert keeps the SAN names of the certificate it replaces", async () => {
   const forge = await import("node-forge");
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "renew-lan-cert-test-"));
@@ -260,10 +250,6 @@ test("ensureLocalCertificate writes files when missing and is idempotent afterwa
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-// Regression test for the certificate (and its pin hash) being regenerated on
-// every server start: server.ts always asks for "::1", which X509Certificate
-// prints expanded ("0:0:0:0:0:0:0:1") under Bun, so a textual match against
-// the SAN never found it and the certificate was never reused.
 test("ensureLocalCertificate reuses a certificate that already covers the requested hostnames", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "local-cert-test-"));
   const certPath = path.join(dir, "cert.pem");

@@ -1,6 +1,3 @@
-// Gathering wired to the engine: the spawner fed with the areas and the live layers, ticked with the creatures
-// (FIXED_UPDATE, 100 ms), the sync sending nodes to players through packets, and the service given the real
-// inventory. The receiver runs the cast (castGather) and hands editor packets here. See types.ts for the request.
 import AOI_CONFIG from "../../config/aoi.json";
 import { spawnsHere } from "../../cluster";
 import { ghosts } from "../../cluster/ghosts";
@@ -160,11 +157,6 @@ async function give(username: string, item: string, quantity: number): Promise<b
   }
 }
 
-/**
- * An item a neighbouring node handed over for a gather: false when nothing of it was written (it is parked again).
- * A failure that may have come after the commit (a kept step, a lost answer) is thrown, and the item is not parked
- * again: it could be given twice. Exported for its test (cluster-secfix-b.test.ts).
- */
 export async function giveHanded(username: string, item: string, quantity: number, grantId?: string): Promise<boolean> {
   try {
     await write(username, item, quantity, grantId);
@@ -213,17 +205,10 @@ export async function startGather(playerId: string, nodeId: unknown): Promise<{ 
   return answer.node?.id === id ? { ok: true, node: answer.node } : { ok: false, reason: REASONS.gone };
 }
 
-/**
- * The cast ended: this node's node is claimed here (service.finish); a neighbour's is claimed there, and the item
- * it answers is put in the bags here. A node that was taken meanwhile is no longer mirrored: service.finish then
- * answers that someone else gathered it.
- */
 export async function finishGather(playerId: string, nodeId: number): Promise<GatherOutcome> {
   const owner = remoteGatherOwner(nodeId);
   if (!owner) return service.finish(playerId, nodeId);
   const node = remoteNodes.get(nodeId)!;
-  // The item the node's mirror names must be the item of its area, which every node reads (security review M4): the
-  // owner is not asked to let go of a node that gives something no area gives.
   const area = spawner.area(node.areaId);
   if (area && String(area.item).toLowerCase() !== String(node.item).toLowerCase()) {
     log.warn(`[Gathering] Node ${nodeId} of ${owner} shows ${node.item} and its area ${node.areaId} gives ${area.item}: not gathered`);
@@ -237,8 +222,6 @@ export async function finishGather(playerId: string, nodeId: number): Promise<Ga
   const received = await receiveGathered(sent.username, owner, nodeId, answer, {
     // What the node gives, from the mirror and this node's areas: the owner's answer is checked against it.
     expected: { item: node.item, maxQuantity: spawner.area(node.areaId)?.quantity_max ?? 1 },
-    // Still this session on this node: the id is per connection, so a player who left or reconnected
-    // (a new id) fails this and the item is logged as lost, and an id reused by someone else fails the name.
     stillHere: () => playerCache.get(playerId)?.username === sent.username,
     give: giveHanded,
   });
@@ -251,11 +234,6 @@ function layersNow(): Map<string, string[]> {
   return out;
 }
 
-/**
- * Hands the areas' largest quantity_max to the item quantity cap (itembounds.ts, security review M4 fix round 1): a
- * gather from another node may carry that many of one item. Guard (test "a configured quantity above 9999 is in bounds,
- * and one above every configured source is refused").
- */
 export function noteAreaQuantities(areas: ReadonlyArray<{ quantity_max?: unknown }>): void {
   const most = areas.reduce((m, area) => Math.max(m, Math.floor(Number(area?.quantity_max) || 0)), 0);
   setQuantitySource("gathering areas", () => most);
@@ -360,10 +338,6 @@ export async function handleEditorPacket(admin: any, type: string, data: any): P
   void tellPeers("gathering-areas", { by: admin.username });
 }
 
-/**
- * The areas changed, saved by `by` here or on another node: the spawner is given them again, and the open editors
- * but the saver's (`exceptId`) are told.
- */
 async function areasChangedHere(by: string, exceptId?: string): Promise<void> {
   try {
     await reloadAreas();
@@ -376,10 +350,6 @@ async function areasChangedHere(by: string, exceptId?: string): Promise<void> {
   }
 }
 
-/**
- * Cluster mode: an area saved in the editor on another node of the region. The areas are shared (the
- * "gathering_areas" table cache); this node spawns the nodes of its own blocks from them.
- */
 onPeerNews("gathering-areas", (news) => {
   return areasChangedHere(typeof news?.by === "string" ? news.by : "");
 });

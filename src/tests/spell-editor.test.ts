@@ -1,14 +1,6 @@
 import { beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { characterDatabaseModule } from "./setup";
 
-// ------------------------------------------------------------ fake database
-// The spell editor uses a handful of statement shapes. The fake runs them
-// against in-memory tables, with a pause in each one so that two requests
-// sent together really do interleave. The reads it knows are the ones that
-// fill a cache (the stored spells' ids, who knows a spell, the spells table
-// read again after a write that failed) and the looks at the schema: a check
-// that asked the database instead of what is held fails the test that made it.
-
 type Row = Record<string, any>;
 let tables: Record<string, Row[]>;
 let nextId: number;
@@ -979,9 +971,6 @@ describe("editor packets", () => {
 });
 
 describe("in a cluster", () => {
-  // Every node of a region holds its own online players, each with the spell book it was last sent. The spell list
-  // is shared; which spell changed is told to the other nodes (peer news "spell-changed"), and each sends the spell
-  // book again to its own players who know it.
   const BUS_KEY = "spell-editor-test-key";
   async function region() {
     const { ClusterBus } = await import("../cluster/bus");

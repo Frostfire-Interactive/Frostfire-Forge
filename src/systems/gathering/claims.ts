@@ -1,7 +1,3 @@
-// Who gets a node when several players finish gathering it at the same moment. The first claim on a node opens a
-// short window; every claim that comes in while it is open joins it. When it closes, one claimant is picked at random
-// (USER REQUEST 2026-10-17: "just choose randomly who to award it to") and `award` is asked, synchronously, whether
-// the node is still there to give (it takes the node out of the world as it answers). Everyone else loses.
 import log from "../../modules/logger";
 import type { Rng } from "./types";
 

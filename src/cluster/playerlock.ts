@@ -1,35 +1,6 @@
 import log from "../modules/logger";
 import type { ClusterStore } from "./store";
 
-// One writer at a time for a player's rows, across the cluster (spec §7). A batch (services/batch.ts) already
-// waits for any other batch of the same player on this node; a trade, a mail or a purchase on another node writes
-// the same rows from there, and only a lock both can see keeps the two apart.
-//
-// The lock is `{ epoch, node, hold }` under cells:plock:<name>: the epoch is drawn from one counter, and `hold` is
-// a random id, so no two holds share a value even when Redis lost the counter and an epoch comes round again. The
-// counter lives under cells:plock-epoch, outside the lock keys, so a player named "epoch" has a lock key of its
-// own. A lock is taken with setIfAbsent and kept with renewIfEpoch while the work runs. Renewing and giving it up
-// first read the value and go on only when it is this hold's own; the epoch step that follows is atomic, so a
-// holder that stalled past the ttl can never free, or renew, the next holder's lock. Several names are taken in
-// sorted order, with one deadline for all of them, so two lockers of the same names never each hold one the other
-// waits for.
-//
-// A lock that ran out while its work runs is lost: the work is handed `check`, which renews every lock once more
-// and throws when one is gone, and a batch calls it right before it sends its transaction, so a holder that lost
-// its lock writes nothing. A transaction already sent when the lock is lost can still overlap the next holder's.
-// `check` has just renewed the lock to a full ttl, so that needs one transaction to outlast the ttl; closing it
-// fully needs a fencing epoch the database itself checks.
-//
-// Without Redis there is no lock to take. Work on players of this node only still runs on the batch turns alone,
-// which keep this node's own writers apart. A hold another node took just before the outage may still be inside
-// its work then; its `check` cannot renew without the store and throws, so it commits nothing (a transaction it
-// already sent is the overlap above). Work that names a player of another node does not run.
-// Work that runs without a lock because the store failed can also overlap a hold another node takes once Redis
-// is back, while that work is still running: the same kind of window as the in-flight transaction above.
-//
-// Every store call on the lock path is bounded: one that does not answer in time counts as not acquired (the
-// locker is busy) or as lost, so a store that hangs never holds this node's batch turns past the wait.
-
 export const PLOCK_TTL_MS = 10_000;
 export const PLOCK_RENEW_MS = 3_000;
 export const PLOCK_POLL_MS = 25;
@@ -98,10 +69,6 @@ export class PlayerLocks {
     return this.heldNow.has(lower(username));
   }
 
-  /**
-   * Runs `work` holding the lock of every name. `work` is handed `check`, to call right before it commits: it
-   * throws when a lock was lost, or the store failed, and then the work must not commit.
-   */
   async withLocks<T>(names: string[], work: (check: () => Promise<void>) => Promise<T>, options: LockOptions = {}): Promise<T> {
     const sorted = [...new Set(names.map(lower))].sort();
     const deadline = Date.now() + (options.waitMs ?? PLOCK_WAIT_MS);
@@ -214,11 +181,6 @@ export class PlayerLocks {
   }
 }
 
-/**
- * The lock keys of the players a batch names: `char:<id>` for each character (the key a handoff takes,
- * handoff.ts characterLockKey), so a batch and a handoff of one character exclude each other while two characters
- * of one account never do. A name that is no character's is locked by `name:<name>`, lower case.
- */
 export async function characterLockKeys(names: string[], resolve: (name: string) => Promise<number | null>): Promise<string[]> {
   const keys: string[] = [];
   for (const name of names) {

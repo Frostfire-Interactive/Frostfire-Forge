@@ -1,52 +1,12 @@
 import { blockKey, type MapBlocks } from "./blocks";
 import type { LoadReport } from "./nodes";
 
-// Which blocks to move off overloaded nodes (spec §2). A node above OVERLOAD_RATIO times the average load, and at
-// least MIN_OVERLOAD over it, gives one edge block to its least-loaded neighbour across that edge. Only a block held
-// for MIN_BLOCK_AGE_MS moves,
-// and only when the neighbour stays below the sender afterwards, so a block cannot swing back and forth. A node
-// is in one move at a time, as sender or receiver, and rests for NODE_COOLDOWN_MS after one (longer after an aborted
-// one, coordinator.ts). A node that reports an event-loop lag over MOVE_LAG_LIMIT_MS receives no block, and one over
-// MOVE_SENDER_LAG_LIMIT_MS sends none. A block's weight is its
-// owner's report only. Pure: the coordinator reads the tables and reports, and
-// writes the orders.
-// A live node that owns no block (a node that joined a running cluster, or one restarted after a takeover gave its
-// blocks to its neighbours: the takeover fills, it does not split, preflight C6) borders no one, so the neighbour
-// rule never reaches it. It is given one edge block of the most loaded node that owns at least two, and grows by the
-// neighbour rule from there. The giver need not be over the ratio, so an empty node gets a first block in a cluster of
-// any size (preflight C6). The same age, hysteresis and busy rules apply.
-//
-// Clocks: `now` is wall time, because it is compared with each owner's `since`, which the coordinator that gave
-// the block stored (a value read across hosts). The pass interval is kept by the coordinator on its own monotonic
-// clock.
-
 export const REBALANCE_EVERY_MS = 10_000;
 export const OVERLOAD_RATIO = 1.08;
-/**
- * A node is a sender only if its load also exceeds the average by this much, so a quiet cluster does not move
- * blocks.
- */
 export const MIN_OVERLOAD = 25;
 export const MIN_BLOCK_AGE_MS = 30_000;
-/**
- * After a node sent or received a block, no move is planned from or to it for this long. A move changes the node's
- * load only once its players and creatures have crossed (tens of seconds), so the next report still shows the old
- * overload. The coordinator reads it from the closed orders (coordinator.ts rebalance).
- */
 export const NODE_COOLDOWN_MS = 60_000;
-/**
- * A node whose event loop was held up longer than this in the last few seconds (LoadReport.lagMs) receives no block.
- * A lagging receiver does not answer the take in time, so the move ends aborted and the block sits frozen. The limit
- * sits between the nodes of the
- * limit runs: at 1,750 spread bots the longest tick was 210 ms at most (90th percentile 159 ms); at 2,125 the nodes
- * that lagged ran 430 ms and more at the median and reached 740 ms. A report without the field never lags.
- */
 export const MOVE_LAG_LIMIT_MS = 250;
-/**
- * The same for a sender, much higher: moving load off a lagging node is the relief, so a node that is behind may still
- * give a block away. A slow sender is covered by the old owner's hold and the block's backoff (blockmove.ts,
- * coordinator.ts); only a node past this is too far gone to run a move.
- */
 export const MOVE_SENDER_LAG_LIMIT_MS = 1000;
 /** A block lighter than this share of the sender's overload above the average is not worth a move. */
 export const MIN_BLOCK_SHARE = 0.05;
@@ -65,16 +25,7 @@ export interface RebalanceInput {
   loads: LoadReport[];
   /** Nodes in an open order, as sender or receiver, and those that took part in a move within NODE_COOLDOWN_MS. */
   busy: ReadonlySet<string>;
-  /**
-   * Every live node (announced, its run beating, not retired), given only when every table was read: a node that
-   * owns no block in `tables` may then receive one, and a live node with no report yet counts at load 0. Without
-   * it, a node owning no block is left alone (it may own blocks in a table that could not be read).
-   */
   live?: readonly string[];
-  /**
-   * New owners a node may not send to now (an order of the pair ended aborted, coordinator.ts): by old owner. Both nodes
-   * stay free for other pairs, so a sender that is stuck with one new owner can still give a block to another.
-   */
   noReceiveFrom?: ReadonlyMap<string, ReadonlySet<string>>;
 }
 
@@ -86,10 +37,6 @@ export function nodeLoad(report: LoadReport): number {
   return total;
 }
 
-/**
- * Whether the node reports an event-loop delay over `limit` (the receiver's by default). A report without the field
- * does not.
- */
 export function isLagging(report: LoadReport, limit: number = MOVE_LAG_LIMIT_MS): boolean {
   return typeof report.lagMs === "number" && report.lagMs > limit;
 }
@@ -103,8 +50,6 @@ export function planRebalance(input: RebalanceInput, opts: RebalanceOptions = {}
   const maxMoves = opts.maxMoves ?? MAX_MOVES_PER_PASS;
   const load = new Map<string, number>();
   const blockLoad = new Map<string, number>();
-  // A block weighs what its owner reports. A node that moved a block away still reports the creatures it has not
-  // handed on, and a neighbour may report the players on its edge: neither is the block's weight.
   const ownerOf = new Map<string, string>();
   for (const { map, table } of input.tables) {
     for (const [key, owner] of Object.entries(table.owners)) {
@@ -169,9 +114,6 @@ export function planRebalance(input: RebalanceInput, opts: RebalanceOptions = {}
   return moves;
 }
 
-// Each live node that owns no block and is not busy is given one block of the most loaded node that owns at least two
-// blocks and can give one (hysteresis: the receiver stays below the giver). The giver need not be over the ratio. An
-// edge block (one that borders a block of another node, or no block) first; then the heavier block; then by name.
 function seedEmpty(
   input: RebalanceInput,
   load: ReadonlyMap<string, number>,

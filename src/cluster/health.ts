@@ -1,10 +1,5 @@
 import log from "../modules/logger";
 
-// Whether the cluster store (Redis) can be reached, and waiting for it to come back (spec §7: a dead Redis pauses
-// handoffs, delivery and the directory; the nodes keep simulating their blocks). The store says it is down as soon
-// as its connection drops (RedisStore.isUp); this reads that, logs an outage once when it starts and once when it
-// ends, and wakes whoever waits for it. A store with no isUp, or no store at all (the cluster off), is up.
-
 /** How often the store is read for a change (ms). */
 export const STORE_POLL_MS = 250;
 
@@ -95,11 +90,6 @@ export class StoreHealth implements StoreGate {
   }
 }
 
-/**
- * `work` once the store is up: at once when it is, else after a wait of at most `holdMs`. A run that fails while the
- * store is down (it went down meanwhile) waits and runs again, `attempts` runs in all. A failure while the store is up
- * is the caller's, and is thrown at once.
- */
 export async function runWhenUp<T>(gate: StoreGate, what: string, work: () => Promise<T>, opts: WhenUpOptions): Promise<T> {
   for (let attempt = 1; ; attempt++) {
     if (!gate.up()) {

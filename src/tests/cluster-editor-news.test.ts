@@ -2,11 +2,6 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { receiverSource } from "./receiver-source";
 
-// Cluster mode: a save in an editor tells the other open copies of that editor to ask for the list again, on every
-// node of the region (peer news "editor-updated"); the lists themselves are shared. A mailbox editor's save shows the
-// map's mailboxes to its players on every node too (peer news "mailboxes"), and so does the achievement editor's nudge
-// (peer news "achievement-editor-updated"). socket/handlers/editors.ts cannot be imported: these read its source.
-
 const receiver = receiverSource();
 const transpiler = new Bun.Transpiler({ loader: "ts" });
 

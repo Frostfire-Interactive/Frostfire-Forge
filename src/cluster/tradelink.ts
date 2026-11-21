@@ -1,27 +1,3 @@
-// The two-player trade across a border (spec §4). A trade is held on the node of
-// the player who asked for it (the host). The player who was asked may be on a
-// neighbouring node (the partner's node). The host runs every rule of the trade,
-// as for two players of its own: the asked player is read from their mirror, and
-// their offer from the shared database. The partner's node only relays:
-//
-// - TP_ANSWER (call, partner's node to host): the asked player answered the invitation.
-// - TP_UPDATE (call, partner's node to host): the asked player offered, accepted, cancelled or left.
-// - TP_STATE (cast, host to partner's node): the trade as it stands for the asked player.
-// - TP_CLOSED (cast, host to partner's node): the trade ended, and whether to reload their bags.
-//
-// Each trade carries a stamp, made by the partner's node for its TP_ANSWER and kept by both nodes while the
-// trade lasts. A cast or an update that carries another stamp belongs to an earlier trade of the same two
-// nodes and is dropped, so a late message cannot close or change a newer trade.
-//
-// Nothing is retried. An update that did not arrive is followed by one cancel, and the trade is let go here.
-// A cancel that finds the trade being swapped is answered "settling": the swap goes on, so the partner's node
-// keeps its host for a while (SETTLE_WAIT_MS) to take the end of the trade, which carries the right reload.
-//
-// A trade let go here because its host's node went down may still be swapped there: the player is marked
-// unsettled (cluster/tradesettle.ts) before their bags are read again, so no write here puts back what they gave.
-// While marked, they open and accept no trade across a border either way: its host would write their rows from the
-// shared cache, which this node's mark does not fence.
-
 import log from "../modules/logger";
 import { linkCalls, type LinkCalls } from "./linkcalls";
 import { tradeSettle, type TradeSettle } from "./tradesettle";
@@ -76,10 +52,6 @@ export interface TradeClosedCast {
   stamp?: string;
 }
 export interface TradeLost {
-  /**
-   * host: this node holds the trade and `username` is the partner on `peer`.
-   * partner: `username` is this node's player, whose trade `peer` held.
-   */
   role: "host" | "partner";
   username: string;
   peer: string;
@@ -114,23 +86,9 @@ interface HostEntry {
   state?: unknown;
   /** How many updates of this trade are on their way to the host. */
   inflight?: number;
-  /**
-   * An accept of this trade was sent to the host (whether or not it arrived). Only then can the host swap it: the
-   * host swaps once both players have accepted, and this player's accept reaches it only this way.
-   */
   accepted?: boolean;
   /** How many accepts of this trade are on their way to the host (sent, and not yet answered). */
   acceptsInFlight?: number;
-  /**
-   * An accept of this trade was sent, and no TP_STATE has shown since whether it stands. Unlike `accepted` it is let
-   * go: by a TP_STATE that arrives while no accept is on its way, and with the entry when the trade ends. The host
-   * casts the state an accept made before it answers the accept, on the same ordered link, so a state that arrives
-   * after the answer shows the accept, shows it taken back (an offer changed), or shows that it never stood (the host
-   * refused it: "wait", or a lost trade settling). A refused accept casts no state of its own, so its record stays
-   * until the host's next state, or the end of the trade: a leave meanwhile is marked without need, which costs only
-   * a delay. A state that arrives while an accept is on its way may have been cast before the host read it, and lets
-   * go of nothing.
-   */
   acceptUnshown?: boolean;
 }
 
@@ -145,12 +103,6 @@ interface PartnerEntry {
 export class TradeLink {
   /** Host: an asked player of a neighbouring node, their node, and the trade's stamp. */
   private partners = new Map<string, PartnerEntry>();
-  /**
-   * Partner's node: a player of this node, the node that holds their trade, and the trade's stamp. `inflight` is how
-   * many updates of this trade are on their way to the host (sendUpdate tells the player how each ended). A count on
-   * the trade, not a flag on the player: two quick actions are two updates in flight, and an update of an earlier
-   * trade does not hide the loss of a newer one.
-   */
   private hosts = new Map<string, HostEntry>();
   /** Partner's node: a player whose trade was being swapped, and the wait for its end. */
   private waiting = new Map<string, { host: HostEntry; end: (closed: boolean) => void }>();
@@ -209,8 +161,6 @@ export class TradeLink {
       // Whoever waits for this end is released once it has been shown and the bags are read again.
       void this.run(() => this.handlers?.closed(body)).then(() => this.waiting.get(name)?.end(true));
     });
-    // A node that went down takes its trades with it (cells phase 6). Registered at load; it runs only while the
-    // links are attached.
     calls.onPeerDown((peer) => this.peerDown(peer));
   }
 
@@ -218,12 +168,6 @@ export class TradeLink {
     this.handlers = handlers;
   }
 
-  /**
-   * Host: the node of an asked player of a neighbouring node. Null for a player of this node, or one not trading here.
-   * Null too once the link to their node went down (peerDown drops them in the same turn as the link): the last check
-   * before a swap (trades.accept's noLonger, through the receiver's traderNamed) then finds them gone, and no swap
-   * is started with a node that cannot be told its end.
-   */
   partnerPeer(username: string): string | null {
     return this.partners.get(lower(username))?.peer ?? null;
   }
@@ -247,11 +191,6 @@ export class TradeLink {
     return this.hosts.get(lower(username))?.state ?? null;
   }
 
-  /**
-   * Partner's node: an accept of this node's player's trade held elsewhere was sent, and no state from the host has
-   * shown since whether it stands. The host may swap with it while lastState shows no accept, so a player who leaves
-   * now is treated as one shown accepted.
-   */
   acceptSent(username: string): boolean {
     return this.hosts.get(lower(username))?.acceptUnshown === true;
   }
@@ -302,9 +241,6 @@ export class TradeLink {
       // One who leaves is done with the trade, whatever its host answers.
       if (op === "leave") this.hosts.delete(name);
       const sent = await this.calls.call<TradeReply>(peer, "TP_UPDATE", offer === undefined ? { username: name, op, stamp } : { username: name, op, offer, stamp });
-      // An update that did not arrive, or may not have: it is not sent again. The trade is let go here, and one
-      // cancel is sent after it, so that a trade the update left open there does not outlive the player's window.
-      // A link that is down sends nothing, cancel included (peerDown ends the trades of a node that went down).
       if (!sent.ok) {
         log.warn(`The trade update "${op}" of ${name} to ${peer} ended ${sent.why}: the trade is ended for ${name} here, and may still be open there`);
         if (op !== "leave") {
@@ -347,17 +283,6 @@ export class TradeLink {
     return sent;
   }
 
-  /**
-   * Every trade across `peer` is let go here: the link is down, so neither node can reach the other about it.
-   * A host's partners on that node are dropped, and so are this node's players whose trade that node held. Each
-   * goes to the `lost` handler, which ends the trade and reads the bags again. A player whose own update was on its
-   * way is told by sendUpdate; a wait for the end of a swap there ends now.
-   *
-   * A swap that started on that node before the link dropped may still commit there. This node's players whose trade
-   * it held, and who sent an accept, are marked unsettled first (cluster/tradesettle.ts), so their writes here wait
-   * for it and read it. One who sent no accept cannot have been swapped, and is not held up. A host's own players
-   * need no mark: their swap is made here.
-   */
   peerDown(peer: string): void {
     for (const [name, partner] of [...this.partners]) {
       if (partner.peer !== peer) continue;
@@ -365,9 +290,6 @@ export class TradeLink {
       log.warn(`The link to ${peer} went down: the trade with ${name} is ended here`);
       void this.run(() => this.handlers?.lost?.({ role: "host", username: name, peer }));
     }
-    // Marked before anything reads their bags again: `lost` below, or the relay once sendUpdate answers (an update in
-    // flight, or a wait for the end of a swap, which is only made while the trade is held here: its player is in hosts).
-    // A swap under way (one a cancel was answered "settling" for) was accepted by them, so `accepted` covers it.
     for (const [name, host] of [...this.hosts]) {
       if (host.peer !== peer) continue;
       if (host.accepted) void this.fence.unsettle(name, "the link went down with their accepted trade held there", peer);
@@ -395,10 +317,6 @@ export class TradeLink {
     return !!host && host.peer === from && host.stamp === (stamp ?? "");
   }
 
-  /**
-   * Waits for the end of `name`'s trade held on `host`: true when it arrived (and was shown), false when the wait ran
-   * out or the link to the host went down (peerDown).
-   */
   private awaitEnd(name: string, host: HostEntry): Promise<boolean> {
     return new Promise<boolean>((resolve) => {
       const end = (closed: boolean) => {

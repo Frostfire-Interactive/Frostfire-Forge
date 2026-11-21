@@ -1,9 +1,5 @@
 import { packetManager } from "./packet_manager";
 
-// Tells a walking player's client which node it will be sent to (HANDOFF_PREPARE) or to drop the session it opened for
-// it (HANDOFF_ABORT), that the node stopped stepping it for the handoff (HANDOFF_BEGIN) and that the node kept it after
-// all (HANDOFF_STAY). Kept apart from server.ts so a test can run it against a recording connection.
-
 /** The connection side this needs: an open check and a send that takes one frame. */
 export interface PrepareConnection {
   readyState: number;

@@ -1,11 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
-// Cluster mode: every node spawns and runs the creatures of its own blocks, from the creature tables its spawner was
-// given (systems/creatures/index.ts, applyDataChange). A save in the creature editor on one node is told to the
-// region's other nodes (peer news "creature-data"): each loads the tables again and respawns its own creatures the
-// change touches. index.ts loads the whole engine: these read its source.
-
 const source = readFileSync(new URL("../systems/creatures/index.ts", import.meta.url), "utf8");
 const transpiler = new Bun.Transpiler({ loader: "ts" });
 

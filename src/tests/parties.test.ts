@@ -2,11 +2,6 @@ import { afterAll, beforeAll, beforeEach, describe, expect, mock, spyOn, test } 
 import { characterDatabaseModule as databaseModule } from "./setup";
 import { receiverSource } from "./receiver-source";
 
-// ------------------------------------------------------------ fake database
-// The statements the party system sends, run against in-memory tables. A
-// statement it does not know is an error, so a read that is not the load of
-// the whole table fails the test that made it.
-
 type Row = Record<string, any>;
 let partiesTable: Row[];
 let accountsTable: Row[];
@@ -417,8 +412,6 @@ describe("a party change is written to the database, then to the table held", ()
 
 // --------------------------------- a write the database does not answer
 
-// Each write, the statement of it that is not answered, what the write then
-// answers, and the accounts the player system must be told to read again.
 const unanswered: Array<[string, RegExp, () => Promise<unknown>, unknown, string[]]> = [
   ["create (the party)", /^INSERT INTO parties/, () => parties.create("user3", "user7"), false, []],
   ["create (the accounts)", /^UPDATE accounts/, () => parties.create("user3", "user7"), false, ["user3", "user7"]],
@@ -434,8 +427,6 @@ const unanswered: Array<[string, RegExp, () => Promise<unknown>, unknown, string
   ["disband (the party)", /^DELETE FROM parties/, () => parties.disband("user4"), false, ["user4", "user5", "user6"]],
 ];
 
-// A statement that timed out may still have been applied, so after either
-// kind of failure the table is read again rather than trusted.
 for (const made of [false, true]) {
   describe(`a party write the database ${made ? "made but never answered" : "refused"}`, () => {
     test.each(unanswered)("%s: the table is read again, so what is held is what the database holds", async (_name, statement, write, answer, accounts) => {
@@ -480,11 +471,6 @@ test("when the table cannot be read again either, the write still answers that i
   failing = null;
   expect(reads()).toEqual([LOAD, LOAD]);
 });
-
-// ------------------------------------------------- what the callers do
-// socket/receiver.ts cannot be imported (it imports the server, which starts
-// it), so its party cases are run from their source over the real party
-// system, with the other names they use handed in as fakes.
 
 const receiver = receiverSource();
 const transpiler = new Bun.Transpiler({ loader: "ts" });

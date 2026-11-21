@@ -72,10 +72,6 @@ export interface QuestRows {
   progress: QuestProgressRow[];
 }
 
-// Each player's rows of the two tables, as the tables have them. These are
-// what is asked instead of the database; every write below and in the
-// objectives goes to the database and then to them. The log an online player
-// carries (getCachedLog) is the working copy the same functions keep.
 const logRows = rowCache<QuestLogRow[]>("quest_log", async (username) => {
   const characterId = await characterIdOf(String(username));
   if (characterId === null) return [];
@@ -103,13 +99,7 @@ export async function rowsOf(username: string): Promise<QuestRows> {
   return { log: (await logRows.get(uname)) ?? [], progress: (await progressRows.get(uname)) ?? [] };
 }
 
-// One write to a player's rows at a time. Each works from the rows held and
-// puts back what its statements left, so two side by side would each put back
-// rows without the other's change; and statements sent side by side reach the
-// database in no set order.
 const writing = new Map<string, Promise<unknown>>();
-// A write to every player's rows at once (a quest deleted in the editor): after
-// the writes under way, and before any that follow.
 let writingAll: Promise<unknown> = Promise.resolve();
 
 function oneAtATime<T>(username: string, write: () => Promise<T>): Promise<T> {
@@ -127,16 +117,6 @@ function forEveryone<T>(write: () => Promise<T>): Promise<T> {
   return mine;
 }
 
-/**
- * A write to one player's quest rows. `write` is handed the rows held, sends
- * its statements and, after each, replaces the list it changed with what the
- * statement left; the lists it replaced are then the rows held. If a
- * statement fails, the ones before it were written and it may have been too
- * (one that timed out, say): the rows are forgotten, so the next read asks
- * the database, the log an online player carries is put back in step with
- * what it answers (resyncLog), and the failure is the caller's to handle. A
- * caller changes the log the player carries only once this has resolved.
- */
 export function writeQuestRows<T>(username: string, write: (rows: QuestRows, characterId: number) => Promise<T>): Promise<T> {
   const uname = lower(username);
   return oneAtATime(uname, async () => {
@@ -155,14 +135,6 @@ export function writeQuestRows<T>(username: string, write: (rows: QuestRows, cha
   });
 }
 
-/**
- * writeQuestRows, as part of a batch (see services/batch). `write` is handed
- * the rows the batch has so far, adds its statements to the batch and replaces
- * the lists it changed; they become the rows held once the batch is kept. If
- * it is not, the rows are forgotten and the log an online player carries is
- * put back in step, as there. A caller changes the log the player carries in
- * a step of its own, for once the batch is kept.
- */
 export async function writeQuestRowsIn(batch: Batch, username: string, write: (rows: QuestRows, characterId: number) => void): Promise<void> {
   const uname = lower(username);
   await batch.hold(oneAtATime, uname);
@@ -266,13 +238,6 @@ export async function load(username: string): Promise<QuestLogData> {
   return data;
 }
 
-/**
- * After a quest write that failed: the log an online player carries is put
- * back in step with the tables. The write left their rows forgotten, so they
- * are read; when they cannot be, the log stays as it was before the write.
- * An entry that is still in the log is changed in place, so whoever is in
- * the middle of working on it has what is there now.
- */
 async function resyncLog(username: string): Promise<void> {
   const data = getCachedLog(username);
   if (!data) return;
@@ -355,8 +320,6 @@ async function backfillOnAccept(username: string, quest: Quest): Promise<void> {
         }
       }
     }
-    // Radius explore objectives are picked up by the periodic tick; if the
-    // player is already standing in the radius, credit it now.
     const player = findCachedPlayer(username);
     if (player?.location?.position) {
       const { checkExplorePosition } = await import("./objectives");
@@ -403,8 +366,6 @@ async function begin(username: string, quest: Quest): Promise<AcceptResult> {
   };
   try {
     await writeQuestRows(username, async (rows, characterId) => {
-      // The counts of an earlier run go first: if the rest fails, the quest
-      // is not left active with them still in place.
       await query("DELETE FROM quest_objective_progress WHERE character_id = ? AND quest_id = ?", [characterId, quest.id]);
       rows.progress = rows.progress.filter((row) => !ofQuest(quest.id)(row));
       const prior = rows.log.find(ofQuest(quest.id));
@@ -434,8 +395,6 @@ async function begin(username: string, quest: Quest): Promise<AcceptResult> {
     return { ok: false, error: "Could not accept the quest.", code: "db_error" };
   }
 
-  // Repeatable re-accept: the completed row is active again. Only once that
-  // is written: a write that failed leaves the quest completed.
   const completedIdx = data.completed.indexOf(quest.id);
   if (completedIdx !== -1) data.completed.splice(completedIdx, 1);
 
@@ -490,10 +449,6 @@ export async function abandon(username: string, questId: number): Promise<void> 
   listener.emit(Events.QUEST_ABANDONED, { username: uname, questId: qid });
 }
 
-/**
- * Admin tools: start a quest for a player whatever its giver, level,
- * prerequisites or daily reset say. A full log still refuses it.
- */
 export async function forceAccept(username: string, questId: number): Promise<AcceptResult> {
   const quest = find(Number(questId));
   if (!quest) return { ok: false, error: "Unknown quest.", code: "unknown_quest" };
@@ -582,15 +537,6 @@ async function refreshRadiusTracking(username: string): Promise<void> {
   }
 }
 
-/**
- * Quest editor: a deleted quest leaves every player's log and progress. The
- * statements do not say whose rows they took, so no write to one player's
- * rows runs beside them. The rows held of everyone online lose the quest as
- * the tables did, and so does the log each of them carries; the rest are
- * forgotten, to be read when next asked for. If a statement fails, all are
- * forgotten and each online player's log is put back in step with the tables.
- * In a cluster the region's other nodes are told, for the logs their players carry.
- */
 export async function removeFromEveryLog(questId: number): Promise<void> {
   const qid = Number(questId);
   await forEveryone(async () => {
@@ -628,10 +574,6 @@ async function dropFromLogsHere(qid: number): Promise<void> {
   }
 }
 
-/**
- * Cluster mode: a quest deleted in the editor on another node of the region. Its rows went there, and every player's
- * shared rows were forgotten; the logs this node's players carry lose it here.
- */
 onPeerNews("quest-removed", (news) => {
   const qid = news?.questId;
   if (!Number.isInteger(qid) || qid <= 0) return;
@@ -674,9 +616,6 @@ export async function turnIn(
   }
   const { validateChoice, grant } = await import("./rewards");
 
-  // One batch: what the quest pays and the quest's state are kept together or not at all, so a
-  // quest that could not be completed pays nothing. And one hand-in at a time for a player: the
-  // log is read inside, where a second hand-in of the same quest finds it handed in.
   let granted: Awaited<ReturnType<typeof grant>>;
   try {
     granted = await atomically([uname], async (batch) => {
@@ -688,10 +627,6 @@ export async function turnIn(
         throw new Refused({ ok: false, error: "Choose a reward first.", code: "bad_choice" });
       }
 
-      // What the quest asked to be collected is handed in with it, in the same
-      // batch as the reward: kept, one stack would complete a repeatable quest
-      // again and again. Only what is spare is taken; what is worn or carried as
-      // a bag stays.
       const wanted = collectedFor(quest);
       if (wanted.size > 0) {
         const { default: inventory } = await import("../inventory");

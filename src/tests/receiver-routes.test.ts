@@ -2,9 +2,6 @@ import { expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-// The receiver cannot be imported (it starts the server), and neither can the handler modules (they import it):
-// the routing is read from their source.
-
 const dir = join(import.meta.dir, "..", "socket", "handlers");
 const modules = readdirSync(dir).filter((f) => f.endsWith(".ts") && f !== "context.ts" && f !== "index.ts");
 
@@ -15,8 +12,6 @@ function handlesOf(file: string): string[] {
   return [...match[1].matchAll(/"([A-Z_]+)"/g)].map((m) => m[1]);
 }
 
-// The receiver's validPacketTypes is built from this object (src/socket/types.ts): every key of it, the packets
-// the server sends included.
 const knownTypes = (): Set<string> => {
   const text = readFileSync(join(import.meta.dir, "..", "socket", "types.ts"), "utf8");
   return new Set([...text.matchAll(/^\s+([A-Z_0-9]+):\s*"/gm)].map((m) => m[1]));
@@ -30,9 +25,6 @@ test("every handler module names the labels it handles, and no label is handled 
       seen.set(label, file);
     }
   }
-  // The count is the coverage check: the receiver's switch had 181 labels, plus CLUSTER_DEBUG and HANDOFF_GAP, plus the
-  // cutscene editor's six and the two a client sends about a scene it shows, so a label that lost its handler fails here.
-  // (There is no list of the packets a client sends, only validPacketTypes, which holds the server's own as well.)
   expect(seen.size).toBe(191);
 });
 
@@ -63,9 +55,6 @@ test("every label a module handles is a packet type the receiver accepts", () =>
   }
 });
 
-// The handler modules load at the first packet, so the receiver keeps a bare import of every module it used to import
-// that only they use now: without them, assetloader (which loads the assets and maps when it is imported) would run
-// at the first packet instead of at startup.
 test("the receiver still loads the asset loader and the other modules at startup", () => {
   const receiver = readFileSync(join(import.meta.dir, "..", "socket", "receiver.ts"), "utf8");
   // A bare import, or a static import of values from it (the map sync poll uses pollMapChanges): both load it at startup.

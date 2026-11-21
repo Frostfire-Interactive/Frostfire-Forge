@@ -190,8 +190,6 @@ test("a block table whose seal does not open is never split afresh: the coordina
   try {
     await coordinator.tick();
     expect(coordinator.isLeader()).toBe(true);
-    // Guard: refusedRecord in the coordinator's read. Taken as absent, the map is split afresh over the nodes, and a
-    // node still holding blocks by the table it cached would share them with the new owners.
     expect(await raw.get(blockTableKey("main"))).toBe(forged);
     expect(errors.some((line) => line.includes("block table of map main cannot be read"))).toBe(true);
     // A map with no table at all is split as before, and its table is sealed.

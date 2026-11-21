@@ -4,15 +4,6 @@ import { join } from "node:path";
 import { databaseModule } from "./setup";
 import { receiverSource } from "./receiver-source";
 
-// Handoff fix 2: a seamless crossing.
-//   - the old node tells the walking player's client which node is next (HANDOFF_PREPARE, no ticket), once, only while
-//     the player walks toward the border, never with CLUSTER=false; the client opens that node's session early;
-//   - an idle unauthenticated session holds no player and is closed by the node's timeout, which is long enough for the
-//     pre-opened session to wait for the SWITCH;
-//   - the snapshot carries the walk and the arrival goes on walking;
-//   - a busy player lock refuses before the player is stopped;
-//   - the client walks its own player during the gap (core/handoffwalk.ts) and eases the error out.
-
 mock.module("../controllers/sqldatabase", () => databaseModule({ default: async () => [] }));
 mock.module("../config/settings.json", () => ({ default: { creatures: {} }, creatures: {} }));
 
@@ -99,8 +90,6 @@ test("a player walking toward a border to another node is found within the prepa
   // A diagonal covers the same distance: 384 px is 272 on each axis, so 300 px short on x is not near enough on a diagonal.
   expect(prepareTarget("main", 3840, 100, "downright", ownerAt, "a")).toBe("b");
   expect(prepareTarget("main", 3796, 100, "downright", ownerAt, "a")).toBeNull();
-  // A player past the border, walking on into b's block, keeps b (the handoff has not run yet); walking back, or up
-  // along the border into nothing of b's, they do not.
   expect(prepareTarget("main", 4120, 100, "right", ownerAt, "a")).toBe("b");
   expect(prepareTarget("main", 4120, 100, "left", ownerAt, "a")).toBeNull();
   expect(prepareTarget("main", 4120, 100, null, ownerAt, "a")).toBeNull();
@@ -479,6 +468,3 @@ test("what an arrival keeps until its first move is the identity and the marks, 
     stop();
   }
 });
-
-// The client half of the handoff (the walk drawn in the gap, the ease, the pre-opened session, the overlay pause) is tested by the
-// Gateway repository, which owns that code: its src/modules/handoffclient.test.ts.

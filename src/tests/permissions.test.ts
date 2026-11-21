@@ -1,11 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { characterDatabaseModule as databaseModule } from "./setup";
 
-// ------------------------------------------------------------ fake database
-// The statements the permissions system sends, run against in-memory tables.
-// A statement it does not know is an error, so a read that is not a cache
-// filling itself fails the test that made it.
-
 type Row = Record<string, any>;
 let permissionsTable: Row[];
 let typesTable: string[];

@@ -3,12 +3,6 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { databaseModule } from "./setup";
 
-// The packet wave, server only: the same packets for less CPU and fewer bytes.
-//   1. SPRITE_SHEET_ANIMATION is built once per pose, framed once per broadcast, and kept while its inputs hold.
-//   2. CREATURE_MOVE entries are serialized once per tick, whoever sees them; the bytes do not change.
-//   3. BATCH_MOVEXY leaves the receiver's own entry out (the client skips it).
-//   4. The regen tick's UPDATESTATS gives observers only the stats their client reads.
-
 mock.module("../controllers/sqldatabase", () => databaseModule({
   default: async (_sql: string, _params?: any[]) => [],
 }));
@@ -240,10 +234,8 @@ describe("broadcastToAOI framing", () => {
 
 // ---- 1c. the pose packet: built once per pose, kept while its inputs hold, invalidated on every change
 
-// sendSpriteSheetAnimation lives in the receiver, which a test cannot import (it starts the server): its source is cut
-// out and run with the names it uses handed in (line endings normalised).
 const source = readFileSync(join(import.meta.dir, "..", "socket", "receiver.ts"), "utf8").replace(/\r\n/g, "\n");
-const from = source.indexOf("/** The layer fields of a SPRITE_SHEET_ANIMATION packet");
+const from = source.indexOf("const POSE_LAYER_FIELDS = [");
 const to = source.indexOf("async function sendAnimation(");
 if (from < 0 || to <= from) throw new Error("the pose code was not found in receiver.ts");
 const transpiler = new Bun.Transpiler({ loader: "ts" });

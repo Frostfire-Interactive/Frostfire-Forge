@@ -2,8 +2,6 @@ import { afterEach, beforeEach, expect, mock, spyOn, test } from "bun:test";
 
 import { databaseModule, mockQuery } from "./setup";
 
-// The real database layer (its worker threads connect to a database) must never load, whichever way this file is run.
-// The modules below reach it through their static imports, so the stand-in goes first and they are loaded after it.
 mock.module("../controllers/sqldatabase", () => databaseModule({ default: mockQuery, drainQueries: async () => {} }));
 const { ClusterBus } = await import("../cluster/bus");
 const { deriveClusterKeys } = await import("../cluster/clusterkeys");
@@ -21,9 +19,6 @@ const { default: log } = await import("../modules/logger");
 const { default: assetCache } = await import("../services/assetCache");
 const { default: layerManager, MAX_PLAYERS_PER_LAYER } = await import("../services/layermanager");
 const { default: playerCache } = await import("../services/playermanager");
-
-// startCluster wires the shared delivery, invitations and presence tracking to
-// a store: here a MemoryStore, with this process standing in for node "b".
 
 const settle = async () => { for (let i = 0; i < 5; i++) await new Promise<void>((resolve) => setImmediate(resolve)); };
 
@@ -90,8 +85,6 @@ test("without CLUSTER=true nothing starts", async () => {
 
 test("without CLUSTER=true and no store, no Redis client is made", async () => {
   delete process.env.CLUSTER;
-  // RedisStore is swapped for a counter, so a regression cannot open a socket either; the real one is put back after.
-  // A copy: mock.module patches the live namespace, so restoring the namespace itself would keep the stand-in.
   const original = { ...(await import("../cluster/redisstore")) };
   let made = 0;
   mock.module("../cluster/redisstore", () => ({ RedisStore: class { constructor() { made++; } } }));

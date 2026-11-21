@@ -11,11 +11,6 @@ async function held(): Promise<Mount[]> {
   return ((await assetCache.get("mounts")) || []) as Mount[];
 }
 
-/**
- * A statement that changes the mounts table. One that throws may still have
- * been applied (a timeout, say), so the table is read again: what is held is
- * then what the database holds, not what it held before.
- */
 async function write(sql: string, values: any[]): Promise<any> {
   try {
     return await query(sql, values);

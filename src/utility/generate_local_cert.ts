@@ -3,12 +3,6 @@
 import fs from "node:fs";
 import { ensureLocalCertificate, getCertificateStatus } from "./local_cert.ts";
 
-// NOTE: this script intentionally takes no --env-file of its own. Run it with
-// the environment it should act on, e.g.
-//   bun --env-file=.env.production ./src/utility/generate_local_cert.ts
-// Running bare `bun generate-local-cert` checks the development paths, not
-// your production TLS_CERT_PATH / TLS_KEY_PATH.
-
 const certPath = process.env.TLS_CERT_PATH;
 const keyPath = process.env.TLS_KEY_PATH;
 const caPath = process.env.TLS_CA_PATH;
@@ -26,9 +20,6 @@ if (generated) {
   console.log(`Certificate SHA-256: ${generated.hash}`);
   console.log(`Saved to ${certPath} and ${keyPath}`);
 } else if (fs.existsSync(certPath)) {
-  // ensureLocalCertificate deliberately never touches CA-signed certificates,
-  // so an expired one comes back here looking "unchanged". Say what is
-  // actually wrong instead of claiming it is valid.
   const status = getCertificateStatus(fs.readFileSync(certPath, "utf8"));
   if (!status.parseable || status.expired) {
     if (!status.selfSigned) {

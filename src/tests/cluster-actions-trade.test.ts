@@ -325,11 +325,6 @@ test("a call before the handlers are set is answered, not run", async () => {
   expect(partner.hostOf("bob")).toBeNull();
 });
 
-// ------------------------------------------------------ the receiver's helpers
-// socket/receiver.ts cannot be imported by a test (it imports the server, which starts it), so, as the
-// other receiver tests do, the helpers are read from its source and run with the names they use handed in.
-// Each is cut out whole, from its first line to the closing brace at the left margin, so nothing past its
-// end is taken. Two nodes are made from the same source, each with its own players, mirrors and trade link.
 const receiverSource = readReceiverSource();
 const transpiler = new Bun.Transpiler({ loader: "ts" });
 
@@ -496,9 +491,6 @@ beforeEach(() => {
   a.mirrors.set("2", mirrorOf(bob, "b"));
   b.players.set("2", bob);
   b.mirrors.set("1", mirrorOf(alice, "a"));
-  // The node's marks after a lost trade (cluster/tradesettle.ts) are shared by every test: a mark lasts a minute
-  // unless a test shortens it, so no reload after the mark runs out lands in a test that did not ask for one, and
-  // no row is dropped.
   tradeSettle.reset({ ms: 60_000, drop: async () => {} });
 });
 afterEach(() => {
@@ -796,8 +788,6 @@ test("an offer of what the player does not hold is refused by the node that hold
 test("a node speaks only for the player it holds a trade for: an update for another is refused", async () => {
   await openAcross();
   ripen();
-  // Node b is the partner's node of Bob only. It cannot accept, cancel or offer for the host's own player,
-  // and cannot name a player who is not trading here.
   for (const username of ["alice", "ALICE", "carol"]) {
     for (const op of ["accept", "cancel", "leave", "offer"]) {
       const sent = await b.calls.call("a", "TP_UPDATE", { username, op, offer: { items: [], coins: {} } });
@@ -1175,8 +1165,6 @@ test("a host that holds no trade of theirs reloads their bags as well", async ()
   await b.helpers.tradeAction(bob.wt, bob, "accept");
   expect(b.belongings).toEqual(["bob"]);
   expect(lastOf(bob, "TRADE_CLOSED")).toEqual({ completed: false, message: "You are not trading." });
-  // A reload that fails still closes the window, and is logged. The gone reply marked Bob unsettled
-  // (cluster/tradesettle.ts), which refuses a new trade until the mark runs out: it is ended here, as if it had.
   tradeSettle.reset({ ms: 60_000, drop: async () => {} });
   await openAcrossAgain();
   trades.cancel("alice");
@@ -1653,8 +1641,6 @@ test("a leave after an accept marks the player at once, and a relog in the leave
   fakeLinks.a.blackhole = false;
   // The mark runs out, and the relog goes on.
   expect(await relog).toBe("loaded");
-  // The held leave times out (LinkCalls 200 ms) and comes back gone inside this test, so its mark does not leak into
-  // later tests with the default SETTLE_MS.
   await sleep(250);
   expect(warned.some((line) => line.includes("bob") && line.includes("leave from the trade came back gone"))).toBe(true);
 });
@@ -1841,9 +1827,6 @@ test("a trade that ends normally lets go of the accept sent, and the next trade 
 });
 
 test("the real host's own offer or accept, raced against an accept on its way from the other node, never hides that accept (T20c review m1)", async () => {
-  // The rule under test: while the host holds Bob's accept and node b still holds the trade, b's last state shows
-  // it, or b still records it as sent. It rests on the host casting the state an accept made before it answers the
-  // accept, and on b letting no state clear the record while an accept is on its way.
   const macrotasks = async (n: number) => { for (let i = 0; i < n; i++) await new Promise<void>((resolve) => setImmediate(resolve)); };
   let currencyDelay = 0;
   let viewDelay = 0;
@@ -1854,8 +1837,6 @@ test("the real host's own offer or accept, raced against an accept on its way fr
       await macrotasks(currencyDelay);
       return { copper: 100, silver: 0, gold: 0 };
     }) as any),
-    // A view that reads the trade at once and is cast a few macrotasks later: a state that predates an accept can
-    // then still be on its way when the accept is answered, unless the host casts before it answers.
     spyOn(trades, "view").mockImplementation((async (trade: any, username: string, now?: number) => {
       const read = await view0.call(trades, trade, username, now);
       await macrotasks(viewDelay);

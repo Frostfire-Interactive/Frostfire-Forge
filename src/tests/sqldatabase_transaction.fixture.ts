@@ -1,6 +1,3 @@
-// Run by sqldatabase_transaction.test.ts in a process of its own, against a SQLite file made for it:
-// the real worker pool, which a test file cannot import beside the files that stand in for it.
-
 import query, { transaction, GuardError } from "../controllers/sqldatabase";
 
 const out: Record<string, unknown> = {};

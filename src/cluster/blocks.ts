@@ -3,11 +3,6 @@ import log from "../modules/logger";
 import type { ClusterBus } from "./bus";
 import type { ClusterStore } from "./store";
 
-// Which node owns which block of each map. The coordinator writes the table
-// (phase 3 only assigns blocks that have no owner); every node keeps a cached
-// copy so `ownerOf` is a sync lookup on the hot path, and reloads a map when
-// told it changed.
-
 // Read with a fallback: aoi.json is generated, so an older file may not have the key yet.
 export const BLOCK_SIZE_PX: number = (AOI_CONFIG as { BLOCK_SIZE_PX?: number }).BLOCK_SIZE_PX ?? 4096;
 
@@ -30,11 +25,6 @@ export interface BlockExtent {
   blocksY: number;
 }
 
-/**
- * Negatives (and NaN or infinities) clamp to 0: a position just off the map edge belongs to the edge block.
- * Given the map's extent, so does a position on or past its right or bottom edge (x = width is block
- * width / 4096 when the width is a multiple of the block, one past the last).
- */
 export function blockAt(x: number, y: number, extent?: BlockExtent): { bx: number; by: number } {
   const block = (px: number, count: number | undefined) => {
     const at = Number.isFinite(px) ? Math.max(0, Math.floor(px / BLOCK_SIZE_PX)) : 0;
@@ -46,9 +36,6 @@ export function blockAt(x: number, y: number, extent?: BlockExtent): { bx: numbe
 /** What the store holds for a map: "corrupt" is a value that is not a table (bad JSON, or JSON of the wrong shape). */
 export type StoredBlocks = { state: "absent" } | { state: "corrupt" } | { state: "ok"; table: MapBlocks };
 
-// No regex: ownerOf and ownersOf are asked per entity on the scan and AOI paths.
-// Map names are a small fixed set, so the stripped spelling is memoized (a ".json" name would allocate a new
-// string on every call); the memo is capped so input that is not a map name cannot grow it.
 const BARE_CAP = 256;
 const bareMemo = new Map<string, string>();
 /** How many names the bare memo holds (for the tests: it is capped at BARE_CAP). */
@@ -101,11 +88,6 @@ export class BlockTable {
     for (const extent of extents) this.extents.set(bare(extent.name), { blocksX: extent.blocksX, blocksY: extent.blocksY });
   }
 
-  /**
-   * Called with a map's name each time its cached table takes a new epoch (a
-   * "blocks-changed" message, a refresh, a write). A map seen for the first
-   * time with epoch 0 (no table yet) is no change. Returns a function that stops it.
-   */
   onChange(listener: (map: string) => void): () => void {
     this.listeners.add(listener);
     return () => { this.listeners.delete(listener); };
@@ -169,11 +151,6 @@ export class BlockTable {
     await this.bus?.toWorld("blocks-changed", { map: name });
   }
 
-  /**
-   * Coordinator only: as write, but only over the stored table of epoch `expectedEpoch`
-   * (0 when there is none), so a stale leader cannot write over a newer table. Whether it wrote.
-   * A stored value that is not a table also has epoch 0 here: check it with readStored first.
-   */
   async writeIfEpoch(map: string, expectedEpoch: number, table: MapBlocks): Promise<boolean> {
     const name = bare(map);
     if (!(await this.store.swapIfEpoch(tableKey(name), expectedEpoch, JSON.stringify(table)))) return false;
@@ -182,23 +159,12 @@ export class BlockTable {
     return true;
   }
 
-  /**
-   * Coordinator only: the epoch for the map's next table. It comes from a counter per map that outlives the
-   * table, so a table written after the stored one was put back from an older backup does not start again below the
-   * epochs nodes cached, which they would ignore. It is also above `current` (the table it replaces), so a table
-   * written before the counter was kept is not undercut either. A counter above 0 also tells the coordinator that a
-   * missing table was deleted, not never written: it leaves that map alone (coordinator.ts readTable).
-   */
   async nextEpoch(map: string, current: number): Promise<number> {
     const key = epochKey(bare(map));
     const epoch = await this.store.incrBy(key, 1);
     return epoch > current ? epoch : await this.store.incrBy(key, current + 1 - epoch);
   }
 
-  /**
-   * Coordinator only: the map's epoch counter as stored, or null when there is none. Above 0, the map was split
-   * before (each table write raises it). Not sealed: a party that can write Redis can delete or change it.
-   */
   async epochCounter(map: string): Promise<number | null> {
     const raw = await this.store.get(epochKey(bare(map)));
     return raw === null ? null : Number(raw);
@@ -208,10 +174,6 @@ export class BlockTable {
     for (const map of maps) await this.load(map);
   }
 
-  /**
-   * Reads the cached maps (or the given ones) again. Pub/sub delivers at most once:
-   * a node that missed a "blocks-changed" calls this now and then to catch up.
-   */
   async refresh(maps?: string[]): Promise<void> {
     await Promise.all((maps ?? [...this.cache.keys()]).map((map) => this.reload(bare(map))));
   }
@@ -224,8 +186,6 @@ export class BlockTable {
     return table ? { state: "ok", table } : { state: "corrupt" };
   }
 
-  // A table that cannot be read counts as empty. A cached table is never replaced by one with a lower
-  // epoch: a read that started before a newer write (or reload) must not undo it when it lands.
   private async reload(name: string): Promise<MapBlocks> {
     const raw = await this.store.get(tableKey(name));
     const table = (raw ? parseTable(raw) : null) ?? empty();

@@ -16,15 +16,8 @@ const rows = rowCache<any>("bags", async (username) => {
   return found[0] ?? null;
 }, { perPlayer: true });
 
-// One change to a player's row at a time: two ensures side by side would both find no row and both insert, and
-// statements sent side by side reach the database in no set order, so two for one slot could leave the row held
-// with one bag and the database with the other.
 const oneAtATime = turns();
 
-/**
- * A change to a player's row, in its turn. When it fails, the row held is forgotten and the next read loads it: a
- * write that threw may still have been made (one that timed out, say), so what is held can be trusted no longer.
- */
 function change<T>(username: string, work: () => Promise<T>): Promise<T> {
   return oneAtATime(username, async () => {
     try {
@@ -48,8 +41,6 @@ const bags = {
       if (!row) {
         const characterId = await needCharacterId(username);
         const result: any = await query("INSERT INTO bags (character_id) VALUES (?)", [characterId]);
-        // The new row is the character it was given, an empty bag in every slot, and the id the database answered
-        // with. An answer without one leaves the row unknown, so it is read.
         const id = Number(result?.lastInsertRowid);
         if (Number.isInteger(id) && id > 0) {
           row = { id, character_id: characterId, slot_1: null, slot_2: null, slot_3: null, slot_4: null };

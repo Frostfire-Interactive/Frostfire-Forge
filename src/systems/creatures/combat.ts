@@ -25,10 +25,6 @@ export interface CreatureAttackTable {
   crush: number;
 }
 
-/**
- * Creature attacking a player. `d` = creature level - player level.
- * Dodge only works when the player faces the attacker.
- */
 export function creatureVsPlayerTable(creatureLevel: number, playerLevel: number, playerDodgePct: number, playerFacing: boolean): CreatureAttackTable {
   const d = creatureLevel - playerLevel;
   const skillDiff = d * SKILL_PER_LEVEL;
@@ -61,10 +57,6 @@ export interface PlayerAttackTable {
   crit: number;
 }
 
-/**
- * Player auto-attacking a creature. `d` = creature level - player level.
- * Parry only from the front, and never for beasts/critters and similar.
- */
 export function playerVsCreatureTable(
   playerLevel: number,
   creatureLevel: number,
@@ -151,10 +143,6 @@ export const UNARMED: WeaponProfile = { damageMin: 1, damageMax: 2, swingMs: 200
 
 export const PLAYER_SWING_MS = UNARMED.swingMs;
 
-/**
- * Swing damage: the weapon's own range plus damage stats scaled by swing speed,
- * so a slow weapon hits proportionally harder for the same damage per second.
- */
 export function playerMeleeDamageRange(level: number, statDamage: number, weapon?: WeaponProfile | null): [number, number] {
   const w = weapon ?? UNARMED;
   const bonus = Math.max(0, statDamage || 0) * (w.swingMs / UNARMED.swingMs);
@@ -166,10 +154,6 @@ export function playerMeleeDamageRange(level: number, statDamage: number, weapon
   ];
 }
 
-/**
- * Weapon stats -> swing profile. Items that carry no damage range fall back to
- * their flat damage stat so older weapons keep working.
- */
 export function weaponProfile(item: {
   damage_min?: number | null;
   damage_max?: number | null;
@@ -189,7 +173,3 @@ export function weaponProfile(item: {
   if (flat > 0) return { damageMin: flat, damageMax: Math.max(flat, Math.round(flat * 1.5)), swingMs };
   return null;
 }
-/** Chance a melee hit from behind dazes the player. */
-export const DAZE_CHANCE_PCT = 20;
-export const DAZE_SLOW_PCT = 50;
-export const DAZE_DURATION_S = 4;

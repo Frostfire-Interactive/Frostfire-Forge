@@ -1,12 +1,3 @@
-/**
- * New, blank maps made from the map editor (USER REQUEST 2026-10-19: "Add support for creating new maps within the
- * editor. Allow defining map size, infinite or not and optionally allow creating .world maps. Each map should be blank
- * and upon creation, warp to them.").
- *
- * The editor asks (CREATE_MAP); this checks the request, has the asset server make the map (its modules/mapcreate.ts:
- * a Tiled map file, or a .world directory with every chunk empty), takes it in without a restart
- * (modules/assetloader.ts addCreatedMap) and the receiver warps the admin onto it.
- */
 import { serverFetch } from "../modules/https_servers.ts";
 
 export type MapKind = "map" | "world";

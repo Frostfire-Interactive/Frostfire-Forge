@@ -1,6 +1,3 @@
-// Redis steps shared by the cluster start scripts: cluster-start.ts (`bun cluster`),
-// cluster-local.ts (`bun cluster-local`) and cluster-prod.ts (`bun docker:prod:cluster:*`).
-
 import { RedisClient } from "bun";
 import path from "node:path";
 
@@ -29,10 +26,6 @@ export function readRedisUrl(redisUrl: string | undefined): { url: URL; password
   return { url, password };
 }
 
-/**
- * Starts the Redis container (docker-compose.redis.yml, frostfire-redis) with the URL's password and waits until it
- * is healthy, when the URL is this machine's port 6379. Any other Redis is used as it is. Exits if Redis does not start.
- */
 export async function startLocalRedis(url: URL, password: string): Promise<void> {
   if (!(LOCAL_HOSTS.has(url.hostname) && (url.port || "6379") === "6379")) {
     console.log(`REDIS_URL points at ${url.hostname}:${url.port || "6379"}, not this machine's 6379: no container started, using that Redis.`);

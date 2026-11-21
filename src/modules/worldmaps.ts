@@ -6,25 +6,12 @@ import { removeUnlistedWorlds } from "./mapmirror";
 import { leaveToSave } from "./mapsaves";
 import { cleanZonesLenient, zonesOfKind } from "./zones";
 
-// World maps: a map too large to hold as one Tiled file (the 10240 x 10240 continent) is a directory <id>.world/ in
-// the maps folder, written by the map generator and served by the asset server. The game server never needs its
-// tiles: it keeps the manifest (size, tile size, tilesets, layer list, objects) and two bitsets, one bit per tile,
-// for collision and no-pvp zones. That is about 25 MB for a 10240 x 10240 world.
-//
-// A world is known everywhere else under the name a Tiled map would have ("<id>.json") and gets the same MapData and
-// MapProperties entries, with tile layers that carry no data. Collision and no-pvp are read from the bitsets
-// (systems/player.ts), since run lengths with a linear scan do not work at this size.
-//
-// Worlds are read only: the editor cannot save them yet.
-
 const BITS_MAGIC = 0x42574646; // "FFWB"
 const BITS_HEADER_BYTES = 32;
 const FORMAT_VERSION = 1;
 const ROLE_COLLISION = 1;
 const ROLE_NOPVP = 2;
 
-// The files of a world kept here, in the order they are written: the manifest last, so a copy cut short is never
-// taken for a whole one.
 const WORLD_FILES = ["collision.bits", "nopvp.bits", "manifest.json"] as const;
 
 /** One bit per tile. */
@@ -51,10 +38,6 @@ export class WorldBits {
     return (this.bytes[byte]! >> (k & 7)) & 1;
   }
 
-  /**
-   * Takes over the bits of a newer copy of the same world (after an editor save). Everything that holds this object
-   * (movement's map cache, the creatures' nav grid) reads the new bits from then on.
-   */
   adopt(newer: WorldBits): void {
     if (newer.width !== this.width || newer.height !== this.height) throw new Error("the world changed size");
     this.bytes = newer.bytes;
@@ -179,8 +162,6 @@ function openWorld(dir: string, id: string): WorldMap {
   });
 
   const name = `${id}.json`;
-  // The zones of the world, kept one by one: a bad zone is left out with a warning, not the whole list, and a zone that
-  // partly overlaps a smaller one is cut back to its edge
   const { zones, dropped, fixed } = cleanZonesLenient(manifest.zones, width, height);
   for (const problem of dropped) log.warn(`World ${id}: zone left out: ${problem}`);
   for (const note of fixed) log.info(`World ${id}: ${note}`);
@@ -228,10 +209,6 @@ function openWorld(dir: string, id: string): WorldMap {
   };
 }
 
-/**
- * Reads every <id>.world directory of the maps folder. A world that cannot be read, or whose name a Tiled map
- * already has, is skipped with an error in the log; the Tiled maps are never affected.
- */
 export function loadWorldMaps(mapDir: string, tiledMapNames: Set<string>): WorldMap[] {
   worldsDir = mapDir;
   worlds.clear();
@@ -267,15 +244,8 @@ export async function addWorldMap(id: string): Promise<WorldMap> {
   return world;
 }
 
-// Worlds whose new files a sync made for something else fetched (a save, a new world), and worlds whose change a check
-// left to a save under way (modules/mapsaves.ts): they changed elsewhere, and the next check takes them in, unless the
-// save takes the world in first.
 const changedElsewhere = new Set<string>();
 
-/**
- * After an editor save on the asset server: fetches the world's changed files and puts the new collision and no-pvp
- * bits in place, without a restart. The world keeps its objects and its size (a save only changes tiles).
- */
 export async function refreshWorldMap(mapName: string): Promise<void> {
   const world = getWorldMap(mapName);
   if (!world || !worldsDir) throw new Error(`${mapName} is not a loaded world`);
@@ -302,19 +272,11 @@ function fileHash(file: string): string | null {
   }
 }
 
-// The file hashes the asset server last listed for each world, once the local copy matched them: a world listed with
-// the same hashes again is up to date without hashing its local files (two 13 MB bitsets for a large world).
 const syncedFiles = new Map<string, string>();
 
 // The sync under way: a second one waits for it, so that one world's new files are fetched, and reported, once
 let syncing: Promise<unknown> = Promise.resolve();
 
-/**
- * Brings the local copy of every world the asset server has up to date: its manifest and its two bitsets, each
- * fetched only when the local file differs. Returns the ids of the worlds whose files were fetched. Does nothing
- * when the asset server is not configured, cannot be reached or has no worlds. Syncs run one after another: one asked
- * for while another runs starts when it ends, and finds what it fetched already here.
- */
 export function syncWorldMaps(mapDir: string): Promise<string[]> {
   const run = syncing.then(() => syncWorldMapsNow(mapDir));
   syncing = run.catch(() => {});
@@ -396,11 +358,6 @@ async function syncWorldMapsNow(mapDir: string): Promise<string[]> {
   return synced;
 }
 
-/**
- * A world's warps and graveyards from its manifest objects, in the shape the loader gives them for any map
- * (modules/assetloader.ts extractAndCompressLayers): an object's class or type, or else its layer's name, says what
- * it is. A list the manifest keeps on its own (warps / graveyards) is used when the objects hold none.
- */
 export function warpsAndGraveyardsOf(manifest: any): { warps: any[] | null; graveyards: any[] | null } {
   const warps: any[] = [];
   const graveyards: any[] = [];
@@ -430,13 +387,6 @@ export function warpsAndGraveyardsOf(manifest: any): { warps: any[] | null; grav
 
 let checking = false;
 
-/**
- * Picks up worlds changed on the asset server by anything but this server (the Tiled extension, another game
- * server's editor save): fetches their new files and puts the new collision and no-pvp bits, warps, graveyards and
- * objects in place. The map version changes, so players who load the map again get the new chunks. Returns the worlds
- * that changed. A world with a map editor save under way, here or on another node (modules/mapsaves.ts), is left to
- * the save, which takes it in itself (refreshWorldMap); one whose save ends without saving is taken in by the next check.
- */
 export async function checkWorldChanges(): Promise<WorldMap[]> {
   if (!worldsDir || checking) return [];
   checking = true;
@@ -460,8 +410,6 @@ export async function checkWorldChanges(): Promise<WorldMap[]> {
         const fresh = openWorld(dir, id);
         world.collision.adopt(fresh.collision);
         world.nopvp.adopt(fresh.nopvp);
-        // its new layers, objects, tilesets and zones, in the same map entry the maps list holds (the loader reads its
-        // particle NPCs again from them: assetloader.ts takeInWorldChange)
         world.map.data = fresh.map.data;
         if (world.properties) {
           const { warps, graveyards } = warpsAndGraveyardsOf(manifest);

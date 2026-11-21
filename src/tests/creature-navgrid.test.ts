@@ -3,8 +3,6 @@ import { databaseModule } from "./setup";
 
 mock.module("../controllers/sqldatabase", () => databaseModule({ default: async () => [] }));
 
-// Generated at server start (`bun create-config`) and gitignored, so CI has
-// no copy on disk. Mock the values instead of requiring the file.
 mock.module("../config/settings.json", () => ({
   default: { creatures: {} },
   creatures: {},

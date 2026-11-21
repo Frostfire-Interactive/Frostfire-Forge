@@ -6,10 +6,6 @@ import type { ClusterStore } from "../cluster/store";
 import { MemoryStore } from "../cluster/memorystore";
 import { RedisStore } from "../cluster/redisstore";
 
-// One set of expectations for every ClusterStore, so MemoryStore (what the other tests run on) cannot drift
-// from RedisStore (what the cluster runs on). RedisStore runs against a real Redis only when
-// CLUSTER_TEST_REDIS_URL names one; every key it touches starts with cells:test:<random>: and is deleted afterwards.
-
 const redisUrl = process.env.CLUSTER_TEST_REDIS_URL;
 const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
 const until = async (done: () => boolean) => {
@@ -208,8 +204,6 @@ describe("MemoryStore", () => {
   });
 });
 
-// One probe, before the tests, with a deadline of a second: a Redis that does not answer in time skips the RedisStore cases
-// (they never fail on it, and never wait through reconnects). With CLUSTER_TEST_REDIS_URL unset nothing is tried at all.
 async function redisAnswers(url: string | undefined, ms: number): Promise<boolean> {
   if (!url) return false;
   const probe = new RedisClient(url, { autoReconnect: false, maxRetries: 0, enableOfflineQueue: false, connectionTimeout: ms });

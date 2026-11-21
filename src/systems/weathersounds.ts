@@ -1,21 +1,3 @@
-/**
- * USER REQUEST 2026-10-17 ("Weather sounds are currently hard coded. I want to be able to browse sounds from the audio
- * folder and add them to specific weather types in the weather editor. Sounds for wind, thunder and rain and allow
- * adding multiple (for variant support) and allow choosing the intensity range they can happen at"): the sounds of a
- * weather, kept with its row (the weather table's `sounds` column, JSON) and sent to the client with the weather.
- *
- * Each kind is a list of sounds, each an audio file of the asset server (its name, without the extension) heard at
- * `volume` (0 to 1) of what the game makes of it. Rain and wind sounds are heard while the weather's intensity for
- * that kind is between `from` and `to`:
- * - rain: while it rains, by the weather's precipitation (percent). Two sounds whose ranges overlap are crossed over
- *   the overlap, the quieter rain fading out as the harder one comes in.
- * - wind: while the wind blows (it has a direction), by its speed with its gusts (mph). Crossed the same way.
- * Rain or wind sounds with the same range are variants, one picked at random each time the weather is shown.
- * - thunder: one sound for each lightning strike, picked at random from the list. USER REQUEST 2026-10-21 ("thunder
- *   should be a list of thunder sounds, not a list of thunder sounds per precipitation %"): a thunder has no range.
- *   One kept with a range from before is read without it.
- */
-
 /** The kinds of sound a weather has, in the order the editor shows them. */
 export const SOUND_KINDS = ["rain", "wind", "thunder"] as const;
 export type SoundKind = (typeof SOUND_KINDS)[number];
@@ -46,10 +28,6 @@ export const SOUND_NAME_MAX = 100;
 
 const NONE = (): WeatherSounds => ({ rain: [], wind: [], thunder: [] });
 
-/**
- * The sounds the seeded weathers are given (database_setup), the ones the game played before they could be chosen:
- * the soft rain crossed into the hard one from 35 to 75 percent, three winds crossed by speed, three thunders.
- */
 const RAIN: WeatherSound[] = [
   { name: "soft rain", from: 0, to: 75, volume: 1 },
   { name: "hard rain", from: 35, to: 100, volume: 1 },
@@ -74,10 +52,6 @@ export const DEFAULT_SOUNDS: Record<string, WeatherSounds> = {
   tornado: { rain: RAIN, wind: WIND, thunder: THUNDER },
 };
 
-/**
- * A weather's sounds as the column holds them (JSON text, or already read), each kind a list of sounds; anything
- * that is not a sound is left out. Null and what cannot be read are no sounds at all.
- */
 export function parseSounds(raw: unknown): WeatherSounds {
   let value: any = raw;
   if (typeof value === "string") {
@@ -113,10 +87,6 @@ export function soundsText(sounds: WeatherSounds | null | undefined): string {
   return JSON.stringify(parseSounds(sounds ?? null));
 }
 
-/**
- * What is wrong with the sounds the editor sent, by field: "sounds.rain.0.name", "sounds.wind.2.to". Nothing when
- * they are fine (no sounds at all is fine: the weather is silent).
- */
 export function validateSounds(data: any): Array<{ field: string; message: string }> {
   const errors: Array<{ field: string; message: string }> = [];
   if (data === undefined || data === null) return errors;

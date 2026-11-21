@@ -99,8 +99,6 @@ describe("handoffBlocked", () => {
     tradeSettle.reset({ drop: async () => {} });
     try {
       await tradeSettle.unsettle("hero", "test", "c");
-      // Guard: the default to the node's marks. The mark is held here only; the node the player went to would write
-      // their bags from rows that may predate the swap.
       expect(handoffBlocked(player(), "b", open)).toBe("settling");
       expect(pickHandoffs([player()], ownerAt, "a", open)).toEqual([]);
     } finally {
@@ -164,8 +162,6 @@ describe("pickHandoffs", () => {
   }
 
   test("a null coordinate is skipped, not read as 0", () => {
-    // Guard: the number check on x. Number(null) is 0, and with this owner 0 is across the border, so without the
-    // check the player would be picked.
     const flipped: OwnerAt = (_map, x) => (x < 1000 ? "b" : "a");
     const picks = pickHandoffs([{ id: "9", username: "NullX", location: { map: "main.json", position: { x: null, y: 50 } } }], flipped, "a", open);
     expect(picks).toEqual([]);
@@ -228,8 +224,6 @@ describe("in-flight packets", () => {
   });
 
   test("waitIdle exempts only the packets of its own player", async () => {
-    // Guard: the id check in the exemption. A packet of another player inside this player's packet must not exempt
-    // the other packet of this player that is still running.
     let release!: () => void;
     const held = trackPacket("pa", () => new Promise<void>((resolve) => { release = resolve; }));
     const idle = await trackPacket("pa", () => trackPacket("pb", () => waitIdle("pa", 30, 5)));
@@ -239,8 +233,6 @@ describe("in-flight packets", () => {
   });
 
   test("a timer started by a packet that has ended does not exempt that packet", async () => {
-    // Guard: the live flag on the packet's run. Without it the timer's waitIdle subtracts a packet that has already
-    // ended, and reports idle while another packet of the same player is still running.
     let fromTimer = null as boolean | null;
     let timerDone!: () => void;
     const fired = new Promise<void>((resolve) => { timerDone = resolve; });
@@ -277,8 +269,6 @@ describe("in-flight packets", () => {
   });
 
   test("a nested trackPacket for the same player does not wait for its own outer packet", async () => {
-    // Guard: the nested packet's own exemption. Without it, waitIdle inside the inner packet waits for the outer one
-    // until the deadline, and a drain would log a false warning.
     const inside: number[] = [];
     const idle = await trackPacket("p7", () => trackPacket("p7", async () => {
       inside.push(packetsInFlight("p7"));
@@ -290,8 +280,6 @@ describe("in-flight packets", () => {
   });
 
   test("a nested packet that outlives its outer packet is still counted", async () => {
-    // Guard: nested packets are counted in their own right. Without it, work the outer packet fires off with
-    // trackPacket runs uncounted after the outer packet ends.
     let release!: () => void;
     await trackPacket("p9", async () => {
       void trackPacket("p9", () => new Promise<void>((resolve) => { release = resolve; }));

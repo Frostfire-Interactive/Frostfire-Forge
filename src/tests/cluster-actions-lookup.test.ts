@@ -73,9 +73,6 @@ test("a recent attacker is remembered for ATTACK_MEMORY_MS", () => {
   expect(isRecentAttacker("vic", "att", 1000 + ATTACK_MEMORY_MS + 1)).toBe(false);
 });
 
-// ------------------------------------------------ the receiver's lookups
-// socket/receiver.ts cannot be imported by a test (it imports the server, which starts it), so, as the
-// other receiver tests do, the helpers are read from its source and run with the names they use handed in.
 const receiverSource = readReceiverSource();
 const receiverTranspiler = new Bun.Transpiler({ loader: "ts" });
 function sliceOf(from: string, to: string): string {
@@ -109,7 +106,7 @@ test("the inspect window gets the whole inventory when asked, else only what is 
 
 // The two helpers of the splash and inspect paths, run with stand-ins for the names they use.
 const routing: (given: Record<string, any>) => any = new Function(`"use strict";\n${receiverTranspiler.transformSync(
-  `function make({ hitRemotePlayer, remoteHit, playerCache, mirrorPlayers, runOnPlayer }: any) { ${sliceOf("function routeSplashToMirror(", "/**\n * A hit on a player of this node")}\nreturn { routeSplashToMirror, inspectOnOwner }; }`,
+  `function make({ hitRemotePlayer, remoteHit, playerCache, mirrorPlayers, runOnPlayer }: any) { ${sliceOf("function routeSplashToMirror(", "async function applyRemotePlayerHit(")}\nreturn { routeSplashToMirror, inspectOnOwner }; }`,
 )}\nreturn make;`)();
 
 function splashFakes() {

@@ -2,12 +2,6 @@ import log from "../modules/logger";
 import type { ClusterStore } from "./store";
 import { storeIsUp } from "./health";
 
-// Where each player stands and how hurt they are, in Redis every 5 s (spec §7). The database is written on the
-// save interval and at logout; a node that crashes loses what happened since. The next login reads the snapshot
-// and the row and keeps the newer one (recovery.ts). A snapshot counts only under the owner epoch the database
-// holds or a later one: a node that lost the player may write one more, and it is older than the claim that took
-// the player away. Nothing in a snapshot is an item.
-
 export const SNAPSHOT_EVERY_MS = 5_000;
 /** Writes in flight at once: a node with thousands of players does not flood Redis. */
 export const SNAPSHOT_CHUNK = 200;
@@ -39,8 +33,6 @@ export const SNAPSHOT_DIRECTIONS: ReadonlySet<string> = new Set(["down", "up", "
 /** A map's size in pixels, as the node loaded it (maps.ts MapExtent). */
 export interface SnapshotMap { name: string; widthPx: number; heightPx: number }
 
-// The maps this node has loaded, by bare name: a snapshot is read only on one of them, inside its size (security review
-// H1). Set by startCluster; null before that, and then no snapshot is read at all.
 let knownMaps: Map<string, SnapshotMap> | null = null;
 
 /** The maps a snapshot may be on (startCluster, from the maps it loaded); null forgets them. Answers the ones set before. */
@@ -87,11 +79,6 @@ export function snapshotOf(player: any, at: number): SavedSnapshot | null {
   };
 }
 
-/**
- * The stored snapshot of `username`, or null when there is none or it is not one. The store seals snapshots
- * (storeseal.ts); besides, one is taken only for this player, on a map this node knows (`maps`, useSnapshotMaps
- * unless given), at a point inside that map's size, facing a known direction: anything else counts as none.
- */
 export async function readSnapshot(store: Pick<ClusterStore, "get">, username: string, maps: Map<string, SnapshotMap> | null = knownMaps): Promise<SavedSnapshot | null> {
   const raw = await store.get(snapshotKey(username));
   if (!raw) return null;
@@ -115,15 +102,6 @@ export async function readSnapshot(store: Pick<ClusterStore, "get">, username: s
   };
 }
 
-/**
- * The snapshot when it is newer than the account's last fenced save; else null (the row is used). `stamp` is
- * player.saveStamp, read before this login claims the epoch.
- *
- * Owner epochs decide first (security review L1): a snapshot from an older epoch than the row's is older than the
- * claim that took the player away, and one from a later epoch is newer than any save of the row's epoch. Only within
- * one epoch are the times compared: both were then taken by the one node that owned the player, on its own clock, so
- * no two nodes' clocks are ever compared.
- */
 export function chooseNewer(stamp: { ownerEpoch: number; savedAt: number } | null, snap: SavedSnapshot | null): SavedSnapshot | null {
   if (!stamp || !snap) return null;
   if (snap.epoch < stamp.ownerEpoch) return null;

@@ -1,9 +1,5 @@
 import type { CallRedirect } from "./linkcalls";
 
-// Where a player or creature went, for a few seconds after a handoff (cells phase 6). A call or a delivery that a
-// peer sent before it learned of the handoff reaches the old owner; the old owner passes it on, once, to the new one.
-// After FORWARD_TTL_MS every peer has the new owner from GHOST_HANDOVER and the directory, so nothing is passed on.
-
 export const FORWARD_TTL_MS = 5_000;
 /** Entries kept at most; past it the oldest go first. A handoff storm cannot grow the table without bound. */
 export const FORWARD_MAX_ENTRIES = 10_000;
@@ -78,11 +74,6 @@ export class ForwardTable {
   }
 }
 
-/**
- * The redirect for linkCalls.setRedirect. A call that names a player or creature this node handed off a moment
- * ago runs on the node that has it now. Every other call runs here. The trade calls are not redirected: the trade
- * link keeps its own partners, and a trading player is not handed off.
- */
 export function redirectCall(table: ForwardTable): CallRedirect {
   // A field that is missing or empty is not a key: `player:undefined` and `user:` must match nothing.
   const player = (id: unknown) => (typeof id === "string" || typeof id === "number" ? table.to(`player:${id}`) : null);

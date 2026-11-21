@@ -3,11 +3,6 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { receiverSource } from "./receiver-source";
 
-// Cluster mode: what a node's own send loops (the map's players here, a player's viewers here) tell its players about a
-// player must reach the viewers of that player's mirrors on the neighbouring nodes as well (relayToMirrorViewers,
-// socket/aoi.ts). A mirror's state carries no packet to the viewers who already see it, so a death, a revive or a
-// health bar shown only here would never change for them. receiver.ts cannot be imported: these read its source.
-
 const receiver = receiverSource();
 const server = readFileSync(join(import.meta.dir, "..", "socket", "server.ts"), "utf8");
 const transpiler = new Bun.Transpiler({ loader: "ts" });

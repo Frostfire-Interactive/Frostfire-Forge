@@ -1,19 +1,3 @@
-/**
- * Character classes. USER REQUEST 2026-10-14 ("a character selection screen after realm selection if a character has
- * not been created. One character per account (same username) and create a class editor that can define certain base
- * stats and learn certain spells at certain levels").
- *
- * A class is a row of `classes`: a name, a description, the stats a character of it starts with (base stats only:
- * levelling works as it does for everyone), the spells it learns, each at a level, and the items it starts with
- * (USER REQUEST 2026-10-21: "allow adding starter items"; the gateway puts them in the inventory when the character
- * is made). An account's character is its
- * class: `accounts.class_id`, NULL while no character has been made. The character is made on the gateway's character
- * page (it writes the rows while the player is out of the game; the caches read them again at login), and this
- * server refuses a login without one while there are classes to choose from (socket/receiver.ts: CHARACTER_REQUIRED).
- *
- * A character learns its class's spells as it reaches their levels: on PLAYER_LEVEL_UP, and at every login for the
- * levels it already has (a spell added to a class later reaches the characters past its level).
- */
 import query from "../controllers/sqldatabase";
 import log from "../modules/logger";
 import { getSpriteUrl } from "../modules/spriteSheetManager";
@@ -119,12 +103,6 @@ async function ensureColumn(table: string, column: string, type: string): Promis
   }
 }
 
-/**
- * Start-time step, before the first login and before the table caches are read: the classes table,
- * classes.items (the starter items) and accounts.class_id, if missing (a live database whose setup ran before they
- * existed). Safe on every start, and it never throws: if it cannot be done, one warning is logged and characters
- * stay off (no class to choose, no character asked for).
- */
 export async function ensureClassSchema(): Promise<boolean> {
   ready = false;
   try {
@@ -180,18 +158,10 @@ const classes = {
     await query("DELETE FROM classes WHERE id = ?", [id]);
     await classRows.remove((row) => row.id === id);
   },
-  /**
-   * Whether this account must make its character before it may play: it has none (class_id NULL) and there is a
-   * class to choose. With no class defined, everyone plays as before.
-   */
   async characterRequired(characterClass: unknown): Promise<boolean> {
     if (!ready || characterClass !== null && characterClass !== undefined) return false;
     return (await classes.list()).length > 0;
   },
-  /**
-   * Teaches a character the spells of its class up to its level that it does not know yet. Returns the spells
-   * learned. Spells a class names that no longer exist are passed over.
-   */
   async learnUpTo(username: string, classId: unknown, level: number): Promise<string[]> {
     const c = await classes.get(classId);
     if (!c || !username) return [];

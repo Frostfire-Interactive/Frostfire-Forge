@@ -1,18 +1,3 @@
-// The connection ticket the Gateway signs (GET /api/gateway/connection-token)
-// and a client hands the game server in AUTH_CONNECT. The signed string covers
-// the origin the Gateway saw and the account the ticket is for, so neither can
-// be swapped by the client, and a ticket opens one connection only.
-//
-// A ticket may also name the cluster node it is for (nodeId). That field is
-// optional: it is empty for tickets from the Gateway until phase 3, and the
-// signed string is then unchanged (no trailing ":"). A ticket that names a
-// node is refused by every other node; in cluster mode a ticket must name one.
-// A node signs tickets too: for a login it hands to the node that owns the
-// player's spawn block (SWITCH, see nodeTicket).
-//
-// The Gateway's src/webserver/server.ts and the benchmark's generator
-// (src/utility/benchmark-transport.ts) build the same string: change all three together.
-
 import crypto from "crypto";
 
 /** The account a ticket is for: the SHA-256 of its account token, so the ticket never carries the token itself. */
@@ -32,8 +17,6 @@ export function signTicket(secret: string, token: string, timestamp: string, exp
 
 /** How long a ticket a node signs for a SWITCH lasts: the client uses it at once. */
 export const NODE_TICKET_TTL_MS = 30_000;
-// The token of a ticket a node signs starts with this; the Gateway's are hex. The token is signed, so a client cannot
-// add or remove it: a node knows a login that another node has already handed over.
 const SWITCH_TOKEN_PREFIX = "switch-";
 
 /** Whether a ticket's token (one that passed checkTicket) is from a node's SWITCH rather than from the Gateway. */
@@ -82,14 +65,6 @@ function sweep(now: number): void {
   for (const [token, expires] of used) if (expires < now) used.delete(token);
 }
 
-/**
- * Checks a ticket: its signature (compared in constant time), that it has not
- * expired, that its origin is allowed (when a list is given), that it is not
- * for another node (when it names one and selfNodeId is given), that it names
- * a node at all (when requireNode: cluster mode), and that it was not used
- * before. On success it is spent, and the account it is for is
- * returned ("" for a ticket for no account, which cannot log anyone in).
- */
 export function checkTicket(fields: TicketFields, secret: string | undefined, allowedOrigins: readonly string[], now = Date.now(), selfNodeId = "", requireNode = false): TicketCheck {
   const text = (value: unknown) => (typeof value === "string" || typeof value === "number" ? String(value) : null);
   const token = text(fields.token);

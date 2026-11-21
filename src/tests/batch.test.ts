@@ -1,9 +1,6 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 import { databaseModule } from "./setup";
 
-// A batch gathers the statements of several systems and sends them as one transaction. The database
-// layer here records what it was sent; whether a transaction is kept whole is sqltransaction.test.ts's.
-
 type Statement = { sql: string; values?: any[]; mustChange?: boolean };
 
 let sent: Statement[][];

@@ -3,11 +3,6 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { receiverSource } from "./receiver-source";
 
-// Cluster mode: a vanished (or stealthed) player is shown to their party. A member on another node sees them as a
-// mirror, which checks who is shown it only when it enters a view or its hidden flag flips (cluster/kinds/players.ts).
-// So a party change of the viewer (a join, a leave, a kick, a disband) must show or hide the hidden mirrors already in
-// its view. receiver.ts cannot be imported: these read its source.
-
 const receiver = receiverSource();
 const social = readFileSync(join(import.meta.dir, "..", "socket", "handlers", "social.ts"), "utf8");
 const transpiler = new Bun.Transpiler({ loader: "ts" });

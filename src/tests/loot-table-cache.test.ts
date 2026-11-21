@@ -1,11 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { databaseModule, standInFor } from "./setup";
 
-// ------------------------------------------------------------ fake database
-// The statements the loot tables send, run against in-memory tables. A
-// statement it does not know is an error, so a read that is not the load of
-// the tables fails the test that made it.
-
 type Row = Record<string, any>;
 let tablesTable: Row[];
 let itemsTable: Row[];

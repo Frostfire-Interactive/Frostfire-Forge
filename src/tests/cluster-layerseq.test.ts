@@ -4,9 +4,6 @@ import { MemoryStore } from "../cluster/memorystore";
 import log from "../modules/logger";
 import { LayerManager } from "../services/layermanager";
 
-// Layer numbers above 1 come from one counter per map in the store, so two
-// nodes never give one number to two different crowds.
-
 const settle = async () => { for (let i = 0; i < 5; i++) await new Promise<void>((resolve) => setImmediate(resolve)); };
 
 // One player per layer: a block holds one player of a layer, so each new player opens a layer.

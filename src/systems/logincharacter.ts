@@ -2,10 +2,6 @@ import query from "../controllers/sqldatabase";
 import log from "../modules/logger";
 import { makeCharacterStore, type CharacterRow } from "./characterstore";
 
-// Which character a login plays. An account logs in with a token; the character is the account's
-// accounts.active_character_id, chosen on the Gateway's character page. The client never names one. A player arriving
-// on a node by handoff plays the character the handoff carries (pinned), never the active one read again.
-
 export type LoginAccount = { id: number; username: string; activeCharacterId: number | null };
 
 export type LoginCharacterRefusal = "no_account" | "no_active_character" | "character_missing" | "character_deleted" | "character_of_another_account";
@@ -30,10 +26,6 @@ type Query = (sql: string, params?: any[]) => Promise<any>;
 
 export function makeLoginCharacter(q: Query) {
   const store = makeCharacterStore(q);
-  /**
-   * The character the account named `accountUsername` logs in as (the name setSessionId answers with): its active
-   * character, or `pinnedCharacterId` when given (a handoff's). Either is refused when deleted or another account's.
-   */
   return async (accountUsername: string, pinnedCharacterId?: number): Promise<LoginCharacterDecision> => {
     const rows = (await q("SELECT id, username, active_character_id FROM accounts WHERE username = ? LIMIT 1", [accountUsername])) as any[];
     const row = rows?.[0];
@@ -69,10 +61,6 @@ export function sessionsOfAccount<T extends { accountId?: unknown }>(players: It
 export type KickDeps<T> = {
   /** Writes the player's state; awaited before the kick. A save that fails is logged and the kick goes on. */
   save: (p: T) => Promise<void>;
-  /**
-   * Runs what a disconnect runs for the player leaving (the PLAYER_DISCONNECT listeners), once, after the save and
-   * before the new login's player is added. One that throws is logged and the kick goes on.
-   */
   leave: (p: T) => void;
   /** Tells the old session why it ends. */
   notify: (p: T, message: string) => void;

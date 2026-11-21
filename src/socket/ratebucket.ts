@@ -1,8 +1,3 @@
-/**
- * A token bucket: up to `burst` at once, refilled at `perSec` a second. `take`
- * is false (and takes nothing) when the bucket is empty. A rate that is not a
- * positive number means no limit.
- */
 export class RateBucket {
   private tokens: number;
   private last: number;

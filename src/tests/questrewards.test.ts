@@ -73,9 +73,6 @@ await standInFor("../services/playermanager", () => ({
   },
 }));
 
-// Observe grants through the real inventory/currency/player modules by spying
-// on the query layer is awkward, so spy one level up via module mocks that
-// still exercise rewards.ts validation and precheck logic.
 await standInFor("../systems/inventory", () => ({
   default: {
     find: async () => [],
@@ -111,8 +108,6 @@ await standInFor("../systems/player", () => ({
 
 const rewards = await import("../systems/quests/rewards");
 
-// The bags a player has are read through a cache that outlives a test file: a file run before this
-// one may have left "hero" a bag there, and with it room this file's full bags do not have.
 await (await import("../services/datacache")).clearCaches();
 
 describe("quest rewards", () => {
@@ -157,8 +152,6 @@ describe("quest rewards", () => {
       ...Array.from({ length: 24 }, (_, i) => ({ item: `Junk${i}`, quantity: 1 })),
       { item: "Bread", quantity: 1 },
     ];
-    // Sword is new (1 slot: 24 junk + bread = 25 owned, +1 = 26 > 25) so this
-    // particular grant does not fit; shrink to a fitting case instead.
     const fitting: Quest = { ...quest, rewards: [{ id: 9, quest_id: 1, item_name: "Bread", quantity: 1, is_choice: false, sort_order: 0 }] };
     const result = await rewards.grant("hero", fitting, undefined);
     expect(result.ok).toBe(true);

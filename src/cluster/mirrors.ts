@@ -2,12 +2,6 @@ import layerManager from "../services/layermanager";
 import playerCache from "../services/playermanager";
 import type { GhostKindName } from "./ghosts";
 
-// Read-only copies of entities a neighbouring node owns (spec §3). They live
-// apart from the node's own entities (players never enter playerCache), so the
-// save loop, regen, online counts and every other "players on this node" loop
-// cannot reach them. Code that wants a player whether local or mirrored asks
-// entityById.
-
 export interface MirrorEntry {
   kind: GhostKindName;
   id: string | number;
@@ -123,10 +117,6 @@ export function mirrorsNearPoint(map: string, x: number, y: number, radius: numb
   return out;
 }
 
-/**
- * The mirrored players a local query on a layer would also find: on `map`, within `radius` of (x, y), on
- * `layerId`. Undefined means every layer, as it does for getPlayersNearPoint.
- */
 export function mirrorsOnLayerNear(map: string, x: number, y: number, radius: number, layerId: string | null | undefined): any[] {
   if (mirrorPlayers.size === 0) return [];
   const near = mirrorsNearPoint(map, x, y, radius);

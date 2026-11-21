@@ -1,27 +1,10 @@
 import { expect, test, mock, beforeEach } from "bun:test";
 import { databaseModule } from "./setup";
 
-// Duplicate-login (session kick) regression tests.
-//
-// Bug: when the same user logged in twice, the kick path notified bystanders
-// with packetManager.disconnect (type DISCONNECT_MALIFORMED - "you sent
-// malformed data, you are disconnected") instead of a DESPAWN_PLAYER. The
-// bystander's client treated it as its own disconnection and blanked to the
-// loading screen, swallowing the replacement session's spawn that arrived
-// right after: one side could see the other, but not vice versa. The kicked
-// session was also never removed from the world indices (the later
-// onDisconnect early-returns on the cache miss), leaking a ghost id into
-// viewers' AOI sets, the reverse index, its layer, the map index and the
-// spatial grid.
-//
-// Uses the real AOI / index modules (only the database is stubbed). Each test
-// gets its own map name because LayerManager has no reset.
 mock.module("../controllers/sqldatabase", () => databaseModule({
   default: async (_sql: string, _params?: any[]) => [],
 }));
 
-// Generated at server start (`bun create-config`) and gitignored, so CI has
-// no copy on disk. Mock the values instead of requiring the file.
 mock.module("../config/aoi.json", () => ({
   default: {
     DEFAULT_RADIUS: 1000,
@@ -88,9 +71,6 @@ async function loginPlayer(
 beforeEach(() => resetWorld());
 
 test("bystander notify must be DESPAWN_PLAYER, never DISCONNECT_MALIFORMED", () => {
-  // Locks in the packet semantics the kick path relies on: `disconnect` is a
-  // self-directed "you are disconnected" signal and must never be sent about
-  // a third party; entity removal is DESPAWN_PLAYER.
   const [disc] = packetManager.disconnect("old-session");
   expect(decode(disc).type).toBe("DISCONNECT_MALIFORMED");
 
@@ -112,8 +92,6 @@ test("kicked session leaves no ghost in any world index", async () => {
   // Precondition: mutual visibility established.
   expect(playerCache.get("B").aoi.playersInAOI.has("A")).toBe(true);
 
-  // Simulate the kick of A's session (what receiver.ts does on duplicate
-  // login, minus the socket writes): index cleanup + cache removal.
   const kicked = playerCache.get("A");
   cleanupKickedSession(kicked, despawn);
   playerCache.remove("A");

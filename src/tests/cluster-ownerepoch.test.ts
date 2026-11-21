@@ -3,8 +3,6 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { characterDatabaseModule, testAccountId, withLeaveSaves } from "./setup";
 
-// A small accounts and stats table: the stand-in honours the WHERE of each statement this task writes, so a
-// statement that loses its guard writes where it must not, and the test sees it.
 type Row = { username: string; owner_epoch: number; saved_at: number; map: string; position: string; direction: string; health: number; session_server: string | null };
 const rows = new Map<string, Row>();
 const statements: string[] = [];
@@ -53,8 +51,6 @@ function run(sql: string, values: any[] = []): any {
   return [];
 }
 
-// The statements sent on their own, not in a transaction: a fenced save sends its stats write in the guarded
-// transaction, an unfenced one (setStats, setLocation) on its own.
 const alone: string[] = [];
 let inTransaction = false;
 mock.module("../controllers/sqldatabase", () => {
@@ -359,11 +355,6 @@ test("presence keeps the claimed epoch when onClaimed throws", async () => {
 });
 
 // ------------------------------------------------------------------ the save paths, run from their source
-
-// socket/server.ts starts the server when imported, and socket/handlers/session.ts imports the receiver, which imports
-// the server: the save paths are run from their source with the names they use handed in. The real player.saveFenced,
-// setStats and setLocation run against the stand-in tables above, so a save path that loses its fence writes a row
-// it must not, and the test sees it.
 
 const transpiler = new Bun.Transpiler({ loader: "ts" });
 const serverSource = readFileSync(join(import.meta.dir, "..", "socket", "server.ts"), "utf8");

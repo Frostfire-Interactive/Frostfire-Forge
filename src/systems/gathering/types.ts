@@ -1,11 +1,3 @@
-/**
- * Gathering: resource nodes that spawn inside areas placed with the gathering editor (/gathering), and are gathered
- * with a short cast into the player's bags. USER REQUEST 2026-10-17: "Add a gathering system with an editor that
- * allows setting the item to spawn (image) selectable from the asset server. Able to configure spawn rate and preview
- * how dense it will look. Gathering cast should be 0.2s and the item should be added to inventory and despawn from
- * the world. In the case two players are actively trying to get it at the same exact time, just choose randomly who
- * to award it to." Design: docs/superpowers/specs/2026-10-17-gathering-system-design.md.
- */
 import type { NavGrid, Point } from "../creatures/navgrid";
 
 export type { Rng } from "../creatures/constants";

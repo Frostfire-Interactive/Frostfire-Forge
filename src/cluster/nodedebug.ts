@@ -1,11 +1,6 @@
 import type { BlockExtent, BlockOwner } from "./blocks";
 import { BLOCK_SIZE_PX, blockKey } from "./blocks";
 
-// The answer to a player's CLUSTER_DEBUG request (any logged-in player gets the table, not only an admin): which node
-// owns which block of the map the player is on, for the client's "Cluster Nodes" overlay (F2 menu). Read-only: it
-// reads the block table this node already holds in memory (no database or Redis read) and changes nothing.
-// Nothing in it names a host, port, secret or player.
-
 /** Most blocks one answer lists: a 64 x 64 grid. The 40 x 40 overworld (1600 blocks) fits; a bigger grid is cut by rows. */
 export const MAX_DEBUG_CELLS = 4096;
 
@@ -59,11 +54,6 @@ export interface DebugAsker {
   location?: { map?: string; position?: { x?: number; y?: number } };
 }
 
-/**
- * The answer for one request. Not a cluster: `{ cluster: false }` (to anyone, it tells nothing). No logged-in player
- * asking: `{ allowed: false }`; any logged-in player gets the table. A map with no table cached yet still answers, with
- * every cell unowned.
- */
 export function buildClusterDebug(source: ClusterDebugSource | null, player: DebugAsker | null): ClusterDebugAnswer {
   const self = source?.self() ?? null;
   if (!source || self === null) return { cluster: false };
@@ -128,10 +118,6 @@ function extentFromOwners(owners: Readonly<Record<string, BlockOwner>>): BlockEx
   return { blocksX, blocksY };
 }
 
-/**
- * At most one answer per connection per DEBUG_MIN_GAP_MS. `allow` is true for a request that gets an answer, false for
- * one that is dropped (it answers nothing). Keyed by the connection object, so a closed connection is not held on to.
- */
 export class DebugRateLimit {
   private last = new WeakMap<object, number>();
 

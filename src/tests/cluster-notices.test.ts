@@ -1,10 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { receiverSource } from "./receiver-source";
 
-// Cluster mode: a notice for a map's players, its admins or the staff who handle reports reaches them on every node of
-// the region, not only on the node it was sent from. noticeRegion shows it here and tells the other nodes (peer news
-// "notice"), which show it to their own players it names. receiver.ts cannot be imported: these read its source.
-
 const receiver = receiverSource();
 const transpiler = new Bun.Transpiler({ loader: "ts" });
 

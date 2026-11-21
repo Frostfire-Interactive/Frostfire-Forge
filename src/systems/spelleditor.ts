@@ -1,9 +1,3 @@
-/**
- * Spell editor: validation and CRUD for the admin spell editor window (/se).
- * A spell is referred to by name (learned_spells, hotbars) and by id (creature
- * abilities), so its name is fixed once it exists, and it cannot be deleted
- * while a player knows it or a creature casts it.
- */
 import query from "../controllers/sqldatabase";
 import assetCache from "../services/assetCache";
 import playerCache from "../services/playermanager";
@@ -41,10 +35,6 @@ const ICON_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9 _.-]*$/;
 
 const lower = (s: unknown): string => String(s ?? "").toLowerCase();
 
-/**
- * A backslash or a control character (a line break is fine). A stored text
- * must never hold one: the database layer escapes quotes only.
- */
 function hasUnsafeText(text: string): boolean {
   for (let i = 0; i < text.length; i++) {
     const code = text.charCodeAt(i);
@@ -58,11 +48,6 @@ const isUnsafeParticle = (name: string): boolean => hasUnsafeText(name) || /[",\
 
 // -------------------------------------------------------------- permission
 
-/**
- * Admins, and anyone holding the tool's permission: the rule of the item, quest
- * and creature editors. The permissions are read from the database on every
- * packet, not trusted from the copy made at login.
- */
 export async function canUseEditor(admin: any): Promise<boolean> {
   if (!admin?.username || admin.isGuest) return false;
   if (admin.isAdmin) return true;
@@ -70,10 +55,6 @@ export async function canUseEditor(admin: any): Promise<boolean> {
   return held.some((p) => EDITOR_PERMISSIONS.includes(p));
 }
 
-/**
- * Whether a player could have the editor open, from the permissions copied at
- * login. Only used to pick who is told to reload after a change.
- */
 export function mayHaveEditorOpen(player: any): boolean {
   if (player?.isAdmin) return true;
   const held: string[] = Array.isArray(player?.permissions) ? player.permissions : [];
@@ -146,11 +127,6 @@ const periodic = (what: string): EffectFieldRule[] => [
   targetParticles,
 ];
 
-/**
- * Every effect type the engine has a handler for, with the fields that handler
- * reads (spelleffects.ts, dots.ts, receiver.ts, creatures/index.ts and
- * creatures/engine.ts). Anything else in a stored effect is ignored by the game.
- */
 export const EFFECT_TYPES: EffectTypeRule[] = [
   { type: "damage_over_time", label: "Damage over time", summary: "Hurts the target every tick.", fields: periodic("Damage") },
   { type: "heal_over_time", label: "Heal over time", summary: "Heals the target every tick.", fields: periodic("Healing") },
@@ -452,10 +428,6 @@ const sameName = (a: unknown, b: unknown) =>
 /** A row of the spells table, as far as the editor's checks need it. */
 type StoredSpell = { id: number; name: string };
 
-// The id and name of every spell the database holds, in the order of their
-// ids. Which spells are stored, whether a name is taken and what a spell's
-// ids are is answered from these; a save or a delete here is written to the
-// database and then to them. Nothing else adds or removes a row of spells.
 const storedSpells = tableCache<StoredSpell>("stored_spells", async () => {
   const rows = ((await query("SELECT id, name FROM spells ORDER BY id")) || []) as any[];
   return rows.map((row) => ({ id: Number(row.id), name: String(row.name) }));
@@ -466,18 +438,10 @@ async function storedRows(name: string): Promise<StoredSpell[]> {
   return (await storedSpells.all()).filter((row) => sameName(row.name, name)).sort((a, b) => a.id - b.id);
 }
 
-/**
- * Names of the spells the database holds. A cached spell that is not among
- * them was added by a plugin and lives in memory only.
- */
 async function persistedNames(): Promise<Set<string>> {
   return new Set((await storedSpells.all()).map((row) => lower(row.name)));
 }
 
-// Who knows a spell, by its name in lower case: every player's row of it,
-// online or not, which no other cache holds. Read the first time an admin
-// asks about the spell, and forgotten whenever anyone learns or unlearns it
-// (spells.ts) or it is deleted here.
 const knownBy = rowCache<string[]>("spell_usage", async (key) => {
   // The table is asked by the name as the spell has it: not every engine finds it in another case.
   const spell = (await cachedSpells()).find((s) => lower(s.name) === key);
@@ -566,14 +530,6 @@ function sendSpellBook(target: any): void {
   send(target.wt, packetManager.spells(spellBook));
 }
 
-/**
- * The cached spell list changed. Casting reads the cache, so the new values
- * already apply; this brings the rest up to date: the login workers, which
- * build a spell book from their own copy of the list, and every online player
- * who knows the spell (spell book, hotbar and tooltips are drawn from what
- * the client was last sent). In a cluster the region's other nodes are told
- * which spell it was, for their own players.
- */
 async function spellChanged(name: string): Promise<void> {
   try {
     await refreshAuthSpells();
@@ -584,11 +540,6 @@ async function spellChanged(name: string): Promise<void> {
   void tellPeers("spell-changed", { name });
 }
 
-/**
- * Cluster mode: a spell saved or deleted in the editor on another node of the region. The list is shared, and this
- * node's login workers are handed it when its write is heard (socket/authentication_pool.ts); this node's players who
- * know the spell are sent their spell book again.
- */
 onPeerNews("spell-changed", (news) => {
   const name = news?.name;
   if (typeof name !== "string" || !name) return;
@@ -617,10 +568,6 @@ export interface SpellEditorData {
   effectTypes: EffectTypeRule[];
   maxEffects: number;
   limits: { name: number; description: number; particles: number };
-  /**
-   * Sprites the asset server has, for the icon picker: the hotbar and the
-   * spell book draw a spell's icon from /sprite?name=<icon>.
-   */
   icons: SpriteSheetOption[];
   /** Names of the particles that exist. */
   particles: string[];
@@ -635,13 +582,6 @@ const LATER_COLUMNS = [
   { name: "teleport_behind", type: "INT NULL DEFAULT 0" },
 ];
 
-/**
- * Makes the spells table hold what the editor offers, so a save never fails on
- * a missing column and never keeps a different value than was entered:
- * cast_time was first created as a whole number of seconds, which stored a
- * 1.5 second cast as 2. If the column cannot be changed the editor takes whole
- * seconds for it instead, and the reason is logged for whoever runs the server.
- */
 async function prepareSchema(): Promise<void> {
   for (const col of LATER_COLUMNS) {
     try {
@@ -707,10 +647,6 @@ export interface SpellSearchResult {
   open: EditorSpell | null;
 }
 
-/**
- * Name search over the cached spells. An empty query lists them all. `openName`
- * is the spell being edited, sent back as it is now so the form can follow a save.
- */
 export async function searchSpells(rawQuery: unknown, openName?: unknown): Promise<SpellSearchResult> {
   const wanted = lower(rawQuery).trim();
   const names = await persistedNames();
@@ -760,11 +696,6 @@ function invalid(errors: FieldError[]): ActionResult {
   return { kind: "result", ok: false, errors: errors.map((e) => e.message), fields };
 }
 
-/**
- * Writes run one at a time. Each is a check followed by a write, and the
- * database layer has no transactions: two saves of one name, or the same
- * request arriving twice, must not both pass the check before either writes.
- */
 let writes: Promise<unknown> = Promise.resolve();
 
 function oneAtATime<T>(work: () => Promise<T>): Promise<T> {
@@ -779,13 +710,6 @@ function asWritten(spell: SpellRow): Record<string, string | number | null> {
   return Object.fromEntries(COLUMNS.map((column, i) => [column.replaceAll("`", ""), written[i]!]));
 }
 
-/**
- * After a write that threw: it may still have been applied (a timeout, say),
- * so what is held is no longer known to be what the database holds. Which
- * spells are stored is forgotten, to be read by whoever next asks, and the
- * spells table is read again into the list every system reads from; the
- * plugins' spells, which are no rows of it, stay as they are.
- */
 async function rereadSpells(name: string): Promise<void> {
   try {
     const wasStored = await persistedNames();
@@ -859,9 +783,6 @@ async function saveSpell(admin: any, data: any): Promise<ActionResult> {
       id = answered;
       await storedSpells.put({ id, name: spell.name }, (row) => row.id === answered);
     } else {
-      // The answer does not say which row was added (not every engine's does, for a statement of this shape), or
-      // says none was: a row of the name that the server did not hold, put there by something else. The stored
-      // spells are read again to see.
       try {
         await storedSpells.reload();
       } catch (error) {
@@ -875,8 +796,6 @@ async function saveSpell(admin: any, data: any): Promise<ActionResult> {
     }
   }
 
-  // The row is its id and every column as it was written: the schema check and the editor's rules see to it that
-  // the table keeps what it is given, so this is what a restart would load.
   const saved = fromRow({ id, ...asWritten(spell) });
 
   const fresh = await cachedSpells();
@@ -938,8 +857,6 @@ async function deleteSpell(admin: any, data: any): Promise<ActionResult> {
       "AND NOT EXISTS (SELECT 1 FROM creature_abilities WHERE spell_id IN (?))",
     [name, name, ids]
   );
-  // Whether it deleted is what its answer says. An answer that says nothing, or none, has the stored spells read
-  // again to see.
   if (Number(result?.affectedRows ?? result?.count) > 0) {
     await storedSpells.remove((row) => sameName(row.name, name));
   } else {

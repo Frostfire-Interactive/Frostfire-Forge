@@ -127,11 +127,6 @@ export function getEffectsPayload(player: any) {
   return payload;
 }
 
-// Cluster mode: the payload with an absolute `expiresAt` in place of `remaining`, so a mirror's copy stays the
-// same from one scan to the next (`remaining` counts down every second, and every change is sent to the
-// neighbours). Providers report whole seconds only, so the time is worked out from them once and kept while
-// later readings agree with it to within that second; a refreshed effect moves it.
-// Absolute times are compared across nodes, so cluster nodes need NTP-synced clocks: a mirrored timer is off by the clock skew.
 const effectExpiries = new WeakMap<object, Map<string, number>>();
 
 export function getEffectsState(player: any, now: number = Date.now()): any[] {
@@ -162,9 +157,6 @@ export function mirrorEffectsPayload(effects: any, now: number = Date.now()): an
   });
 }
 
-// Broadcast a player's current effects to everyone who can see them (the AOI
-// reverse index) so effects (e.g. debuffs) can be rendered above the affected
-// player's head. Players further away are shown them when they come into view.
 export function broadcastEffectsUpdate(player: any) {
   if (!player?.id) return;
   const packets = packetManager.effects({ id: player.id, effects: getEffectsPayload(player) });
@@ -185,14 +177,9 @@ export function broadcastEffectsUpdate(player: any) {
   if (player.wt?.readyState === 1) {
     try { packets.forEach((pk: any) => player.wt.send(pk)); } catch (e) { log.error(`Failed to send effects update: ${e}`); }
   }
-  // Cluster mode: the viewers of this player's mirrors on neighbouring nodes. Not while vanished: the mirror
-  // learns of the vanish with the next state scan, and until then its node would pass this to every viewer.
-  // Admins and party there miss the changes made while vanished; the update sent when it ends catches them up.
   if (!player.remote && !player.isVanished) ghosts.relay("player", String(player.id), packets, false);
 }
 
-// Subtract incoming damage from active barriers (soonest-expiring first).
-// Returns the amount absorbed. Depleted barriers are removed.
 export function consumeBarrier(player: any, damage: number): number {
   if (!player?.stats || damage <= 0) return 0;
   const list = getBarriers(player);
@@ -281,8 +268,6 @@ registerSpellEffect("visual", async ({ target, spell, effect, broadcastEffects }
   await applyVisualEffect(target, spell?.name || "visual", durationSec, effect, broadcastEffects, getSpriteUrl(spell.icon));
 });
 
-// Stun effect: target cannot move or cast for the effect's duration.
-// Multiple stuns from the same spell refresh the duration; different spells stack.
 const playerStuns = new Map<string, Array<{ id: string; spell: string; duration: number; expiresAt: number; token: number; particles: Particle[] | null; icon: string | null }>>();
 let stunToken = 0;
 
@@ -292,18 +277,10 @@ function getStuns(player: any) {
   return playerStuns.get(key)!;
 }
 
-// Pure predicate: is this player currently under a hard stun?
-// `stunnedUntil` is an epoch timestamp (Date.now()-based), so it must be
-// compared against Date.now(), never performance.now().
 export function isStunned(player: any, now: number = Date.now()): boolean {
   return !!player?.stunnedUntil && player.stunnedUntil > now;
 }
 
-// Injected by the socket layer: force a moving player to stop server-side.
-// Stuns block *new* movement packets, but a player already registered in the
-// game loop keeps moving until an ABORT arrives from the client - which never
-// happens if the client doesn't know it's stunned. Calling this on stun makes
-// the server authoritative about halting in-progress movement.
 type StunMovementHandler = (target: any) => void | Promise<void>;
 let stunMovementHandler: StunMovementHandler | null = null;
 export function setStunMovementHandler(fn: StunMovementHandler) {
@@ -414,8 +391,6 @@ export function setStunsForPlayer(playerId: string, stuns: Array<any>) {
   }
 }
 
-// Vanish effect: target becomes invisible to all players except admins
-// and party members. No name color change (unlike admin stealth).
 const playerVanishes = new Map<string, Array<{ id: string; spell: string; duration: number; expiresAt: number; token: number; particles: Particle[] | null; icon: string | null }>>();
 let vanishToken = 0;
 
@@ -496,8 +471,6 @@ export function getVanishedEffectId(player: any): string | null {
   return vanishes.length > 0 ? vanishes[0].id : null;
 }
 
-// Callback invoked when vanish ends (timer or cancel). Receiver registers
-// a respawn handler.
 let onVanishRemoved: ((player: any) => void | Promise<void>) | null = null;
 export function setVanishRemovedHandler(fn: (player: any) => void | Promise<void>) {
   onVanishRemoved = fn;
@@ -558,9 +531,6 @@ export function cancelEffect(player: any, effectId: string): boolean {
   return removed;
 }
 
-// Slow effect: target's movement speed is reduced for the effect's duration.
-// value = slow percentage (e.g. 50 = 50% slower, so 50% of normal speed).
-// Multiple slows: the strongest (highest percentage) wins.
 const playerSlows = new Map<string, Array<{ id: string; spell: string; duration: number; slowPercent: number; expiresAt: number; token: number; particles: Particle[] | null; icon: string | null }>>();
 let slowToken = 0;
 
@@ -672,8 +642,6 @@ registerEffectsPayloadProvider((player: any) => {
 
 let barrierToken = 0;
 
-// Applies a barrier from a source spell. Different spells stack; the same spell
-// refreshes its own barrier (amount + timer) instead of stacking a duplicate.
 async function applyBarrier(
   player: any,
   spell: SpellData,
@@ -700,8 +668,6 @@ async function applyBarrier(
 
   const existing = list.find((b) => b.id === spellName);
   if (existing) {
-    // Same source spell still active: top the barrier back up to full and refresh its timer
-    // (do not stack a duplicate of the same spell).
     existing.amount = cappedAmount;
     existing.duration = durationSec;
     existing.expiresAt = expiresAt;

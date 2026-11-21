@@ -4,19 +4,6 @@ import log from "../modules/logger";
 import { FrameDecoder, encodeFrame } from "../socket/framing";
 import type { LinkChannel, LinkHandlers, LinkPeerAddress, LinkTransport } from "./linktransport";
 
-// Node links over WebTransport (spec §1): a listener of its own on NODE_LINK_PORT,
-// apart from the client listener and its rate limits, with the engine's
-// certificate. A dialler pins the peer's certificate hash from its NodeInfo;
-// the library has no "skip verification". One bidirectional stream per session
-// carries length-prefixed frames; datagrams carry GHOST_MOVE.
-//
-// Two lanes in front of that one stream (LaneWriter, stall fix). Control frames (calls, their answers, pings: the small
-// messages a node waits on) go ahead of bulk frames (ghosts, AOI), so a call queued behind a backlog of bulk frames on
-// a busy link is not stuck behind them. It is one stream and one writer, so a lane is only a queue: each lane keeps its
-// own order, no frame is dropped or merged, and the writer is given at most LANE_WINDOW_BYTES at a time, which is all
-// a control frame can wait behind. A second stream was not used: the library does not say whether two streams of one
-// session share a send queue, and a second stream would need its own hello, accept and read loop on both ends.
-
 export const LINK_FRAME_BYTES = 4 * 1024 * 1024;
 /** The first frame of a link is a hello, so a stranger gets this much buffer until it has sent one. */
 export const LINK_FIRST_FRAME_BYTES = 8 * 1024;
@@ -25,10 +12,6 @@ export const LINK_DATAGRAM_BYTES = 1200;
 /** How long a new session may take to open its stream (M1: before the hello, a stranger is held to about 1 s). */
 export const STREAM_WAIT_MS = 1000;
 const DIAL_TIMEOUT_MS = 5000;
-/**
- * The bytes the lane writer hands to the stream at once (at least one frame). The rest waits in the lanes, where a
- * control frame passes it. A frame is never split, so a control frame can wait behind one whole bulk frame.
- */
 export const LANE_WINDOW_BYTES = 256 * 1024;
 /** A peer that stays connected but stops reading is cut off once this many max-size frames are waiting. */
 const BACKLOG_FRAMES = 4;
@@ -51,12 +34,6 @@ export interface WebTransportLinksOptions {
   dialTimeoutMs?: number;
   /** How long a new session may take to open its stream. */
   streamWaitMs?: number;
-  /**
-   * The source address of an incoming session, or null when it cannot be told. webtransport-bun 0.1.6 gives a
-   * session no peer address (its IncomingSession has only path, authority, headers and protocols), so by default
-   * every session is null: the per-source cap and the known-address places of PreHelloGate wait for a library that
-   * says, and the oldest-stranger eviction is what holds meanwhile.
-   */
   sourceOf?: (session: WebTransportServerSession, request: WebTransportSessionRequest | undefined) => string | null;
   /** The addresses of the known nodes (their NodeInfo): a session from one keeps its place before the hello. */
   knownSources?: () => Iterable<string>;
@@ -75,14 +52,6 @@ interface PreHelloEntry {
   evict: () => void;
 }
 
-/**
- * Holds the sessions that have not yet said hello to a limit (M1), so idle strangers cannot fill the listener:
- * - at most `perSource` from one source address: one more is refused;
- * - at most `max` in all. When full, the oldest one from an address that is not a known node's is closed to make
- *   room: a stranger that idles loses its place to the next comer, so it cannot keep a peer's redial out. A known
- *   node's session is never put out for a stranger. A newcomer is refused only when every place is a known node's.
- * A session whose source cannot be told (null) has no per-source cap and is never a known node's.
- */
 export class PreHelloGate {
   // Insertion order is age: the first one not known is the one to put out.
   private readonly pending = new Set<PreHelloEntry>();
@@ -151,12 +120,6 @@ class FrameQueue {
   }
 }
 
-/**
- * The write side of a link's stream: control frames before bulk frames, each lane in the order pushed. At most
- * `windowBytes` are with the stream's writer at once (one frame at least), so a control frame waits behind what the
- * writer already holds and nothing more. `write` takes a frame and settles when the stream has taken it in; a
- * failed write ends the writer and is reported once through `failed`.
- */
 export class LaneWriter {
   private readonly control = new FrameQueue();
   private readonly bulk = new FrameQueue();
@@ -220,18 +183,10 @@ export class LaneWriter {
   }
 }
 
-// A read fails or ends a moment before the session reports why it closed. The session's reason is
-// the useful one, so a failed read waits this long for it before giving its own.
 const REASON_WAIT_MS = 250;
 
 const messageOf = (error: unknown): string => String((error as any)?.message ?? error);
 
-/**
- * Frames off a stream. The first one is held to `firstFrameBytes`, so a peer that has not yet said
- * hello cannot make this node buffer megabytes; once it is complete the limit rises to `maxFrameSize`.
- * The first frame is cut out of the stream by its own header, because the bytes behind it may already
- * be in the same chunk and belong to the larger limit.
- */
 export class LinkFrameReader {
   private readonly decoder: FrameDecoder;
   private readonly header = new Uint8Array(4);
@@ -338,9 +293,6 @@ class WtChannel implements LinkChannel {
       return false;
     }
     const frame = encodeFrame(payload);
-    // The writer takes bytes only as fast as the peer reads. The library's own counters do not show
-    // the wait (desiredSize counts chunks, queuedBytes only what the transport already holds), so
-    // the channel counts the bytes itself.
     if (this.lanes.backlog + frame.length > BACKLOG_FRAMES * this.maxFrameSize) {
       this.close("send backlog");
       return false;
@@ -369,8 +321,6 @@ class WtChannel implements LinkChannel {
     } catch (error) {
       log.debug(`[Links] Close of ${this.remote} failed: ${messageOf(error)}`);
     }
-    // The caller's own `closed` comes on a later tick, as on the loopback link: a handler must not
-    // run in the middle of the code that called close().
     this.finish(reason, true);
   }
 
@@ -482,8 +432,6 @@ export class WebTransportLinks implements LinkTransport {
       key: this.options.keyPem,
       maxSessions: MAX_SESSIONS,
       maxConcurrentStreams: 4,
-      // Returning accepts the session and throwing would reject it, but who may link is decided
-      // in-band (LINK_HELLO), so every session is accepted and the gate and stream wait below guard it.
       session: (session, request) => {
         this.acceptSession(session, request, accept).catch((error) => log.debug(`[Links] Session failed: ${messageOf(error)}`));
       },
@@ -548,8 +496,6 @@ export class WebTransportLinks implements LinkTransport {
   async dial(peer: LinkPeerAddress): Promise<LinkChannel> {
     if (this.stopped) throw new Error("Links are stopped");
     const url = `https://${peer.host}:${peer.port}`;
-    // With a hash the peer's certificate is pinned. Without one the host is verified against the
-    // certificate's names, so it has to be among them.
     const session = peer.certHash
       ? new WebTransport(url, { serverCertificateHashes: [{ algorithm: "sha-256", value: new Uint8Array(Buffer.from(peer.certHash, "base64")) }] })
       : new WebTransport(url);

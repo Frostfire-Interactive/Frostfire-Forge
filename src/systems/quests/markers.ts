@@ -66,8 +66,6 @@ function markerForQuest(username: string, questId: number, npcId: number): Marke
       return ended ? "in_progress" : "none";
     case "available":
       return given ? "available" : "none";
-    // Locked quests (level, prerequisites, log cap, daily cooldown) show no
-    // marker at all - a grey ! teasing an unofferable quest is just noise.
     default:
       return "none";
   }
@@ -122,11 +120,6 @@ export function markersForSync(
 
 let levelHookRegistered = false;
 
-/**
- * Quest availability is level-gated, so markers must refresh the moment a
- * player levels up - otherwise grey ! markers never turn gold without a
- * relog, map change or quest action.
- */
 export function registerLevelUpHook(): void {
   if (levelHookRegistered) return;
   levelHookRegistered = true;

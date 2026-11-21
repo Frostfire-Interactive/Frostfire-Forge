@@ -6,8 +6,6 @@ import path from "path";
 import { onLeftChangeMissed, startMapSave } from "../modules/mapsaves";
 import { checkWorldChanges, getWorldMap, loadWorldMaps, refreshWorldMap, syncWorldMaps, warpsAndGraveyardsOf } from "../modules/worldmaps";
 
-// A world of one 64 x 64 chunk, as the asset server holds it: a manifest and two bitsets (the game server never
-// gets the packs). `blocked` lists the tiles set in the collision bitset.
 function writeWorld(dir: string, blocked: [number, number][], warpX: number, id = "synctest"): void {
   const bits = (role: number, tiles: [number, number][]) => {
     const bytes = new Uint8Array(32 + 512);
@@ -106,9 +104,6 @@ test("a world changed on the asset server is taken in without a restart", async 
   expect(await checkWorldChanges()).toEqual([]);
 });
 
-// The map editor's save of a world (SAVE_MAP): the asset server writes it and tells every game server of it, this
-// one too, while the save here fetches the new files itself (refreshWorldMap). Taking it in a second time would have
-// every player on the world load it again, the saver too.
 test("a world saved here is not taken in again when the asset server tells of the save after the save fetched it", async () => {
   const world = getWorldMap("synctest")!;
   writeWorld(remote, [[3, 3]], 300);
@@ -165,8 +160,6 @@ test("another world changed elsewhere, whose files a save here fetched with its 
   expect(await checkWorldChanges()).toEqual([]);
 });
 
-// A save that fails after the asset server has written it (or, in cluster mode, a node that never hears the saver's
-// news): what the asset server told of while it was under way is taken in after all
 test("a change left to a save of a world that ended without saving is taken in by the next check", async () => {
   const world = getWorldMap("synctest")!;
   writeWorld(remote, [[8, 8]], 800);

@@ -598,11 +598,6 @@ test("the owner's handler serves a neighbour's request on this node's service, o
   expect(await ask({ id: "32", username: "rita" })).toEqual({ ok: false, reason: REASONS.gone });
 });
 
-// ------------------------------------------------------------------ the receiver's castGather
-// socket/receiver.ts cannot be imported by a test (it imports the server, which starts it), so, as the other
-// receiver tests do, castGather is read from its source and run with the names it uses handed in. The stand-in
-// for the gathering system has startGather and finishGather and nothing else: a cast that still asks
-// gathering.service would throw.
 const receiverSource = readReceiverSource();
 const castStart = receiverSource.indexOf("async function castGather(");
 const castEnd = receiverSource.indexOf("/** Breaks a player's cast home", castStart);

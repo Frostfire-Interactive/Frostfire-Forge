@@ -3,8 +3,6 @@ import { deedsOf } from "../systems/achievements/criteria";
 import { Events, listener, setPlayerPvp } from "../systems/events";
 import { databaseModule, mockQuery } from "./setup";
 
-// The edits that keep a mirror (a player of a neighbouring node) from being written or counted twice.
-// player.ts reaches the database through many modules; canAttack reads none of it.
 mock.module("../controllers/sqldatabase", () => databaseModule({ default: mockQuery }));
 const { default: playerSystem } = await import("../systems/player");
 

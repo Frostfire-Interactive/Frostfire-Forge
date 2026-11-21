@@ -16,30 +16,14 @@ import { entityById, playerLayer } from "../cluster/mirrors";
 import { isRecentAttacker } from "../cluster/attackers";
 import { forgetLook, holdsLook, noteLook } from "./looks";
 
-// A player is only removed from an AOI once they are this many times the AOI
-// radius away - not the instant they cross it. Prevents despawn/respawn packet
-// churn for players lingering near the boundary. Enter still uses the plain
-// radius, so the band between 1.0x and this value is "sticky, don't re-add".
 const AOI_EXIT_HYSTERESIS = (AOI_CONFIG as any).EXIT_HYSTERESIS ?? 1.25;
 
-// Most players one viewer is sent. On a crowded spot the nearest ones win,
-// after party members and the selected target. Read per call (not cached at
-// load) so the tests can lower it through their aoi.json stand-in.
 function maxVisiblePlayers(): number {
   return (AOI_CONFIG as any).MAX_VISIBLE_PLAYERS ?? 150;
 }
 
-// Grid cells follow every movement tick (the receiver's movement callback) and
-// every AOI update, so a player is at most one tick's travel from the cell they
-// are filed under. The radius query keeps this pad as a margin for that and
-// for moves made outside the movement tick; the exact distance check uses
-// live positions.
 const GRID_LAG_PAD_PX = Math.max(128, (Number(AOI_CONFIG.UPDATE_THRESHOLD) || 100) + 32);
 
-// Widest AOI radius any viewer can have: the grid query for position sends uses it,
-// while each viewer's own radius is what the distance check uses. Every viewer has
-// DEFAULT_RADIUS today; a larger per-viewer radius must raise this or the grid
-// query would silently drop those recipients.
 const MAX_AOI_RADIUS = Number(AOI_CONFIG.DEFAULT_RADIUS) || 1000;
 
 
@@ -61,9 +45,6 @@ export interface PlayerAOIState {
   layerId: string | null;
 }
 
-// Chunk loadPlayers frames: a single frame with many sprite-laden players can
-// exceed the transport's per-stream queue limit (~256KB) and destroy the
-// stream. Splitting keeps each frame below that ceiling.
 export function sendLoadPlayersChunked(
   sendPacket: (wt: any, packets: any) => void,
   wt: any,
@@ -183,18 +164,10 @@ function filterPlayersByDistance(
 ): any[] {
   const radiusSquared = radius * radius;
   const sourcePos = sourcePlayer.location.position;
-  // Null when no layer is assigned (shouldn't normally happen): such a player
-  // then only sees other players without a layer, as before.
   const sourceLayerId = sourcePlayer.aoi?.layerId || null;
   const sourceMap = map.replaceAll(".json", "");
   const result: any[] = [];
 
-  // AOI candidates are always same-layer (players on other layers are separate
-  // instances), taken from the spatial grid cells round the player. A layer of
-  // a huge map can hold thousands of players spread over the whole map, so
-  // scanning its membership no longer scales; the grid query costs what the
-  // local crowd costs. The grid is not layer aware, so other-layer players in
-  // those cells are dropped on a map lookup before their objects are touched.
   const ids: Iterable<string> = AOI_CONFIG.USE_SPATIAL_GRID
     ? spatialGrid.getPlayersInRadius(sourcePos.x, sourcePos.y, radius + GRID_LAG_PAD_PX, sourceMap)
     : mapIndex.getPlayersOnMap(sourceMap);
@@ -215,17 +188,12 @@ function filterPlayersByDistance(
   return result;
 }
 
-// Players a viewer always gets to see when in range, whatever the cap: their
-// party members, the player they have selected, and a player who attacked
-// them in the last ATTACK_MEMORY_MS (most often from across a border).
 function isPriorityFor(viewer: any, other: any): boolean {
   if (viewer.party?.includes(other.username)) return true;
   if (viewer.selectedPlayerId != null && String(viewer.selectedPlayerId) === String(other.id)) return true;
   return isRecentAttacker(String(viewer.id), String(other.id));
 }
 
-// Whether `viewer` is shown `other` at all: stealthed and vanished players are
-// drawn only for admins, party members and forced viewers.
 export function canSee(viewer: any, other: any): boolean {
   return !other.isStealth && !other.isVanished || !!viewer.isAdmin ||
     !!viewer.forceVisibleTo?.has(other.id) || !!viewer.party?.includes(other.username);
@@ -237,14 +205,6 @@ function distSq(a: any, b: any): number {
   return dx * dx + dy * dy;
 }
 
-// Caps a viewer's candidates at `cap`: priority players first, then the
-// nearest of the rest. Players the viewer is not shown (stealth, vanish) rank
-// after everyone they are shown, so they never take a place from a visible
-// player; they stay in the set when there is room so an unstealth reaches the
-// viewer through the reverse index. Under the cap every candidate is kept.
-// Current members rank as if EXIT_HYSTERESIS times nearer, so two players
-// trading places by a few pixels around the last place do not swap (a despawn
-// and a spawn) on every update.
 function capVisible(viewer: any, candidates: any[], cap: number): any[] {
   if (candidates.length <= cap) return candidates;
 
@@ -268,14 +228,6 @@ function capVisible(viewer: any, candidates: any[], cap: number): any[] {
   return chosen;
 }
 
-// `viewer` is at the cap and `newcomer` is not in their set: if the newcomer is
-// clearly nearer (by the EXIT_HYSTERESIS margin, as in capVisible) than the
-// viewer's farthest non-priority member, that member is evicted (despawned to
-// the viewer) to make room, and true is returned for the caller to add the
-// newcomer. Idle players never run an AOI update of their own, so without this
-// a player standing still at the cap would never see anyone new walk up.
-// Members the viewer is not shown count as farthest; priority members are
-// never evicted.
 function evictFarthestFor(
   viewer: any,
   newcomer: any,
@@ -304,8 +256,6 @@ function evictFarthestFor(
   }
   if (farthestId === null) return false;
 
-  // A spawn of the evicted member still waiting in this batch must not follow
-  // the despawn.
   spawnBatchQueue?.get(viewer.id)?.delete(farthestId);
   if (despawnBatchQueue) {
     if (!despawnBatchQueue.has(viewer.id)) {
@@ -323,10 +273,6 @@ function evictFarthestFor(
   return true;
 }
 
-// Whether `viewer` would keep `target` in its own set on its next update by
-// distance alone: same layer and inside the viewer's exit radius. With the cap
-// the two sides of a pair can disagree, so one side dropping the other must not
-// take the other side's view away with it.
 function keepsInView(viewer: any, target: any): boolean {
   const layerId = viewer.aoi?.layerId;
   if (!layerId || layerId !== target.aoi?.layerId) return false;
@@ -347,10 +293,6 @@ function hasPartyMemberOnLayer(player: any, layerId: string | null): boolean {
   return false;
 }
 
-// Moves a player to another layer of their map: the layer manager, their AOI
-// state and per-layer world state follow, and everyone who could see them on
-// the old layer gets a despawn. The caller then runs updatePlayerAOI, which
-// rebuilds their visible set from the new layer, and flushes the queues.
 function switchPlayerLayer(
   player: any,
   layerId: string,
@@ -374,9 +316,6 @@ function sendPacket(wt: any, packets: any[]) {
   }
 }
 
-// sendPacket for one broadcast's packets going to many viewers: each packet's length-prefixed frame is built once
-// (by the first connection that queues it, see TransportConnection.sendFramed) and shared by the rest.
-// True when every packet was queued (a connection that reports nothing counts as having queued it).
 function sendPacketShared(wt: any, packets: any[], shared: { frame?: Uint8Array }[]): boolean {
   if (!wt || !wt.send || wt.readyState !== 1) return false;
   let queued = true;
@@ -483,10 +422,6 @@ export async function updatePlayerAOI(
   const cap = maxVisiblePlayers();
 
   try {
-    // Keep the layer's per-block counts in step with the player. A player
-    // parked on an overflow layer because their block was crowded moves down
-    // once they reach a block where a lower layer has room - unless party
-    // members share their current layer (party sync keeps them together).
     const lowerLayerId = layerManager.updatePlayerBlock(player.id, currentPos.x, currentPos.y);
     if (lowerLayerId && !hasPartyMemberOnLayer(player, player.aoi.layerId)) {
       switchPlayerLayer(player, lowerLayerId, despawnBatchQueue);
@@ -503,8 +438,6 @@ export async function updatePlayerAOI(
     const _p1 = AOI_PROFILE ? performance.now() : 0;
 
     if (AOI_CONFIG.USE_SPATIAL_GRID) {
-      // Same map key as addPlayer / handleMapChangeAOI: the stored map may
-      // carry ".json", and every grid query uses the bare name.
       spatialGrid.updatePlayer(player.id, currentPos.x, currentPos.y, currentMap.replaceAll(".json", ""));
     }
 
@@ -517,17 +450,6 @@ export async function updatePlayerAOI(
 
     const enteredAOI: string[] = [...newAOISet].filter(id => !oldAOISet.has(id));
 
-    // Exit hysteresis: a player who has merely crossed the AOI radius is NOT
-    // dropped until they are past radius * AOI_EXIT_HYSTERESIS. Without this, a
-    // player jittering back and forth across the boundary (very common - normal
-    // wandering near another player) generates a despawn + re-spawn packet pair
-    // on every AOI update. At scale that was ~19k exit events per 5s, each an
-    // encode + send + reverse-index mutation, and it dominated the AOI cost.
-    //
-    // Skipped entirely when the visible set changed wholesale (a warp / map
-    // change - oldAOISet is from the old map, none of it is "near the boundary"
-    // in any meaningful sense; treating it as sticky just makes a big pointless
-    // loop and keeps stale cross-map viewers around for a frame).
     const wholesaleChange =
       oldAOISet.size > 0 && enteredAOI.length === newAOISet.size;
     const exitRadiusSq = aoiRadius * aoiRadius * (AOI_EXIT_HYSTERESIS * AOI_EXIT_HYSTERESIS);
@@ -549,9 +471,6 @@ export async function updatePlayerAOI(
       }
       exitedAOI.push(id as string);
     }
-    // Still within the hysteresis band - keep them visible, nearest first,
-    // while the set is under the cap (priority players always). Under the cap
-    // this keeps every one of them, as before.
     if (inBand.length > 1) inBand.sort((a, b) => a.d2 - b.d2);
     for (const kept of inBand) {
       if (kept.priority || newAOISet.size < cap) {
@@ -589,10 +508,6 @@ export async function updatePlayerAOI(
       const enteredSet = enteredPlayer.aoi?.playersInAOI;
       if (enteredSet?.has(player.id)) continue;
 
-      // The entered player starts seeing `player` at once while their own set
-      // has room, when `player` is a priority player for them, or when
-      // `player` is nearer than their farthest member (who is swapped out).
-      // Otherwise their own next update decides.
       const seenBack = !enteredSet || enteredSet.size < cap || isPriorityFor(enteredPlayer, player) ||
         evictFarthestFor(enteredPlayer, player, spawnBatchQueue, despawnBatchQueue);
       if (!seenBack) continue;
@@ -645,11 +560,6 @@ export async function updatePlayerAOI(
 
       // A mirror has no view of its own here (and no socket): only `player`'s side changes.
       if (exitedPlayer && exitedPlayer.wt && !exitedPlayer.remote) {
-        // Dropped by the cap while the other player would still keep `player`
-        // by distance: leave their side to their own update. Not after a warp
-        // (wholesale change): a same-map jump sends the new position to the
-        // jumper only, so an old neighbour kept here would see them frozen on
-        // the spot they left.
         if (!wholesaleChange && exitedPlayer.aoi?.playersInAOI.has(player.id) && keepsInView(exitedPlayer, player)) {
           continue;
         }
@@ -678,11 +588,6 @@ export async function updatePlayerAOI(
       }
     }
 
-    // Viewers `player` does not see back. Above the cap a viewer can keep
-    // `player` while `player` has dropped (or never had) them, so the exit loop
-    // above never reaches them; an idle viewer runs no update of their own and
-    // would keep `player` frozen where they left. Drop `player` from every such
-    // viewer that would not keep them by distance (always after a warp).
     for (const viewerId of [...aoiReverse.getViewers(player.id)]) {
       if (viewerId === String(player.id)) continue;
       const viewer = playerCache.get(viewerId);
@@ -707,8 +612,6 @@ export async function updatePlayerAOI(
       playerCache.set(viewer.id, viewer);
     }
 
-    // `player`'s own visible set is being replaced wholesale; reindex the diff
-    // so the reverse index reflects who `player` can now see.
     aoiReverse.replaceVisibleSet(player.id, oldAOISet, newAOISet);
     player.aoi.playersInAOI = newAOISet;
     if (enteredAOI.length > 0 || exitedAOI.length > 0) {
@@ -761,8 +664,6 @@ export function broadcastToAOI(
       sendPacket(sourcePlayer.wt, packetData);
     }
 
-    // Everyone who sees the source (reverse index), not everyone the source
-    // sees: above the visibility cap the two differ.
     const playersInAOI = findPlayersWithTargetInAOI(sourcePlayer.id)
       .filter((p) => p.wt && p.id !== sourcePlayer.id);
 
@@ -802,29 +703,10 @@ export interface PoseBroadcast {
   poseFrames: { frame?: Uint8Array }[];
   /** The pose key (poseKey in receiver.ts), for the repeat counters in posestats.ts only. */
   key?: string;
-  /**
-   * The animation state the pose packet carries ("walk_down"). With it a viewer that holds the player's look is sent
-   * the pose as a datagram with the player's pose revision (socket/posedgram.ts); without it, or when the pose does
-   * not fit the datagram, on the reliable stream as before.
-   */
   animationState?: string;
-  /**
-   * The same two packets with the pose revision in them (`poseRev`), for the stream copies a viewer is sent: a late
-   * full sheet or stream pose then cannot put an older pose over a newer one the client shows from a datagram. Built
-   * only when a viewer needs one, once per change. Absent: the packets above go as they are.
-   */
   withRevision?: (revision: number) => { full: any[]; pose: any[] };
 }
 
-/**
- * broadcastToAOI for a pose change (observers only): a viewer that holds the player's current look is sent the
- * pose, any other viewer the full sheet, which also records the look for the next time (socket/looks.ts).
- * The pose of a local player goes by datagram, with a revision, and again at POSE_REPEAT_MS after the change
- * (socket/posedgram.ts): one native stream write per viewer and pose change is what stalled a node at 800 players.
- * The full sheet stays on the stream, and so does the pose of a viewer whose connection takes no datagrams.
- * Viewers on other nodes (the ghost relay) always get the full packet: this node does not know what they hold.
- * Who sees the player is decided as in broadcastToAOI.
- */
 export function broadcastPoseToAOI(sourcePlayer: any, look: PoseBroadcast): void {
   if (!sourcePlayer || !sourcePlayer.aoi) {
     return;
@@ -900,11 +782,6 @@ function sendPacketBestEffort(wt: any, packetData: any[]) {
   }
 }
 
-/**
- * Like broadcastToAOI but delivered as unreliable datagrams (loss-tolerant
- * packets: stats, cast bars, animations, etc.). Datagrams bypass the stream
- * backpressure queue, so callers must only send latest-wins payloads.
- */
 export function broadcastToAOIBestEffort(
   sourcePlayer: any,
   packetData: any[],
@@ -921,8 +798,6 @@ export function broadcastToAOIBestEffort(
       receivers.add(sourcePlayer);
     }
 
-    // Everyone who sees the source (reverse index), not everyone the source
-    // sees: above the visibility cap the two differ.
     const playersInAOI = findPlayersWithTargetInAOI(sourcePlayer.id)
       .filter((p) => p.wt && p.id !== sourcePlayer.id);
 
@@ -945,13 +820,6 @@ export function broadcastToAOIBestEffort(
   }
 }
 
-/**
- * Broadcast a stats update (UPDATESTATS) as datagrams to the target, the
- * caster and everyone who sees either of them (reverse index), deduplicated.
- * Replaces map-wide broadcasts: observers who can see either combatant get the
- * damage popup and fresh absolute stats, everyone else self-corrects via the
- * 1Hz regen tick.
- */
 export function broadcastStatsUpdateToAOI(
   target: any,
   caster: any,
@@ -981,24 +849,11 @@ export function broadcastStatsUpdateToAOI(
   }
 }
 
-/**
- * Cluster mode: what a sender loop of its own (the map's players here, a player's viewers here) told this node's
- * players about `player` reaches the viewers of the player's mirrors on neighbouring nodes too. A mirror relays nothing.
- */
 export function relayToMirrorViewers(player: any, packetData: any[], bestEffort: boolean): void {
   if (!player || player.remote || player.id == null || !packetData?.length) return;
   ghosts.relay("player", String(player.id), packetData, bestEffort);
 }
 
-/**
- * Broadcast a packet as datagrams to players on a map whose AOI radius covers
- * the given position. Used for entity-targeted stats broadcasts (entities are
- * not tracked in playersInAOI, so position distance stands in for visibility).
- */
-/**
- * Called whenever a player moves to a different layer, so per-layer world state
- * (death skeletons, and anything else keyed by layer) can be resent to them.
- */
 let onLayerChanged: ((playerId: string) => void) | null = null;
 
 export function setLayerChangeHandler(fn: (playerId: string) => void): void {
@@ -1013,13 +868,6 @@ export function notifyLayerChanged(playerId: string): void {
   }
 }
 
-// Players on a map near a point, from the spatial grid cells round it, so the
-// cost is the local crowd and not the map. `radiusFor` gives each candidate's
-// own reach (a fixed spell radius, or a viewer's AOI radius); the grid query
-// uses `queryRadius`, which must cover the largest reach. The grid is not layer
-// aware: other-layer players are dropped on a map lookup, before their objects
-// are touched. Undefined keeps every layer; null keeps only players with no
-// layer (as filterPlayersByDistance does).
 function playersNearPoint(
   x: number,
   y: number,
@@ -1048,11 +896,6 @@ function playersNearPoint(
   return result;
 }
 
-/**
- * Players within `radius` of a point on a map's layer, for area effects that hit
- * whoever stands in them. Pass the caster's layer: null means "players with no
- * layer", never "every layer"; only undefined reaches every layer.
- */
 export function getPlayersNearPoint(
   x: number,
   y: number,
@@ -1063,13 +906,6 @@ export function getPlayersNearPoint(
   return playersNearPoint(x, y, map, radius, layerId, () => radius);
 }
 
-/**
- * Send a packet to the players whose AOI radius covers a position on a map's
- * layer. For things that are not players (loot, markers, effects at a spot):
- * entities are not tracked in playersInAOI, so position distance stands in for
- * visibility. Reliable by default; pass `bestEffort` for latest-wins payloads
- * that may go as datagrams. A null layer reaches every layer on the map.
- */
 export function broadcastToAOIAtPosition(
   x: number,
   y: number,
@@ -1100,11 +936,6 @@ export function broadcastToAOIBestEffortAtPosition(
   broadcastToAOIAtPosition(x, y, map, packetData, layerId, { bestEffort: true });
 }
 
-/**
- * Cluster mode: brings local viewers up to date with a mirrored player (it moved, appeared or changed
- * stealth). A viewer who is not walking runs no AOI update of their own, so without this they would
- * never see a mirror come or go. Mirrors never look back; only local viewers change.
- */
 export function updateMirrorViewers(
   mirror: any,
   spawnQueue?: Map<string, Map<string, any>>,
@@ -1170,12 +1001,6 @@ function dropViewer(
   }
 }
 
-/**
- * The caster and everyone who sees them (reverse index, so it holds when the
- * visibility cap makes the two directions differ): who a cast bar goes to.
- * Stealth does not filter it; a client with no entity for the caster draws
- * nothing from a cast packet.
- */
 export function castAudience(caster: any): any[] {
   if (!caster) return [];
   const audience: any[] = [];
@@ -1186,8 +1011,6 @@ export function castAudience(caster: any): any[] {
   return audience;
 }
 
-// The caster's own copy stays on the reliable stream (their cast bar and
-// cooldown UI must not lose an "interrupted"); observers get a datagram.
 function sendCastSplit(audience: any[], casterId: string, packetData: any[]): void {
   for (const p of audience) {
     if (String(p.id) === String(casterId)) sendPacket(p.wt, packetData);
@@ -1195,10 +1018,6 @@ function sendCastSplit(audience: any[], casterId: string, packetData: any[]): vo
   }
 }
 
-/**
- * Broadcast a cosmetic cast-state packet (CAST_SPELL variants): reliable to the
- * caster, loss-tolerant datagrams to everyone who sees them.
- */
 export function broadcastCastToAOI(caster: any, packetData: any[]): void {
   try {
     sendCastSplit(castAudience(caster), caster.id, packetData);
@@ -1209,9 +1028,6 @@ export function broadcastCastToAOI(caster: any, packetData: any[]): void {
   }
 }
 
-// Who got each caster's ground-AoE casting preview, until it is cleared. The
-// client removes a preview only on a despawn with its id, and the viewers can
-// change during the cast, so the despawn goes to the same people.
 const groundPreviewAudience = new Map<string, Set<string>>();
 
 /** Send a ground-AoE casting preview like a cast bar, remembering who got it. */
@@ -1235,10 +1051,6 @@ export function forgetGroundPreview(casterId: string | number): void {
   groundPreviewAudience.delete(String(casterId));
 }
 
-/**
- * Remove a caster's casting preview (reliably) from everyone who got it plus
- * everyone who sees the caster now.
- */
 export function clearGroundPreviewForAOI(caster: any, despawnPacket: any[]): void {
   try {
     const key = String(caster.id);
@@ -1254,10 +1066,6 @@ export function clearGroundPreviewForAOI(caster: any, despawnPacket: any[]): voi
 }
 
 export function findPlayersWithTargetInAOI(targetId: number | string): any[] {
-  // O(viewers) via the reverse index instead of an O(all players) cache scan.
-  // The index is the source of truth (it normalises ids to strings, which the
-  // raw `playersInAOI.has()` check did not); we only re-validate that the
-  // viewer still exists and is a live AOI participant.
   const result: any[] = [];
   for (const viewerId of aoiReverse.getViewers(targetId)) {
     const player = playerCache.get(viewerId);
@@ -1268,17 +1076,6 @@ export function findPlayersWithTargetInAOI(targetId: number | string): any[] {
   return result;
 }
 
-/**
- * World-index cleanup for a session killed by a duplicate login (same user
- * logging in again). The normal disconnect path does all of this in the
- * server's onDisconnect handler, but that handler early-returns on the cache
- * miss left behind by the kick - so without this the stale id lingers in
- * viewers' AOI sets, the reverse index, its layer (leaking playerCount),
- * the map index and the spatial grid.
- *
- * Deliberately does NOT touch username-keyed state (cooldowns, dots, friends
- * presence): the same user is still online via the new session.
- */
 export function cleanupKickedSession(
   kickedPlayer: any,
   despawnBatchQueue?: Map<string, Set<string>>
@@ -1286,8 +1083,6 @@ export function cleanupKickedSession(
   if (!kickedPlayer) return;
   try {
     despawnPlayerFromAllAOI(kickedPlayer, "disconnect", despawnBatchQueue);
-    // despawnPlayerFromAllAOI early-returns without aoi (a session killed
-    // mid-login); the index removals below are safe no-ops when absent.
     layerManager.removePlayerFromLayer(kickedPlayer.id);
     mapIndex.removePlayer(kickedPlayer.id);
     if (AOI_CONFIG.USE_SPATIAL_GRID) {
@@ -1336,11 +1131,6 @@ export function despawnPlayerFromAllAOI(
       }
     });
 
-    // Nobody sees the departing player any more, on either map. Also drop the
-    // departing player as a viewer of everyone else: on disconnect its forward
-    // set is cleared below; on map_change it keeps a stale set that the
-    // follow-up updatePlayerAOI would otherwise diff against, but clearing here
-    // keeps the reverse index tight regardless.
     aoiReverse.clearViewed(departingPlayer.id);
     aoiReverse.clearViewer(departingPlayer.id);
 
@@ -1358,11 +1148,6 @@ export function despawnPlayerFromAllAOI(
   }
 }
 
-/**
- * A player handed to another node (cells phase 6): out of every AOI index of this node, with no despawn. Who sees
- * the player keeps the entry and the reverse index: the mirror that replaces the player next is shown to them with
- * no despawn and spawn in between (updateMirrorViewers skips a viewer that already has the id).
- */
 export function releasePlayerAOI(player: any): void {
   if (!player) return;
   forgetGroundPreview(player.id);
@@ -1427,9 +1212,6 @@ export async function handleMapChangeAOI(
     player.aoi.lastAOIUpdatePosition = { x: newPosition.x, y: newPosition.y };
     playerCache.set(player.id, player);
 
-    // On a same-map jump the layer is kept; updatePlayerAOI moves the block
-    // count to the new position (and the player to a lower layer if the new
-    // block has room there).
     const _mcStart = AOI_PROFILE ? performance.now() : 0;
     await updatePlayerAOI(player, spawnBatchQueue, despawnBatchQueue);
     if (AOI_PROFILE) {
@@ -1704,11 +1486,6 @@ export function startAutoLayerCondensation(
   setInterval(() => condenseLayers(sendAnimationToFn), 300000);
 }
 
-// One condensation pass, per player and per block: every player on an overflow
-// layer (above layer 1) moves to the lowest layer of their map with room in the
-// block they stand in. Never to a higher-numbered layer, and whole-layer counts
-// play no part (one layer of a big map spreads over many blocks). Lower layers
-// go first, so a layer_3 player can take a place layer_2 players just left.
 export async function condenseLayers(
   sendAnimationToFn: (targetWs: any, name: string, playerId: string) => Promise<void>
 ): Promise<void> {

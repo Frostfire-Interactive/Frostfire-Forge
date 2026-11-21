@@ -8,18 +8,11 @@ interface LayerInfo {
   players: Set<string>;
 }
 
-// Read with a fallback: aoi.json is generated, so an older file (or a test's
-// stand-in) may not have the key yet.
 const BLOCK_SIZE_PX: number = (AOI_CONFIG as { BLOCK_SIZE_PX?: number }).BLOCK_SIZE_PX ?? 4096;
 
-// Most players of one layer in one block, checked when a player is placed
-// (login, warp, map change, summon/teleport). Walking into a crowded block
-// never moves a player to another layer.
 export const MAX_PLAYERS_PER_LAYER: number =
   (AOI_CONFIG as { MAX_PLAYERS_PER_LAYER?: number }).MAX_PLAYERS_PER_LAYER ?? 150;
 
-// A block is a square of the map, named by its grid coordinates. Layers are
-// capped per block, so a big map only splits where one area is crowded.
 export function blockOf(x: number, y: number, blockSizePx: number = BLOCK_SIZE_PX): string {
   return `${Math.floor(x / blockSizePx)},${Math.floor(y / blockSizePx)}`;
 }
@@ -71,8 +64,6 @@ export class LayerManager {
   }
 
   private generateLayerId(mapName: string): string {
-    // Layer 1 is the base layer of the map on every node. Above it, in a cluster, the number is the world's: a
-    // reserved one this node does not already use (the local rule below may have taken it while the pool was empty).
     if (this.numbers && this.layers.has(`${mapName}:layer_1`)) {
       for (let n = this.numbers.take(mapName); n !== null; n = this.numbers.take(mapName)) {
         if (!this.layers.has(`${mapName}:layer_${n}`)) return `${mapName}:layer_${n}`;
@@ -95,9 +86,6 @@ export class LayerManager {
     return this.countInBlock(layerId, block) < this.MAX_PLAYERS_PER_LAYER;
   }
 
-  // The lowest-numbered existing layer of the map with room in the block (and
-  // numbered below `below`), so players settle into low layers and the high
-  // ones empty out and disappear.
   private lowestLayerWithRoom(mapName: string, block: string, below: number = Infinity): string | null {
     let best: string | null = null;
     let bestNumber = below;
@@ -168,10 +156,6 @@ export class LayerManager {
     return layerId;
   }
 
-  // Call when a player's position changes. Keeps the block counts right and,
-  // for a player parked on a high layer because their old block was crowded,
-  // returns the lower layer they can now join (the caller moves them with
-  // movePlayerToLayer). Only looked at on a block change, not on every step.
   updatePlayerBlock(playerId: string, x: number, y: number): string | null {
     const layerId = this.playerToLayer.get(playerId);
     if (!layerId) return null;
@@ -188,8 +172,6 @@ export class LayerManager {
     return this.lowestLayerWithRoom(this.layers.get(layerId)!.mapName, block, layerNumber(layerId));
   }
 
-  // The lowest layer numbered below the player's own with room in the block
-  // they stand in, or null. Never a higher-numbered layer.
   lowerLayerWithRoom(playerId: string): string | null {
     const layerId = this.playerToLayer.get(playerId);
     const block = this.playerBlock.get(playerId);
@@ -198,8 +180,6 @@ export class LayerManager {
     return this.lowestLayerWithRoom(layer.mapName, block, layerNumber(layerId));
   }
 
-  // The one way to move a player between layers of a map. The player keeps the
-  // block they are standing in.
   movePlayerToLayer(playerId: string, layerId: string): void {
     if (!this.layers.has(layerId)) return;
     if (this.playerToLayer.get(playerId) === layerId) return;
@@ -309,8 +289,6 @@ export class LayerManager {
         continue;
       }
 
-      // Room is per block: a member standing in a crowded block stays where
-      // they are, members elsewhere can still join.
       const memberBlock = this.playerBlock.get(memberId);
       if (memberBlock === undefined || !this.hasRoom(leaderLayerId, memberBlock)) {
         continue;

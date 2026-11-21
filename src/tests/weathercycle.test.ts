@@ -1,9 +1,6 @@
 import { expect, test } from "bun:test";
 import { WEATHER_CYCLE_MS, nextCycleIn, settledPick } from "../systems/weathercycle";
 
-// A "random" world settles on a weather for each stretch of WEATHER_CYCLE_MS. In a cluster every node holding part of
-// the world picks it, so the pick comes from the world and the stretch alone: the same on every node, at the same time.
-
 const row = (name: string) => ({ name }) as any;
 const table = ["rain", "snow", "fog", "clear", "thunderstorm"].map(row);
 const stretch = (n: number) => n * WEATHER_CYCLE_MS + 1234;
