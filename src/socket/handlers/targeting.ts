@@ -4,8 +4,8 @@ import player from "../../systems/player.ts";
 import playerCache from "../../services/playermanager.ts";
 import { bareMap, mirrorPlayers } from "../../cluster/mirrors";
 import { packetManager } from "../packet_manager";
-import { pickPlayerAt } from "../../systems/playerpick";
-import { PROFILE, currentTargetMap, inspectOnOwner, inspectPlayerData, isQuestRateLimited, prof, sendPacket, withMirrors } from "../receiver";
+import { pickFromPartyFrame, pickPlayerAt } from "../../systems/playerpick";
+import { PROFILE, currentTargetMap, getAnimationData, getAnimationNameForDirection, inspectOnOwner, inspectPlayerData, isQuestRateLimited, prof, sendPacket, withMirrors } from "../receiver";
 import type { PacketContext } from "./context";
 
 // Packet handlers moved from receiver.ts's packetReceiver switch (phase 6, Task 1). The case bodies are unchanged.
@@ -32,12 +32,21 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         const pickRange = (data as any)?.touch === true ? 49 : 35;
         const pickX = Math.floor(Number(location.x));
         const pickY = Math.floor(Number(location.y));
-        const shown = players.filter(
-          (p) => !p.isDead && !(p.isGhost && p.ghostTeleportPending) && !(p.isStealth && !currentPlayer.isAdmin)
-        );
-        const selectedPlayer: any = pickPlayerAt(shown, pickX, pickY, pickRange, currentPlayer.id);
+        const visible = (p: any) => !p.isDead && !(p.isGhost && p.ghostTeleportPending) && !(p.isStealth && !currentPlayer.isAdmin);
+        const shown = players.filter(visible);
+        // A party frame clicked names its member: the clicker for their own frame, a player shown on this map, or one
+        // in the clicker's party on any map at any distance; otherwise the selection is cleared.
+        const byName = typeof (data as any)?.username === "string";
+        const selectedPlayer: any = byName
+          ? pickFromPartyFrame(shown, Object.values(cache).filter(visible), (data as any).username, currentPlayer)
+          : pickPlayerAt(shown, pickX, pickY, pickRange, currentPlayer.id);
 
         if (!selectedPlayer) {
+          if (byName) {
+            currentPlayer.selectedPlayerId = null;
+            sendPacket(wt, packetManager.selectPlayer({ id: wt.data.id, data: null }));
+            break;
+          }
           // Clicking only a corpse or a hidden player clears the selection.
           if (pickPlayerAt(players, pickX, pickY, pickRange, currentPlayer.id)) {
             currentPlayer.selectedPlayerId = null;
@@ -47,11 +56,13 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         }
         // The AOI keeps the selected player visible past the visibility cap.
         currentPlayer.selectedPlayerId = selectedPlayer.id;
-        const selectPlayerData = {
+        const selectPlayerData: Record<string, unknown> = {
           id: selectedPlayer.id,
           username: selectedPlayer.username,
           stats: selectedPlayer.stats,
         };
+        // Picked by name, they may not be loaded for the clicker: their sprites draw the target frame's portrait.
+        if (byName) selectPlayerData.sprites = await getAnimationData(getAnimationNameForDirection("down", false), selectedPlayer.id);
         sendPacket(wt, packetManager.selectPlayer(selectPlayerData));
         break;
       }

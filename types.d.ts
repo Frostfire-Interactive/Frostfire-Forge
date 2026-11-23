@@ -266,10 +266,6 @@ declare interface Item {
   equipable: boolean;
   equipment_slot: Nullable<ItemSlot>;
   bag_slots: Nullable<number>;
-  /** Weapons: swing damage range and swing speed. Null means "not a weapon". */
-  damage_min: Nullable<number>;
-  damage_max: Nullable<number>;
-  attack_speed_ms: Nullable<number>;
   /** What a vendor pays for one, in copper. Nothing set is 1; 0 is an item vendors do not buy. */
   sell_price?: Nullable<number>;
   /** What a vendor charges for one, in copper, where the NPC sets no price of its own. */
@@ -530,6 +526,9 @@ declare interface MapProperties {
   warps: Nullable<WarpObject[]>;
   graveyards: Nullable<GraveyardObject[]>;
   shadowLayerNames?: Nullable<string[]>;
+  chests?: import("./src/systems/dungeons/types").MapChestObject[];
+  dungeonPortals?: import("./src/systems/dungeons/types").DungeonPortalObject[];
+  summoningStones?: import("./src/systems/mapobjects").SummoningStoneObject[];
   version: string;
   /** Worlds only: where new players start, in pixels. */
   spawn?: Nullable<{ x: number; y: number }>;

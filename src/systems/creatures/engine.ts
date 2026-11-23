@@ -24,17 +24,7 @@ import {
   yards,
   type Rng,
 } from "./constants";
-import {
-  armorReduction,
-  spellMissChance,
-  isInFront,
-  PLAYER_SWING_MS,
-  playerMeleeDamageRange,
-  playerVsCreatureTable,
-  rollPlayerVsCreature,
-  type MeleeOutcome,
-  type WeaponProfile,
-} from "./combat";
+import { spellMissChance, type MeleeOutcome } from "./combat";
 import { advance, directionFor, setDestination, stop } from "./movement";
 import type { NavGrid } from "./navgrid";
 import { CreatureRegistry } from "./registry";
@@ -97,8 +87,6 @@ export interface PlayerUnit {
   critDamagePct: number;
   statDamage: number;
   armorPct: number;
-  /** Equipped weapon's swing profile; null means bare-handed. */
-  weapon: WeaponProfile | null;
 }
 
 export interface CombatText {
@@ -115,8 +103,6 @@ export interface ForwardedHit {
   amount: number;
   threatMultiplier: number;
   textKind: CombatTextKind | null;
-  /** A melee swing the creature avoided: no damage, but it still pulls and taps. */
-  avoided?: boolean;
   /** A spell whose effects land after the damage. */
   spell?: SpellData;
   /** The caster's damage stat, for the spell's periodic ticks. */
@@ -140,7 +126,6 @@ export interface CombatWorld {
   onStateChanged(creature: CreatureInstance): void;
   onCombatText(text: CombatText): void;
   onDied(creature: CreatureInstance, killerId: string | null): void;
-  onAutoAttackStopped(playerId: string, creatureId: number): void;
   /** Tapper set (first hostile action) or cleared (evade). */
   onTapChanged(creature: CreatureInstance): void;
   spell(id: number): SpellData | undefined;
@@ -180,8 +165,6 @@ export class CreatureCombatSystem {
   private unitIndex = new Map<string, Set<number>>();
   /** creatures currently in combat, evading or fleeing (ticked even when unobserved) */
   private active = new Set<number>();
-  /** player id -> auto-attack state */
-  private autoAttacks = new Map<string, { creatureId: number; nextSwingAt: number }>();
 
   constructor(private readonly registry: CreatureRegistry, private readonly world: CombatWorld) {}
 
@@ -195,10 +178,6 @@ export class CreatureCombatSystem {
 
   creaturesEngagedWith(playerId: string): ReadonlySet<number> {
     return this.unitIndex.get(playerId) ?? new Set();
-  }
-
-  autoAttackTarget(playerId: string): number | null {
-    return this.autoAttacks.get(playerId)?.creatureId ?? null;
   }
 
   emitCombatText(text: CombatText): void {
@@ -268,7 +247,7 @@ export class CreatureCombatSystem {
     }
     this.tryOutOfCombatAbilities(creature, template, now);
 
-    const spawn = this.world.spawn(creature.spawnId);
+    const spawn = this.world.spawn(creature.spawnId || creature.copySpawnId || 0);
     if (!template.can_move) {
       stop(creature);
       creature.state = AIState.IDLE;
@@ -519,7 +498,7 @@ export class CreatureCombatSystem {
   }
 
   private resetPoint(creature: CreatureInstance): { x: number; y: number } {
-    const spawn = this.world.spawn(creature.spawnId);
+    const spawn = this.world.spawn(creature.spawnId || creature.copySpawnId || 0);
     // Patrolling creatures reset to where they were pulled; everyone else to their spawn.
     if (spawn?.movement_type === "patrol" && creature.combat.startedAt > 0) {
       return { x: creature.combat.startX, y: creature.combat.startY };
@@ -662,7 +641,6 @@ export class CreatureCombatSystem {
   /** A player died, logged out or left: remove them from every threat table. */
   removeUnit(unitId: string, now: number): void {
     const creatures = this.unitIndex.get(unitId);
-    this.stopAutoAttack(unitId, false);
     if (!creatures) return;
     for (const id of [...creatures]) {
       const c = this.registry.get(id);
@@ -702,13 +680,6 @@ export class CreatureCombatSystem {
 
   applyForwardedHit(creature: CreatureInstance, hit: ForwardedHit, now: number): { landed: boolean; killed: boolean } {
     if (creature.remote || creature.state === AIState.DEAD) return { landed: false, killed: false };
-    if (hit.avoided) {
-      const template = this.world.template(creature.templateId);
-      if (!template || creature.state === AIState.EVADING) return { landed: false, killed: false };
-      this.world.onCombatText({ creatureId: creature.id, targetId: creatureUnitId(creature.id), sourceId: hit.attackerId, kind: hit.textKind ?? "evade", amount: 0 });
-      this.avoidedSwing(creature, template, hit.attackerId, now);
-      return { landed: true, killed: false };
-    }
     if (hit.amount > 0 || !hit.spell) this.damageCreature(creature, hit.attackerId, Number(hit.amount) || 0, now, Number(hit.threatMultiplier) || 1, hit.textKind);
     if (hit.spell && (creature.state as AIState) !== AIState.DEAD) this.applySpellToCreature(creature, hit.attackerId, hit.spell, now, hit.casterStat);
     return { landed: true, killed: (creature.state as AIState) === AIState.DEAD };
@@ -768,9 +739,6 @@ export class CreatureCombatSystem {
     creature.state = AIState.DEAD;
     creature.combat.corpseUntil = now + CORPSE_EMPTY_MS;
     this.active.delete(creature.id);
-    for (const [playerId, attack] of [...this.autoAttacks]) {
-      if (attack.creatureId === creature.id) this.stopAutoAttack(playerId, true);
-    }
     this.world.onHealthChanged(creature);
     this.world.onStateChanged(creature);
     this.world.onDied(creature, killerId);
@@ -808,87 +776,6 @@ export class CreatureCombatSystem {
     creature.casting = null;
     this.clearThreat(creature);
     this.active.delete(creature.id);
-    for (const [playerId, attack] of [...this.autoAttacks]) {
-      if (attack.creatureId === creature.id) this.stopAutoAttack(playerId, true);
-    }
-  }
-
-  // ------------------------------------------------------ player auto-attack
-
-  /** Returns an error reason, or null when auto-attack started. */
-  startAutoAttack(playerId: string, creatureId: number, now: number): string | null {
-    const player = this.world.getPlayer(playerId);
-    const creature = this.registry.get(creatureId);
-    if (!player || !player.alive) return "dead";
-    if (!creature || creature.state === AIState.DEAD) return "invalid_target";
-    if (creature.map !== player.map || !sameLayer(creature, player)) return "invalid_target";
-    const existing = this.autoAttacks.get(playerId);
-    // Re-targeting keeps the swing timer (no free instant swing by toggling).
-    this.autoAttacks.set(playerId, { creatureId, nextSwingAt: existing ? Math.max(existing.nextSwingAt, now) : now });
-    return null;
-  }
-
-  stopAutoAttack(playerId: string, notify: boolean): void {
-    const attack = this.autoAttacks.get(playerId);
-    if (!attack) return;
-    this.autoAttacks.delete(playerId);
-    if (notify) this.world.onAutoAttackStopped(playerId, attack.creatureId);
-  }
-
-  tickPlayerAttacks(now: number): void {
-    for (const [playerId, attack] of [...this.autoAttacks]) {
-      const player = this.world.getPlayer(playerId);
-      const creature = this.registry.get(attack.creatureId);
-      if (!player || !player.alive || !creature || creature.state === AIState.DEAD || creature.map !== player.map || !sameLayer(creature, player)) {
-        this.stopAutoAttack(playerId, true);
-        continue;
-      }
-      if (player.casting || now < attack.nextSwingAt) continue;
-      const template = this.world.template(creature.templateId);
-      if (!template) continue;
-      if (dist(player.x, player.y, creature.x, creature.y) > meleeRangePx(template)) continue;
-      attack.nextSwingAt = now + (player.weapon?.swingMs ?? PLAYER_SWING_MS);
-      this.playerSwing(player, creature, template, now);
-    }
-  }
-
-  private playerSwing(player: PlayerUnit, creature: CreatureInstance, template: CreatureTemplate, now: number): void {
-    const r = this.world.rng;
-    if (creature.state === AIState.EVADING) {
-      this.damageCreature(creature, player.id, 0, now);
-      return;
-    }
-    const inFront = isInFront(creature, creature.dir, player);
-    const table = playerVsCreatureTable(player.level, creature.level, template.creature_type, inFront, player.critPct);
-    const roll = rollPlayerVsCreature(table, 2 + player.critDamagePct / 100, r);
-    if (roll.multiplier === 0) {
-      // A mirror: the swing is rolled here, where the player's stats are, and its owner applies the outcome.
-      if (creature.remote) {
-        this.world.forwardHit?.(creature, { attackerId: player.id, amount: 0, threatMultiplier: 1, textKind: roll.outcome, avoided: true });
-        this.world.markPlayerInCombat(player.id);
-        return;
-      }
-      this.world.onCombatText({ creatureId: creature.id, targetId: creatureUnitId(creature.id), sourceId: player.id, kind: roll.outcome, amount: 0 });
-      this.avoidedSwing(creature, template, player.id, now);
-      return;
-    }
-    const [min, max] = playerMeleeDamageRange(player.level, player.statDamage, player.weapon);
-    const raw = randInt(min, max, r) * roll.multiplier;
-    const amount = Math.max(1, Math.round(raw * (1 - armorReduction(template.armor, player.level))));
-    // The text goes with the hit: shown here for a creature of this node, by the owner for a mirror.
-    this.damageCreature(creature, player.id, amount, now, 1, roll.outcome);
-  }
-
-  /** An avoided swing still pulls and taps the creature. */
-  private avoidedSwing(creature: CreatureInstance, template: CreatureTemplate, attackerId: string, now: number): void {
-    this.addThreat(creature, attackerId, 0, now);
-    this.tag(creature, attackerId);
-    this.world.markPlayerInCombat(attackerId);
-    if (template.stance === "passive") {
-      if (creature.state !== AIState.FLEEING) this.startFlee(creature, template, attackerId, now, PASSIVE_FLEE_MS, 1);
-    } else {
-      this.enterCombat(creature, now);
-    }
   }
 
   // ------------------------------------------------------- auras and spells
@@ -1022,7 +909,6 @@ export class CreatureCombatSystem {
       this.removeThreat(c, playerId);
       if (c.state === AIState.COMBAT && c.combat.threat.isEmpty()) this.evade(c, now);
     }
-    this.stopAutoAttack(playerId, true);
     return resisted;
   }
 
@@ -1241,7 +1127,7 @@ export class CreatureCombatSystem {
         }
         if (base > 0) {
           const crit = r() * 100 < CREATURE_SPELL_CRIT_PCT;
-          const amount = Math.max(1, Math.round((base + levelBonus()) * (crit ? SPELL_CRIT_MULTIPLIER : 1)));
+          const amount = Math.max(1, Math.round((base + levelBonus()) * (crit ? SPELL_CRIT_MULTIPLIER : 1) * (creature.damageMult ?? 1)));
           this.world.damagePlayer(creature, v.id, amount, crit ? "crit" : "hit");
         }
         if (effects.length) this.world.applySpellEffectsToPlayer(creature, v.id, spell);

@@ -15,9 +15,9 @@ mock.module("../controllers/sqldatabase", () => databaseModule({
 }));
 mock.module("../services/assetCache", () => ({
   // The quest definitions call onChange as they load: a file loaded later is handed this stand-in (mock.module outlives its file).
-  default: { get: async () => [{ name: "Wolf Pelt", quality: "common" }], onChange: () => () => {} },
+  default: { get: async () => [{ name: "Wolf Pelt", quality: "common", icon: "pelt" }], onChange: () => () => {} },
 }));
-await standInFor("../modules/spriteSheetManager", () => ({ getIconUrl: () => "" }));
+await standInFor("../modules/spriteSheetManager", () => ({ getIconUrl: (name: string | null) => (name ? `icon:${name}` : null) }));
 
 const { clearCaches } = await import("../services/datacache");
 const { default: lootTable, normalizeDropChance } = await import("../systems/lootTable");
@@ -66,5 +66,14 @@ describe("drop chance", () => {
     const random = spyOn(Math, "random").mockReturnValue(0.999);
     expect((await lootTable.roll(1)).length).toBe(2);
     random.mockRestore();
+  });
+});
+
+describe("rolled icons", () => {
+  test("a rolled item has the item's own icon, as the bags show it", async () => {
+    tableItems = [row(null)];
+    expect((await lootTable.roll(1))[0].iconUrl).toBe("icon:pelt");
+    const inline = await lootTable.roll(undefined, [{ itemName: "wolf pelt", minQuantity: 1, maxQuantity: 1, dropChance: 100, quality: "common" } as any]);
+    expect(inline[0].iconUrl).toBe("icon:pelt");
   });
 });

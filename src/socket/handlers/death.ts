@@ -7,7 +7,10 @@ import { Events } from "../../systems/events";
 import { listener } from "../../modules/event_bus";
 import { packetManager } from "../packet_manager";
 import { relayToMirrorViewers } from "../aoi";
-import { GHOST_TELEPORT_DELAY_MS, REVIVE_OFFER_RADIUS, bumpStateRevision, filterPlayersByMap, findGraveyardSpawn, forceStopPlayerMovement, resyncNpcChunks, sendPacket, sendStatsToPartyMembers, stateRevision } from "../receiver";
+import { GHOST_TELEPORT_DELAY_MS, REVIVE_OFFER_RADIUS, bumpStateRevision, filterPlayersByMap, findGraveyardSpawn, forceStopPlayerMovement, placePlayer, resyncNpcChunks, sendPacket, sendStatsToPartyMembers, stateRevision } from "../receiver";
+import { isCopyKey } from "../../systems/dungeons/copykey";
+import { releasePlan } from "../../systems/dungeons/rules";
+import { copyEntrance, sendToPortal } from "../dungeons";
 import type { PacketContext } from "./context";
 
 // Packet handlers moved from receiver.ts's packetReceiver switch (phase 6, Task 1). The case bodies are unchanged.
@@ -22,6 +25,61 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         if (!currentPlayer) return;
         // Only a corpse awaiting release can release. Ghosts are already out.
         if (!currentPlayer.isDead || currentPlayer.isGhost || currentPlayer.ghostTeleportPending) return;
+
+        if (isCopyKey(currentPlayer.location.map)) {
+          const entrance = await copyEntrance(currentPlayer.location.map).catch((e: any) => {
+            log.error(`Copy entrance for ${currentPlayer.username} could not be read: ${e?.message || e}`);
+            return null;
+          });
+          const plan = releasePlan(currentPlayer.location.map, entrance);
+          currentPlayer.ghostTeleportPending = true;
+          try {
+            // The revive below must happen: a release that failed before it would leave the corpse until the next one.
+            await forceStopPlayerMovement(currentPlayer).catch((e: any) => {
+              log.warn(`Movement of ${currentPlayer.username} could not be stopped on release: ${e?.message || e}`);
+            });
+            const synced = await player.synchronizeStats(currentPlayer.username).catch((e: any) => {
+              log.warn(`Stats of ${currentPlayer.username} could not be read on release: ${e?.message || e}`);
+              return null;
+            });
+            if (synced) currentPlayer.stats = synced;
+            currentPlayer.stats.health = currentPlayer.stats.total_max_health;
+            currentPlayer.stats.stamina = currentPlayer.stats.total_max_stamina;
+            currentPlayer.slowPercent = 0;
+            currentPlayer.slowMultiplier = 1;
+            currentPlayer.stunnedUntil = 0;
+            currentPlayer.isDead = false;
+            currentPlayer.isGhost = false;
+            currentPlayer.corpse = null;
+            currentPlayer.reviveOffered = false;
+            currentPlayer.ghostTeleportPending = false;
+            playerCache.set(currentPlayer.id, currentPlayer);
+            try {
+              await player.setDeadState(currentPlayer.username, 0, null);
+            } catch (e: any) {
+              log.error(`Failed to clear death state for ${currentPlayer.username}: ${e?.message || e}`);
+            }
+            bumpStateRevision();
+            const ghostPacket = packetManager.playerGhost({ id: currentPlayer.id, ghost: false });
+            const revivePacket = packetManager.revive({ id: currentPlayer.id, target: currentPlayer.id, stats: currentPlayer.stats });
+            filterPlayersByMap(currentPlayer.location.map).forEach((p) => {
+              sendPacket(p.wt, ghostPacket);
+              sendPacket(p.wt, revivePacket);
+            });
+            relayToMirrorViewers(currentPlayer, [...ghostPacket, ...revivePacket], false);
+            spellEffects.broadcastEffectsUpdate(currentPlayer);
+            sendStatsToPartyMembers(currentPlayer.username, currentPlayer.id, currentPlayer.stats);
+            listener.emit(Events.PLAYER_REVIVED, { player: currentPlayer });
+            if (plan.kind === "entrance") await placePlayer(currentPlayer, currentPlayer.location.map, plan.x, plan.y);
+            else await sendToPortal(currentPlayer);
+          } catch (e: any) {
+            log.error(`Release in a copy for ${currentPlayer.username} failed: ${e?.message || e}`);
+            if (!currentPlayer.isDead) await sendToPortal(currentPlayer).catch(() => {});
+          } finally {
+            currentPlayer.ghostTeleportPending = false;
+          }
+          break;
+        }
 
         const spawn = findGraveyardSpawn(
           currentPlayer.location.map,

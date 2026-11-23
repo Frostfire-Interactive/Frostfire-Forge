@@ -43,6 +43,7 @@ const NAMES = [
   "restartState", "toggleRestart", "shutdownEverywhere", "sendServerOrder",
   "resetCooldowns", "assetCache", "inventory", "getIconUrl", "settleStoreAttached", "settleForAdmin", "settlingNotice", "noticeRegion",
   "MAX_SPEED_OVERRIDE", "MIN_SPEED_OVERRIDE",
+  "summonMove",
 ];
 /** Functions beside the commands that they call, which use the same names. */
 const HELPERS = ["serverOrderDeps", "respawnPlayer", "endCooldowns", "killRefusal", "giveItem", "notSent"];
@@ -233,6 +234,7 @@ function names(name: string, args: string[], over: Row = {}): Row {
     defaultMap: "cave",
     resurrection: { clearSickness: () => {} },
     resyncNpcChunks: async () => {},
+    summonMove: async () => true,
     filterPlayersByMap: (map: string) => Object.values(online).filter((live) => live.location.map === map),
     spellEffects: { broadcastEffectsUpdate: () => {} },
     // As cluster/deliver.ts answers: a player here, or on another node, is online; the action runs on the node that holds them.

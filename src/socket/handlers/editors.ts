@@ -1,4 +1,11 @@
 import * as classEditor from "../../systems/classeditor";
+import * as dungeonEditor from "../../systems/dungeoneditor";
+import * as portalEditor from "../../systems/portaleditor";
+import * as stoneEditor from "../../systems/stoneeditor";
+import { forgetPortalsOn, forgetStonesOn } from "../dungeons";
+import { cleanChests, cleanPortals, mapObjectOptionsFor, type SummoningStoneObject } from "../../systems/mapobjects";
+import type { DungeonPortalObject, MapChestObject } from "../../systems/dungeons/types";
+import { dungeonDefs } from "../../systems/dungeons/definitions";
 import * as controlPanel from "../../systems/controlpanel";
 import * as cutsceneEditor from "../../systems/cutscenes";
 import * as cutscenePlayer from "../../systems/cutsceneplayer";
@@ -32,10 +39,12 @@ import { startMapSave } from "../../modules/mapsaves";
 import { MAP_NAME_RE, mayCreateMaps, readCreateMap, requestCreateMap } from "../../systems/mapcreate";
 import { mayEditTileSounds, readTileSoundChanges, saveTileSounds } from "../../systems/tilesounds";
 import { packetManager } from "../packet_manager";
+import { respawnMapChests } from "../../systems/placedchestsglue";
 import { saveMapChunks, saveMapProperties, applyChunksWithRebase, reloadMap, syncMapFromAssetServer } from "../../modules/assetloader";
 import { serverFetch } from "../../modules/https_servers.ts";
 import { activeEditorsByMap, despawnBatchQueue, editorEditHistory, filterPlayersByMap, mailboxEditorWorld, mapPropertiesCache, maps, placePlayer, runForControlPanel, sendMailboxes, sendPacket, spawnBatchQueue, transitionPlayerToMap } from "../receiver";
 import type { PacketContext } from "./context";
+import { COPY_EDITOR_NOTICE, editorRefusedInCopy } from "../../systems/dungeons/rules";
 import { applyZones, sizeAfterSave, zonesForSave, type MapZone } from "../../modules/zones";
 
 // Packet handlers moved from receiver.ts's packetReceiver switch (phase 6, Task 1). The case bodies are unchanged.
@@ -132,6 +141,7 @@ const editorNudges = {
   spell: { packet: (by: string) => packetManager.spellEditorUpdated({ by }), mayHaveOpen: () => (other: any) => spellEditor.mayHaveEditorOpen(other) },
   weather: { packet: (by: string) => packetManager.weatherEditorUpdated({ by }), mayHaveOpen: () => (other: any) => weatherEditor.mayHaveEditorOpen(other) },
   class: { packet: (by: string) => packetManager.classEditorUpdated({ by }), mayHaveOpen: () => (other: any) => classEditor.mayHaveEditorOpen(other) },
+  dungeon: { packet: (by: string) => packetManager.dungeonEditorUpdated({ by }), mayHaveOpen: () => (other: any) => dungeonEditor.mayHaveEditorOpen(other) },
   quest: { packet: (by: string) => packetManager.questEditorUpdated({ by }), mayHaveOpen: () => (other: any) => other.wt.readyState === 1 && questEditor.canUseEditor(other) },
 };
 export type EditorKind = keyof typeof editorNudges;
@@ -159,6 +169,17 @@ onPeerNews("editor-updated", (news) => {
   if (typeof kind !== "string" || !Object.hasOwn(editorNudges, kind)) return;
   editorsUpdatedHere(kind as EditorKind, typeof news?.by === "string" ? news.by : "");
 });
+
+/** A dungeon saved or deleted: every player here draws its portals again, from previews asked for anew. */
+function dungeonPortalsChangedHere(): void {
+  const changed = packetManager.dungeonPortalsChanged();
+  for (const other of Object.values(playerCache.list()) as any[]) {
+    if (other?.wt) sendPacket(other.wt, changed);
+  }
+}
+
+/** Cluster mode: a dungeon saved or deleted on another node. */
+onPeerNews("dungeon-portals", () => dungeonPortalsChangedHere());
 
 /** The mailboxes of a map changed: its players here see them where they now stand, and the open editors but the saver's are told. */
 async function mailboxesChangedHere(map: string, by: string, exceptId?: string): Promise<void> {
@@ -189,23 +210,51 @@ async function zonesSavedHere(mapName: string, zones: MapZone[]): Promise<void> 
   for (const p of filterPlayersByMap(mapName)) sendPacket(p.wt, update);
 }
 
-type WorldSave = { world: string; mapName: string; changed: ChunkAt[]; graveyards?: any[]; warps?: any[]; zones?: MapZone[] };
+/** Who may save a map; the object pickers of the map editor ask the same. */
+async function canSaveMaps(username: string): Promise<boolean> {
+  const perms = String((await permissions.get(username)) ?? "").split(",");
+  return perms.includes("server.admin") || perms.includes("server.*");
+}
+
+/** The chests and dungeon portals of a SAVE_MAP, checked; a list that is not sent stays undefined. */
+function cleanMapObjects(save: { chests?: unknown; dungeonPortals?: unknown }): { chests?: MapChestObject[]; dungeonPortals?: DungeonPortalObject[] } | { error: string } {
+  let chests: MapChestObject[] | undefined, dungeonPortals: DungeonPortalObject[] | undefined;
+  if (save.chests !== undefined) {
+    const clean = cleanChests(save.chests);
+    if ("error" in clean) return { error: `Cannot save chests: ${clean.error}` };
+    chests = clean.chests;
+  }
+  if (save.dungeonPortals !== undefined) {
+    const clean = cleanPortals(save.dungeonPortals);
+    if ("error" in clean) return { error: `Cannot save dungeon portals: ${clean.error}` };
+    dungeonPortals = clean.portals;
+  }
+  return { chests, dungeonPortals };
+}
+
+type WorldSave = { world: string; mapName: string; changed: ChunkAt[]; graveyards?: any[]; warps?: any[]; zones?: MapZone[]; chests?: any[]; dungeonPortals?: any[]; summoningStones?: any[] };
 
 async function worldSavedHere(save: WorldSave, exceptId?: unknown): Promise<void> {
   const world = getWorldMap(save.world);
   if (!world) return;
-  const { changed, graveyards, warps, zones } = save;
+  const { changed, graveyards, warps, zones, chests, dungeonPortals, summoningStones } = save;
   editorEditHistory.delete(save.mapName);
-  if (graveyards || warps) {
+  if (graveyards || warps || chests || dungeonPortals || summoningStones) {
     if (world.properties) {
       if (graveyards) world.properties.graveyards = graveyards;
       if (warps) world.properties.warps = warps;
+      if (chests) world.properties.chests = chests;
+      if (dungeonPortals) world.properties.dungeonPortals = dungeonPortals;
+      if (summoningStones) world.properties.summoningStones = summoningStones;
     }
     // movement reads the warps from its own cache
     clearMapCache(save.world);
   }
   if (changed.length > 0) fishing.forgetMap(save.world);
-  if (changed.length > 0 || graveyards || warps || zones) await refreshWorldMap(save.world);
+  if (changed.length > 0 || graveyards || warps || zones || chests || dungeonPortals || summoningStones) await refreshWorldMap(save.world);
+  if (chests) respawnMapChests(`${save.world.replace(".json", "")}.json`, chests);
+  if (dungeonPortals) portalsChangedHere(save.world, dungeonPortals);
+  if (summoningStones) stonesChangedHere(save.world, summoningStones);
   if (zones) await zonesSavedHere(save.world, zones);
   if (changed.length === 0) return;
   const update = packetManager.updateChunks({ chunks: changed });
@@ -272,7 +321,7 @@ onPeerNews("world-saved", async (news, from) => {
   const zones = Array.isArray(news?.zones) ? news.zones as MapZone[] : undefined;
   let saved = false;
   try {
-    await worldSavedHere({ world, mapName: typeof news?.mapName === "string" ? news.mapName : world, changed: news.changed, graveyards: listed(news.graveyards), warps: listed(news.warps), zones });
+    await worldSavedHere({ world, mapName: typeof news?.mapName === "string" ? news.mapName : world, changed: news.changed, graveyards: listed(news.graveyards), warps: listed(news.warps), zones, chests: Array.isArray(news?.chests) ? news.chests : undefined, dungeonPortals: Array.isArray(news?.dungeonPortals) ? news.dungeonPortals : undefined, summoningStones: Array.isArray(news?.summoningStones) ? news.summoningStones : undefined });
     saved = true;
   } finally {
     endSaveElsewhere(from, world, saved);
@@ -305,11 +354,156 @@ function showMapSaveHere(map: string, view: MapSaveView, exceptId?: unknown): vo
 async function mapSavedElsewhere(mapName: string, view: MapSaveView, zones?: MapZone[]): Promise<void> {
   await syncMapFromAssetServer(mapName);
   await reloadMap(mapName);
+  // A map with no chests has them all removed; one missing from the properties says nothing of its chests
+  const props = mapPropertiesCache.find((m: any) => m.name === `${mapName.replace(".json", "")}.json`);
+  if (props) respawnMapChests(`${mapName.replace(".json", "")}.json`, props.chests ?? []);
   clearMapCache(mapName);
   editorEditHistory.delete(mapName);
   showMapSaveHere(mapName, view);
   if (zones) await zonesSavedHere(mapName, zones);
 }
+
+/** A map's portals changed: the cached lists are dropped and the map's players here draw the new ones. */
+function portalsChangedHere(map: string, portals: unknown[]): void {
+  forgetPortalsOn();
+  const file = `${map.replace(/\.json$/, "")}.json`;
+  const update = packetManager.mapPortals({ mapName: file, portals });
+  for (const p of filterPlayersByMap(file)) sendPacket(p.wt, update);
+}
+
+/** A map's summoning stones changed: the cached lists are dropped and the map's players here draw the new ones. */
+function stonesChangedHere(map: string, stones: unknown[]): void {
+  forgetStonesOn();
+  const file = `${map.replace(/\.json$/, "")}.json`;
+  const update = packetManager.mapSummoningStones({ mapName: file, stones });
+  for (const p of filterPlayersByMap(file)) sendPacket(p.wt, update);
+}
+
+/**
+ * One map's portals saved from the portal editor or a dungeon editor link: written as SAVE_MAP writes them (the asset
+ * server, the shared map properties, and the world or the map file here), then taken in by every node of the region.
+ */
+async function writeMapPortals(map: string, portals: DungeonPortalObject[], by: string): Promise<void> {
+  const name = map.replace(/\.json$/, "");
+  const file = `${name}.json`;
+  const saving = await startSaveHere(name);
+  let saved = false;
+  try {
+    const assetServerUrl = process.env.ASSET_SERVER_INTERNAL_URL || process.env.ASSET_SERVER_URL || "http://localhost:8081";
+    const world = getWorldMap(name);
+    const response = await serverFetch(`${assetServerUrl}/save-map-properties`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        mapName: world ? name : file, dungeonPortals: portals,
+        serverId: process.env.SERVER_ID || "game-server", authKey: process.env.ASSET_SERVER_AUTH_KEY || process.env.GATEWAY_AUTH_KEY,
+      }),
+    });
+    const result = await response.json().catch(() => ({ error: response.statusText })) as any;
+    if (!response.ok || result?.success === false) throw new Error(result?.error || `the asset server answered ${response.status}`);
+    const propsList = await assetCache.get("mapProperties");
+    const props = propsList?.find((m: any) => m.name === file);
+    if (props) props.dungeonPortals = portals;
+    if (propsList) await assetCache.add("mapProperties", propsList);
+    if (world) {
+      const save: WorldSave = { world: name, mapName: name, changed: [], dungeonPortals: portals };
+      saving.tell("world-saved", save);
+      await worldSavedHere(save);
+    } else {
+      const cachedMaps = (await assetCache.get("maps")) as MapData[] | null;
+      const held = cachedMaps?.find((m: any) => m.name === file);
+      if (held?.data) (held.data as any).dungeonPortals = portals;
+      await saveMapProperties(file, undefined, undefined, undefined, undefined, portals);
+      await reloadMap(file);
+      if (props) props.dungeonPortals = portals;
+      saving.tell("map-portals", { mapName: file });
+      portalsChangedHere(file, portals);
+    }
+    saved = true;
+    log.info(`Portals of ${name} saved by ${by}: ${portals.length}`);
+  } finally {
+    saving.end(saved);
+  }
+}
+portalEditor.setPortalWriter(writeMapPortals);
+
+/** One map's summoning stones saved from the stone editor: written as writeMapPortals writes portals. */
+async function writeMapStones(map: string, stones: SummoningStoneObject[], by: string): Promise<void> {
+  const name = map.replace(/\.json$/, "");
+  const file = `${name}.json`;
+  const saving = await startSaveHere(name);
+  let saved = false;
+  try {
+    const assetServerUrl = process.env.ASSET_SERVER_INTERNAL_URL || process.env.ASSET_SERVER_URL || "http://localhost:8081";
+    const world = getWorldMap(name);
+    const response = await serverFetch(`${assetServerUrl}/save-map-properties`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        mapName: world ? name : file, summoningStones: stones,
+        serverId: process.env.SERVER_ID || "game-server", authKey: process.env.ASSET_SERVER_AUTH_KEY || process.env.GATEWAY_AUTH_KEY,
+      }),
+    });
+    const result = await response.json().catch(() => ({ error: response.statusText })) as any;
+    if (!response.ok || result?.success === false) throw new Error(result?.error || `the asset server answered ${response.status}`);
+    const propsList = await assetCache.get("mapProperties");
+    const props = propsList?.find((m: any) => m.name === file);
+    if (props) props.summoningStones = stones;
+    if (propsList) await assetCache.add("mapProperties", propsList);
+    forgetStonesOn();
+    if (world) {
+      const save: WorldSave = { world: name, mapName: name, changed: [], summoningStones: stones };
+      saving.tell("world-saved", save);
+      await worldSavedHere(save);
+    } else {
+      const cachedMaps = (await assetCache.get("maps")) as MapData[] | null;
+      const held = cachedMaps?.find((m: any) => m.name === file);
+      if (held?.data) (held.data as any).summoningStones = stones;
+      await saveMapProperties(file, undefined, undefined, undefined, undefined, undefined, stones);
+      await reloadMap(file);
+      if (props) props.summoningStones = stones;
+      saving.tell("map-stones", { mapName: file });
+      stonesChangedHere(file, stones);
+    }
+    saved = true;
+    log.info(`Summoning stones of ${name} saved by ${by}: ${stones.length}`);
+  } finally {
+    saving.end(saved);
+  }
+}
+stoneEditor.setStoneWriter(writeMapStones);
+
+/** Cluster mode: a map's summoning stones saved on another node (a world's come with world-saved). */
+onPeerNews("map-stones", async (news, from) => {
+  const mapName = news?.mapName;
+  if (typeof mapName !== "string" || !mapName) return;
+  let saved = false;
+  try {
+    await syncMapFromAssetServer(mapName);
+    await reloadMap(mapName);
+    const props = mapPropertiesCache.find((m: any) => m.name === mapName);
+    stonesChangedHere(mapName, Array.isArray(props?.summoningStones) ? props.summoningStones : []);
+    saved = true;
+  } finally {
+    endSaveElsewhere(from, mapName, saved);
+  }
+});
+
+/** Cluster mode: a map's portals saved on another node (a world's come with world-saved). */
+onPeerNews("map-portals", async (news, from) => {
+  const mapName = news?.mapName;
+  if (typeof mapName !== "string" || !mapName) return;
+  let saved = false;
+  try {
+    await syncMapFromAssetServer(mapName);
+    await reloadMap(mapName);
+    const props = mapPropertiesCache.find((m: any) => m.name === mapName);
+    portalsChangedHere(mapName, Array.isArray(props?.dungeonPortals) ? props.dungeonPortals : []);
+    saved = true;
+  } finally {
+    endSaveElsewhere(from, mapName, saved);
+  }
+});
 
 async function mapJoinsCluster(name: string): Promise<void> {
   const props = mapPropertiesCache.find((m: any) => m.name === `${name}.json`);
@@ -376,10 +570,15 @@ onPeerNews("editor-layer-lock", (news) => {
   layerLockHere(map, { mapName: news.mapName ?? map, layerName: news.layerName, locked: news.locked });
 });
 
-export const handles: ReadonlySet<string> = new Set(["EDITOR_TILE_EDIT", "EDITOR_LAYER_LOCK", "EDITOR_OPEN", "EDITOR_CLOSE", "CREATURE_EDITOR_LIST", "CREATURE_EDITOR_CLOSE", "CREATURE_EDITOR_SAVE_TEMPLATE", "CREATURE_EDITOR_DELETE_TEMPLATE", "CREATURE_EDITOR_SAVE_ABILITY", "CREATURE_EDITOR_DELETE_ABILITY", "CREATURE_EDITOR_SAVE_ABILITIES", "CREATURE_EDITOR_SAVE_SPAWN", "CREATURE_EDITOR_DELETE_SPAWN", "CREATURE_EDITOR_SAVE_PATH", "CREATURE_EDITOR_DELETE_PATH", "CREATURE_EDITOR_SAVE_LINKGROUP", "CREATURE_EDITOR_DELETE_LINKGROUP", "CREATURE_EDITOR_SAVE_POOL", "CREATURE_EDITOR_DELETE_POOL", "CREATURE_EDITOR_ACTION", "ITEM_EDITOR_LIST", "ITEM_EDITOR_SEARCH", "ITEM_EDITOR_SAVE", "ITEM_EDITOR_DELETE", "MOUNT_EDITOR_LIST", "MOUNT_EDITOR_SAVE", "MOUNT_EDITOR_DELETE", "CUTSCENE_EDITOR_LIST", "CUTSCENE_EDITOR_SAVE", "CUTSCENE_EDITOR_DELETE", "CUTSCENE_EDITOR_RESOLVE", "CUTSCENE_EDITOR_PLAY", "CUTSCENE_EDITOR_GOTO", "SPELL_EDITOR_LIST", "SPELL_EDITOR_SEARCH", "SPELL_EDITOR_SAVE", "SPELL_EDITOR_DELETE", "SPELL_EDITOR_LEARN", "WEATHER_EDITOR_LIST", "WEATHER_EDITOR_SAVE", "WEATHER_EDITOR_DELETE", "CLASS_EDITOR_LIST", "CLASS_EDITOR_SAVE", "CLASS_EDITOR_DELETE", "LOOT_EDITOR_CREATE_TABLE", "LOOT_EDITOR_DELETE_TABLE", "LOOT_EDITOR_ADD_ITEM", "LOOT_EDITOR_REMOVE_ITEM", "LOOT_EDITOR_UPDATE_ITEM", "PLAYER_EDITOR_LOAD", "PLAYER_EDITOR_SEARCH", "PLAYER_EDITOR_ACTION", "CONTROL_PANEL_LOAD", "CONTROL_PANEL_QUERY", "CONTROL_PANEL_ACTION", "CREATURE_DEBUG_SUBSCRIBE", "CLUSTER_DEBUG", "TOGGLE_QUEST_EDITOR", "QUEST_EDITOR_DATA", "QUEST_EDITOR_SEARCH", "QUEST_EDITOR_SAVE", "QUEST_EDITOR_DELETE", "QUEST_EDITOR_CLOSE", "CREATE_MAP", "SAVE_TILE_SOUNDS", "SAVE_TILE_FOOTPRINTS", "SAVE_MAP", "SAVE_PARTICLE", "DELETE_PARTICLE", "RENAME_PARTICLE", "LIST_PARTICLES", "TEST_PARTICLE", "FISHING_EDITOR_LIST", "FISHING_EDITOR_SAVE", "MAILBOX_EDITOR_LIST", "MAILBOX_EDITOR_SAVE", "MAILBOX_EDITOR_DELETE", "ACHIEVEMENT_EDITOR_LIST", "ACHIEVEMENT_EDITOR_SAVE", "ACHIEVEMENT_EDITOR_DELETE", "GATHERING_EDITOR_LIST", "GATHERING_EDITOR_SAVE", "GATHERING_EDITOR_DELETE", "GATHERING_EDITOR_PREVIEW", "LIST_LOOT_TABLES"]);
+export const handles: ReadonlySet<string> = new Set(["EDITOR_TILE_EDIT", "EDITOR_LAYER_LOCK", "EDITOR_OPEN", "EDITOR_CLOSE", "CREATURE_EDITOR_LIST", "CREATURE_EDITOR_CLOSE", "CREATURE_EDITOR_SAVE_TEMPLATE", "CREATURE_EDITOR_DELETE_TEMPLATE", "CREATURE_EDITOR_SAVE_ABILITY", "CREATURE_EDITOR_DELETE_ABILITY", "CREATURE_EDITOR_SAVE_ABILITIES", "CREATURE_EDITOR_SAVE_SPAWN", "CREATURE_EDITOR_DELETE_SPAWN", "CREATURE_EDITOR_SAVE_PATH", "CREATURE_EDITOR_DELETE_PATH", "CREATURE_EDITOR_SAVE_LINKGROUP", "CREATURE_EDITOR_DELETE_LINKGROUP", "CREATURE_EDITOR_SAVE_POOL", "CREATURE_EDITOR_DELETE_POOL", "CREATURE_EDITOR_ACTION", "ITEM_EDITOR_LIST", "ITEM_EDITOR_SEARCH", "ITEM_EDITOR_SAVE", "ITEM_EDITOR_DELETE", "MOUNT_EDITOR_LIST", "MOUNT_EDITOR_SAVE", "MOUNT_EDITOR_DELETE", "CUTSCENE_EDITOR_LIST", "CUTSCENE_EDITOR_SAVE", "CUTSCENE_EDITOR_DELETE", "CUTSCENE_EDITOR_RESOLVE", "CUTSCENE_EDITOR_PLAY", "CUTSCENE_EDITOR_GOTO", "SPELL_EDITOR_LIST", "SPELL_EDITOR_SEARCH", "SPELL_EDITOR_SAVE", "SPELL_EDITOR_DELETE", "SPELL_EDITOR_LEARN", "WEATHER_EDITOR_LIST", "WEATHER_EDITOR_SAVE", "WEATHER_EDITOR_DELETE", "CLASS_EDITOR_LIST", "CLASS_EDITOR_SAVE", "CLASS_EDITOR_DELETE", "DUNGEON_EDITOR_LIST", "DUNGEON_EDITOR_SAVE", "DUNGEON_EDITOR_DELETE", "PORTAL_EDITOR_LIST", "PORTAL_EDITOR_SAVE", "PORTAL_EDITOR_DELETE", "SUMMON_STONE_EDITOR_LIST", "SUMMON_STONE_EDITOR_SAVE", "SUMMON_STONE_EDITOR_DELETE", "LOOT_EDITOR_CREATE_TABLE", "LOOT_EDITOR_DELETE_TABLE", "LOOT_EDITOR_ADD_ITEM", "LOOT_EDITOR_REMOVE_ITEM", "LOOT_EDITOR_UPDATE_ITEM", "PLAYER_EDITOR_LOAD", "PLAYER_EDITOR_SEARCH", "PLAYER_EDITOR_ACTION", "CONTROL_PANEL_LOAD", "CONTROL_PANEL_QUERY", "CONTROL_PANEL_ACTION", "CREATURE_DEBUG_SUBSCRIBE", "CLUSTER_DEBUG", "TOGGLE_QUEST_EDITOR", "QUEST_EDITOR_DATA", "QUEST_EDITOR_SEARCH", "QUEST_EDITOR_SAVE", "QUEST_EDITOR_DELETE", "QUEST_EDITOR_CLOSE", "CREATE_MAP", "SAVE_TILE_SOUNDS", "SAVE_TILE_FOOTPRINTS", "SAVE_MAP", "SAVE_PARTICLE", "DELETE_PARTICLE", "RENAME_PARTICLE", "LIST_PARTICLES", "TEST_PARTICLE", "FISHING_EDITOR_LIST", "FISHING_EDITOR_SAVE", "MAILBOX_EDITOR_LIST", "MAILBOX_EDITOR_SAVE", "MAILBOX_EDITOR_DELETE", "ACHIEVEMENT_EDITOR_LIST", "ACHIEVEMENT_EDITOR_SAVE", "ACHIEVEMENT_EDITOR_DELETE", "GATHERING_EDITOR_LIST", "GATHERING_EDITOR_SAVE", "GATHERING_EDITOR_DELETE", "GATHERING_EDITOR_PREVIEW", "LIST_LOOT_TABLES", "MAP_OBJECT_OPTIONS"]);
 
 export async function handle(ctx: PacketContext): Promise<unknown> {
   const { currentPlayer, data, type, wt } = ctx;
+  if (currentPlayer && editorRefusedInCopy(type, currentPlayer.location?.map, data)) {
+    sendPacket(wt, packetManager.notify({ message: COPY_EDITOR_NOTICE }));
+    if (type === "EDITOR_OPEN") sendPacket(wt, packetManager.editorSyncReady({ mapName: currentPlayer.location.map }));
+    return;
+  }
   switch (type) {
 
       case "EDITOR_TILE_EDIT": {
@@ -667,6 +866,66 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         break;
       }
 
+      case "DUNGEON_EDITOR_LIST":
+      case "DUNGEON_EDITOR_SAVE":
+      case "DUNGEON_EDITOR_DELETE": {
+        if (!currentPlayer) return;
+        // Permission is checked first, on every one of these; the answer carries the dungeons as they stand.
+        const result = await dungeonEditor.handleEditorPacket(currentPlayer, type, data);
+        if (result.kind === "data") {
+          sendPacket(wt, packetManager.dungeonEditorData(result.data));
+          break;
+        }
+        if (result.denied) sendPacket(wt, packetManager.notify({ message: dungeonEditor.DENIED }));
+        sendPacket(wt, packetManager.dungeonEditorResult({
+          ok: result.ok, errors: result.errors, fields: result.fields, name: result.name, id: result.id, notes: result.notes, action: type, data: result.data,
+        }));
+        if (result.changed) {
+          editorsUpdated("dungeon", currentPlayer);
+          dungeonPortalsChangedHere();
+          void tellPeers("dungeon-portals", {});
+        }
+        break;
+      }
+
+      case "PORTAL_EDITOR_LIST":
+      case "PORTAL_EDITOR_SAVE":
+      case "PORTAL_EDITOR_DELETE": {
+        if (!currentPlayer) return;
+        // Permission is checked first, on every one of these; the answer carries the map's portals as they stand.
+        const result = await portalEditor.handlePortalEditorPacket(currentPlayer, type, data);
+        if (result.kind === "data") {
+          sendPacket(wt, packetManager.portalEditorData(result.data));
+          break;
+        }
+        if (result.denied) sendPacket(wt, packetManager.notify({ message: dungeonEditor.DENIED }));
+        sendPacket(wt, packetManager.portalEditorResult({
+          ok: result.ok, errors: result.errors, fields: result.fields, name: result.name, notes: result.notes, action: type, data: result.data,
+        }));
+        if (result.ok) {
+          dungeonPortalsChangedHere();
+          void tellPeers("dungeon-portals", {});
+        }
+        break;
+      }
+
+      case "SUMMON_STONE_EDITOR_LIST":
+      case "SUMMON_STONE_EDITOR_SAVE":
+      case "SUMMON_STONE_EDITOR_DELETE": {
+        if (!currentPlayer) return;
+        // Permission is checked first, on every one of these; the answer carries the map's stones as they stand.
+        const result = await stoneEditor.handleStoneEditorPacket(currentPlayer, type, data);
+        if (result.kind === "data") {
+          sendPacket(wt, packetManager.stoneEditorData(result.data));
+          break;
+        }
+        if (result.denied) sendPacket(wt, packetManager.notify({ message: dungeonEditor.DENIED }));
+        sendPacket(wt, packetManager.stoneEditorResult({
+          ok: result.ok, errors: result.errors, fields: result.fields, name: result.name, action: type, data: result.data,
+        }));
+        break;
+      }
+
       case "LOOT_EDITOR_CREATE_TABLE":
       case "LOOT_EDITOR_DELETE_TABLE":
       case "LOOT_EDITOR_ADD_ITEM":
@@ -859,23 +1118,55 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
       case "SAVE_MAP": {
         if (!currentPlayer) return;
 
-        const userPermissions = await permissions.get(currentPlayer.username) as string;
-        const perms = userPermissions.includes(",") ? userPermissions.split(",") : userPermissions.length ? [userPermissions] : [];
-        const hasPermission = perms.includes('server.admin') || perms.includes('server.*');
+        const saveData = data as unknown as { saveId?: unknown, mapName: string, chunks: any[], graveyards?: any, warps?: any, zones?: unknown, chests?: unknown, dungeonPortals?: unknown };
+        // The editor keeps its unsaved marks until this answer says the save worked; saveId is the editor's own.
+        // It is sent once: an error after the save was told as done does not undo the save.
+        let answered = false;
+        const answer = (ok: boolean) => {
+          if (answered) return;
+          answered = true;
+          sendPacket(wt, packetManager.mapSaveResult({ saveId: saveData?.saveId, mapName: saveData?.mapName, ok }));
+        };
+        // A check before the save that throws is a failed save
+        const failed = (error: any) => {
+          log.error(`Error saving map ${saveData?.mapName}: ${error?.message ?? error}`);
+          sendPacket(wt, packetManager.notify({ message: `Error saving map changes: ${error?.message ?? error}` }));
+          answer(false);
+        };
 
-        if (!hasPermission) {
+        let allowed = false;
+        try {
+          allowed = await canSaveMaps(currentPlayer.username);
+        } catch (error) {
+          failed(error);
+          return;
+        }
+        if (!allowed) {
           sendPacket(wt, packetManager.notify({
             message: 'You do not have permission to save map changes.'
           }));
+          answer(false);
           return;
         }
 
-        const saveData = data as unknown as { mapName: string, chunks: any[], graveyards?: any, warps?: any, zones?: unknown };
+        const objectSave = cleanMapObjects(saveData ?? {});
+        if ("error" in objectSave) {
+          sendPacket(wt, packetManager.notify({ message: objectSave.error }));
+          answer(false);
+          break;
+        }
+        let { chests, dungeonPortals } = objectSave;
 
         if (typeof saveData?.mapName === "string" && getWorldMap(saveData.mapName)) {
           const worldName = saveData.mapName.replace(".json", "");
           // The asset server tells every node of the save too (/map-events): it is not taken in a second time
-          const saving = await startSaveHere(worldName);
+          let saving: Awaited<ReturnType<typeof startSaveHere>>;
+          try {
+            saving = await startSaveHere(worldName);
+          } catch (error) {
+            failed(error);
+            break;
+          }
           let saved = false;
           try {
             // As for any map, a list of graveyards or warps is saved only when it holds something
@@ -887,11 +1178,18 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
             const zoneSave = zonesForSave(saveData.zones, world.width, world.height);
             if ("error" in zoneSave) {
               sendPacket(wt, packetManager.notify({ message: `Cannot save zones: ${zoneSave.error}` }));
+              answer(false);
               break;
             }
             const zones = zoneSave.zones;
-            if (!hasChunks && !graveyards && !warps && !zones) {
+            // An empty list removes every chest or portal; for a world that has none it changes nothing
+            const removesNothing = (list: unknown[] | undefined, held: unknown) => list?.length === 0 && !(Array.isArray(held) && held.length > 0);
+            if (removesNothing(chests, world.properties?.chests)) chests = undefined;
+            if (removesNothing(dungeonPortals, world.properties?.dungeonPortals)) dungeonPortals = undefined;
+            if (!hasChunks && !graveyards && !warps && !zones && !chests && !dungeonPortals) {
               sendPacket(wt, packetManager.notify({ message: 'Nothing to save.' }));
+              // What the editor sent is what the world has already
+              answer(true);
               break;
             }
             log.info(`World save requested by ${currentPlayer.username} for ${worldName}, ${hasChunks ? saveData.chunks.length : 0} chunks modified`);
@@ -911,19 +1209,21 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
               const result = await post("/save-map-chunks", { chunks: saveData.chunks });
               changed = Array.isArray(result.changed) ? result.changed : [];
             }
-            if (graveyards || warps || zones) {
-              await post("/save-map-properties", { graveyards, warps, zones });
+            if (graveyards || warps || zones || chests || dungeonPortals) {
+              await post("/save-map-properties", { graveyards, warps, zones, chests, dungeonPortals });
               // held for any map in the shared map properties; each node's world, and its movement cache, take them below
               const propsList = await assetCache.get("mapProperties");
               const props = propsList?.find((m: any) => m.name === `${worldName}.json`);
               if (props) {
                 if (graveyards) props.graveyards = graveyards;
                 if (warps) props.warps = warps;
+                if (chests) props.chests = chests;
+                if (dungeonPortals) props.dungeonPortals = dungeonPortals;
               }
               if (propsList) await assetCache.add("mapProperties", propsList);
             }
             // Every node of the region takes the save (cluster mode), and this one; the saver already shows its edits
-            const save: WorldSave = { world: worldName, mapName: saveData.mapName, changed, graveyards, warps, zones };
+            const save: WorldSave = { world: worldName, mapName: saveData.mapName, changed, graveyards, warps, zones, chests, dungeonPortals };
             saving.tell("world-saved", save);
             await worldSavedHere(save, wt.data.id);
             saved = true;
@@ -931,11 +1231,13 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
             sendPacket(wt, packetManager.notify({
               message: `Map saved successfully! ${changed.length} chunks updated.`
             }));
+            answer(true);
           } catch (error: any) {
             log.error(`Error saving world ${worldName}: ${error.message}`);
             sendPacket(wt, packetManager.notify({
               message: `Error saving map changes: ${error.message}`
             }));
+            answer(false);
           } finally {
             saving.end(saved);
           }
@@ -944,14 +1246,23 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         }
 
         // The asset server tells every node of the save too (/map-events): it is not taken in a second time
-        const saving = typeof saveData?.mapName === "string" ? await startSaveHere(saveData.mapName) : null;
+        let saving: Awaited<ReturnType<typeof startSaveHere>> | null = null;
+        try {
+          if (typeof saveData?.mapName === "string") saving = await startSaveHere(saveData.mapName);
+        } catch (error) {
+          failed(error);
+          break;
+        }
         let saved = false;
+        // How far the save moved the map's contents when it grew left or up
+        let portalShift = { x: 0, y: 0 };
         try {
           const planned = ((await assetCache.get("maps")) as MapData[] | null)?.find((m: any) => m.name === saveData.mapName)?.data;
           const plannedSize = sizeAfterSave(planned ?? {}, (saveData as any).bounds);
           const zoneSave = zonesForSave(saveData.zones, plannedSize.width, plannedSize.height);
           if ("error" in zoneSave) {
             sendPacket(wt, packetManager.notify({ message: `Cannot save zones: ${zoneSave.error}` }));
+            answer(false);
             break;
           }
           const zones = zoneSave.zones;
@@ -982,7 +1293,7 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           log.info(`Map chunks saved to asset server: ${saveData.mapName}`);
 
           // Also sync graveyards and warps to asset server if present
-          if (saveData.graveyards || saveData.warps || zones) {
+          if (saveData.graveyards || saveData.warps || zones || chests || dungeonPortals) {
             try {
               const syncResponse = await serverFetch(`${assetServerUrl}/save-map-properties`, {
                 method: "POST",
@@ -994,6 +1305,8 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
                   graveyards: saveData.graveyards,
                   warps: saveData.warps,
                   zones,
+                  chests,
+                  dungeonPortals,
                   authKey: authKey
                 })
               });
@@ -1010,7 +1323,7 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           }
 
           // Save graveyards and warps to mapProperties
-          if (saveData.graveyards !== undefined || saveData.warps !== undefined) {
+          if (saveData.graveyards !== undefined || saveData.warps !== undefined || chests || dungeonPortals) {
             const mapPropertiesCache = await assetCache.get("mapProperties");
             const mapPropsIndex = mapPropertiesCache.findIndex((m: any) => m.name === `${saveData.mapName.replace('.json', '')}.json`);
 
@@ -1021,6 +1334,8 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
               if (saveData.warps !== undefined) {
                 mapPropertiesCache[mapPropsIndex].warps = saveData.warps;
               }
+              if (chests) mapPropertiesCache[mapPropsIndex].chests = chests;
+              if (dungeonPortals) mapPropertiesCache[mapPropsIndex].dungeonPortals = dungeonPortals;
 
               try {
                 await assetCache.add("mapProperties", mapPropertiesCache);
@@ -1046,23 +1361,26 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
             if (saveData.warps !== undefined) {
               cachedMaps[mapIndex].data.warps = saveData.warps;
             }
+            if (chests) cachedMaps[mapIndex].data.chests = chests;
+            if (dungeonPortals) cachedMaps[mapIndex].data.dungeonPortals = dungeonPortals;
 
             assetCache.add("maps", cachedMaps).catch((error) => log.error(`The edited map could not be written to the cache: ${error}`));
 
             // Save graveyards and warps properties and reload the map
-            if (saveData.graveyards !== undefined || saveData.warps !== undefined || zones) {
+            if (saveData.graveyards !== undefined || saveData.warps !== undefined || zones || chests || dungeonPortals) {
               try {
                 log.debug(`[SAVE_MAP] Graveyards: ${saveData.graveyards ? `${saveData.graveyards.length} items` : 'undefined'}`);
                 log.debug(`[SAVE_MAP] Warps: ${saveData.warps ? `${saveData.warps.length} items` : 'undefined'}`);
 
                 // Only call saveMapProperties if there's actual data to save
                 const hasPoints = (saveData.graveyards && saveData.graveyards.length > 0) || (saveData.warps && saveData.warps.length > 0);
-                if (hasPoints || zones) {
-                  await saveMapProperties(saveData.mapName, hasPoints ? saveData.graveyards : undefined, hasPoints ? saveData.warps : undefined, zones);
+                if (hasPoints || zones || chests || dungeonPortals) {
+                  await saveMapProperties(saveData.mapName, hasPoints ? saveData.graveyards : undefined, hasPoints ? saveData.warps : undefined, zones, chests, dungeonPortals);
 
                   // Reload the map to refresh mapProperties cache
                   const { reloadMap: reloadMapFunc } = await import("../../modules/assetloader");
                   const reloadedMap = await reloadMapFunc(saveData.mapName);
+                  if (chests) respawnMapChests(saveData.mapName, chests);
 
                   // Update the cached maps with the reloaded map
                   const updatedMaps = cachedMaps;
@@ -1107,6 +1425,7 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           sendPacket(wt, packetManager.notify({
             message: `Map saved successfully! ${saveData.chunks.length} chunks updated.`
           }));
+          answer(true);
 
           const updatedMapData = cachedMaps[mapIndex]?.data;
           const tw = updatedMapData?.tilewidth || 32;
@@ -1118,6 +1437,7 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
             height: updatedMapData?.height ?? rebaseResult?.height,
             chunks: saveData.chunks.map((chunk: any) => ({ chunkX: chunk.chunkX, chunkY: chunk.chunkY })),
           };
+          portalShift = { x: view.shiftX, y: view.shiftY };
           showMapSaveHere(saveData.mapName, view, wt.data.id);
           if (zones) await zonesSavedHere(saveData.mapName, zones);
           saving?.tell("map-saved", { mapName: saveData.mapName, view, zones });
@@ -1127,8 +1447,29 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           sendPacket(wt, packetManager.notify({
             message: 'Error saving map changes.'
           }));
+          answer(false);
         } finally {
           saving?.end(saved);
+        }
+
+        // The map's portals move with it: read and written in turn with the portal editor's changes, so none is undone
+        if (saved && (portalShift.x || portalShift.y)) {
+          try {
+            await portalEditor.shiftMapPortals(saveData.mapName, portalShift.x, portalShift.y, currentPlayer.username);
+          } catch (error: any) {
+            log.error(`The portals of ${saveData.mapName} could not be moved with the map: ${error?.message ?? error}`);
+            sendPacket(wt, packetManager.notify({ message: "The map was saved, but its portals could not be moved with it." }));
+          }
+        }
+
+        // Its summoning stones move with it, the same way
+        if (saved && (portalShift.x || portalShift.y)) {
+          try {
+            await stoneEditor.shiftMapStones(saveData.mapName, portalShift.x, portalShift.y, currentPlayer.username);
+          } catch (error: any) {
+            log.error(`The summoning stones of ${saveData.mapName} could not be moved with the map: ${error?.message ?? error}`);
+            sendPacket(wt, packetManager.notify({ message: "The map was saved, but its summoning stones could not be moved with it." }));
+          }
         }
 
         // Clear edit history for this map now that it's saved
@@ -1393,6 +1734,15 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         if (!currentPlayer) return;
         // The handler checks permission first, on every one of these, and sends its own answers.
         await gathering.handleEditorPacket(currentPlayer, type, data);
+        break;
+      }
+
+      case "MAP_OBJECT_OPTIONS": {
+        if (!currentPlayer) return;
+        sendPacket(wt, packetManager.mapObjectOptions(await mapObjectOptionsFor(await canSaveMaps(currentPlayer.username), async () => {
+          const [dungeons, lootTables] = await Promise.all([dungeonDefs.all(), lootTable.list()]);
+          return { dungeons, lootTables };
+        })));
         break;
       }
 

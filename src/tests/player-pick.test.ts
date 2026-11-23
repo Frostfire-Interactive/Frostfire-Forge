@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { pickPlayerAt } from "../systems/playerpick";
+import { pickFromPartyFrame, pickPartyMember, pickPlayerAt, pickPlayerNamed } from "../systems/playerpick";
 
 const at = (id: string, x: number, y: number) => ({ id, location: { position: { x, y } } });
 const pick = (players: ReturnType<typeof at>[], x: number, y: number, range = 35, viewer = "me") =>
@@ -54,5 +54,51 @@ describe("picking a player with a click", () => {
     expect(pick([a], 140, 100)).toBe(null);
     expect(pick([a], 140, 100, 49)).toBe("a");
     expect(pick([], 100, 100)).toBe(null);
+  });
+});
+
+describe("picking a player by name (a party frame clicked)", () => {
+  const named = (id: string, username: string) => ({ id, username, location: { position: { x: 0, y: 0 } } });
+  test("the player of that name is picked, without regard to case", () => {
+    const a = named("a", "Alice"), b = named("b", "bob");
+    expect(pickPlayerNamed([a, b], "BOB", "me")?.id).toBe("b");
+    expect(pickPlayerNamed([a, b], "alice", "me")?.id).toBe("a");
+  });
+  test("nobody of that name, a blank name, or the viewer themself picks nobody", () => {
+    const me = named("me", "Me"), a = named("a", "Alice");
+    expect(pickPlayerNamed([me, a], "carol", "me")).toBeNull();
+    expect(pickPlayerNamed([me, a], "", "me")).toBeNull();
+    expect(pickPlayerNamed([me, a], "me", "me")).toBeNull();
+  });
+});
+
+describe("picking a party member by name, from anywhere", () => {
+  const ann = { id: "a", username: "Ann", location: { map: "far", position: { x: 9000, y: 9000 } } };
+  const cat = { id: "c", username: "cat", location: { map: "far", position: { x: 0, y: 0 } } };
+
+  test("a member of the viewer's party is picked on any map, in any case", () => {
+    expect(pickPartyMember([ann, cat], "ANN", { id: "me", party: ["bob", "ann"] })?.id).toBe("a");
+  });
+
+  test("anyone outside the party, the viewer, or a viewer with no party is not", () => {
+    expect(pickPartyMember([ann, cat], "cat", { id: "me", party: ["ann"] })).toBeNull();
+    expect(pickPartyMember([ann], "ann", { id: "me", party: null })).toBeNull();
+    expect(pickPartyMember([ann], "ann", { id: "a", party: ["ann"] })).toBeNull();
+  });
+});
+
+describe("a party frame clicked", () => {
+  const me = { id: "me", username: "Me", party: ["me", "ann"] };
+  const ann = { id: "a", username: "Ann", party: ["me", "ann"] };
+  const bob = { id: "b", username: "bob", party: null };
+
+  test("the viewer's own frame selects the viewer", () => {
+    expect(pickFromPartyFrame([me, ann], [me, ann], "ME", me)?.id).toBe("me");
+  });
+
+  test("a member shown here, or a party member anywhere, is picked; anyone else is not", () => {
+    expect(pickFromPartyFrame([bob], [me, ann, bob], "bob", me)?.id).toBe("b");
+    expect(pickFromPartyFrame([], [me, ann], "ann", me)?.id).toBe("a");
+    expect(pickFromPartyFrame([], [me, bob], "bob", me)).toBeNull();
   });
 });

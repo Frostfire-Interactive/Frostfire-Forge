@@ -17,7 +17,12 @@ export interface MovedChest {
   iconUrl: string;
   createdBy: string;
   playerLoot: Array<[string, { rolled: any[]; taken: number[] }]>;
+  resetMs: number | null;
+  resetAt: number | null;
+  placed: string | null;
 }
+
+export interface PlacedChest { name: string; resetMs: number | null; resetAt: number | null }
 
 const CHEST_RANGE = 120;
 const chests = new Map<string, any>();
@@ -46,13 +51,18 @@ async function give(chest: any, pd: any, playerName: string, items: any[], write
 }
 
 export const lootChest = {
-  spawn(map: string, x: number, y: number, lootTableId?: number, inlineEntries?: LootTableEntry[], createdBy = "system"): string {
+  spawn(map: string, x: number, y: number, lootTableId?: number, inlineEntries?: LootTableEntry[], createdBy = "system", placed?: PlacedChest): string {
     const id = nextId();
-    chests.set(id, { id, map, x, y, lootTableId, inlineLootTable: inlineEntries, iconUrl: getIconUrl("loot_chest") || "", createdBy, playerLoot: new Map() });
+    chests.set(id, {
+      id, map, x, y, lootTableId, inlineLootTable: inlineEntries, iconUrl: getIconUrl("loot_chest") || "", createdBy, playerLoot: new Map(),
+      resetMs: placed?.resetMs ?? null, resetAt: placed?.resetAt ?? null, placed: placed?.name ?? null,
+    });
     log.info(`Loot chest ${id} spawned on ${map} at (${x}, ${y})`);
     return id;
   },
   despawn(id: string) { const c = chests.get(id); if (c) { c.playerLoot.clear(); chests.delete(id); return true; } return false; },
+  /** Forgets every player's roll, so the chest can be opened afresh. */
+  reset(id: string): boolean { const c = chests.get(id); if (!c) return false; c.playerLoot.clear(); return true; },
   async open(chestId: string, playerId: string) {
     const chest = chests.get(chestId); if (!chest) return null;
     let pd = chest.playerLoot.get(playerId); let first = false;
@@ -90,7 +100,7 @@ export const lootChest = {
     movedAway.add(c);
     return {
       id: c.id, map: c.map, x: c.x, y: c.y, lootTableId: c.lootTableId ?? null, inlineLootTable: c.inlineLootTable ?? null,
-      iconUrl: c.iconUrl, createdBy: c.createdBy,
+      iconUrl: c.iconUrl, createdBy: c.createdBy, resetMs: c.resetMs ?? null, resetAt: c.resetAt ?? null, placed: c.placed ?? null,
       playerLoot: [...c.playerLoot].map(([playerId, pd]: [string, any]) => [playerId, { rolled: pd.rolled, taken: [...pd.taken] }]),
     };
   },
@@ -100,7 +110,7 @@ export const lootChest = {
     const known = remoteChests.delete(m.id) !== undefined;
     chests.set(m.id, {
       id: m.id, map: m.map, x: m.x, y: m.y, lootTableId: m.lootTableId ?? undefined, inlineLootTable: m.inlineLootTable ?? undefined,
-      iconUrl: m.iconUrl, createdBy: m.createdBy,
+      iconUrl: m.iconUrl, createdBy: m.createdBy, resetMs: m.resetMs ?? null, resetAt: m.resetAt ?? null, placed: m.placed ?? null,
       playerLoot: new Map(m.playerLoot.map(([playerId, pd]) => [playerId, { rolled: pd.rolled, taken: new Set(pd.taken) }])),
     });
     return known ? "mirror" : "new";

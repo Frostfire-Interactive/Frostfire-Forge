@@ -18,7 +18,15 @@ import { updatePlayerAOI, shouldUpdateAOI, broadcastToAOI, handleMapChangeAOI } 
 import packetReceiver from "../receiver";
 import { PROFILE, VALID_DIRECTIONS, WARP_SCAN_MS, applyLateGap, bumpStateRevision, checkGhostReviveProximity, despawnBatchQueue, forceStopPlayerMovement, getDirectionOffsets, getInventorySlots, interruptPlayerCast, isInteriorMap, mapPropertiesCache, maps, movementBatchQueue, prof, queueFinalMovement, resyncNpcChunks, sendPacket, sendPositionAnimation, spawnBatchQueue, stateRevision, subscriptionLocked, transitionPlayerToMap, warpInterceptors } from "../receiver";
 import { gapUpdateOf, newerGap, recoverResumedWalk, resumeCatchUpSteps } from "../arrival";
+import { dungeonPortalStep, dungeonPortalWalk, portalsOn, stonesOn } from "../dungeons";
+import { archBlocksStep, archesOf } from "../../systems/portalarch";
+import { stoneBlocksStep, stonesAt } from "../../systems/stoneblock";
+import lootChest from "../../systems/lootChest";
+import { chestBlocksStep } from "../../systems/chestblock";
 import type { PacketContext } from "./context";
+import { WARP_COOLDOWN_MS, setWarpReadyIn, warpWait } from "../../systems/warpcooldown";
+
+const withoutJson = (map: unknown): string => String(map ?? "").replace(/\.json$/, "");
 
 // Packet handlers moved from receiver.ts's packetReceiver switch (phase 6, Task 1). The case bodies are unchanged.
 
@@ -48,7 +56,13 @@ function takeStep(currentPlayer: any, direction: string, stepX: number, stepY: n
 
   // Round for collision detection only
   const _profCollStart = PROFILE ? performance.now() : 0;
-  const checkAt = (x: number, y: number) => player.checkCollisionSync(
+  const startX = currentPlayer.location.position.x;
+  const startY = currentPlayer.location.position.y;
+  const bareMap = String(currentPlayer.location.map).replace(".json", "");
+  const chestsHere = [...lootChest.getOnMap(bareMap), ...lootChest.getOnMap(`${bareMap}.json`)];
+  const archesHere = archesOf(portalsOn(bareMap) ?? []);
+  const stonesHere = stonesAt(stonesOn(bareMap) ?? []);
+  const checkTiles = (x: number, y: number) => player.checkCollisionSync(
     currentPlayer.location.map,
     {
       x: Math.round(x),
@@ -60,8 +74,15 @@ function takeStep(currentPlayer: any, direction: string, stepX: number, stepY: n
       height: PLAYER_HEIGHT,
     }
   );
-  const startX = currentPlayer.location.position.x;
-  const startY = currentPlayer.location.position.y;
+  // Chests, the arches portals stand in and summoning stones are solid, and block as a wall tile does so the step slides along them.
+  const checkAt = (x: number, y: number) => {
+    const tiles = checkTiles(x, y);
+    if (tiles.value || (chestsHere.length === 0 && archesHere.length === 0 && stonesHere.length === 0)) return tiles;
+    const to = { x: Math.round(x), y: Math.round(y) };
+    if (chestBlocksStep(chestsHere, { x: startX, y: startY }, to)) return { value: true, reason: "tile_collision" as const };
+    if (stoneBlocksStep(stonesHere, { x: startX, y: startY }, to)) return { value: true, reason: "tile_collision" as const };
+    return archBlocksStep(archesHere, { x: startX, y: startY }, to) ? { value: true, reason: "tile_collision" as const } : tiles;
+  };
   const stepped = slideStep({ x: startX, y: startY }, tempPosition, stepX, stepY, !!currentPlayer.isNoclip, checkAt);
   tempPosition.x = stepped.x;
   tempPosition.y = stepped.y;
@@ -92,8 +113,9 @@ function takeStep(currentPlayer: any, direction: string, stepX: number, stepY: n
   return { collision, isColliding };
 }
 
-export async function replayGapSteps(currentPlayer: any, steps: readonly string[], from?: { x: number; y: number; direction: string }): Promise<boolean> {
-  if (steps.length === 0 && !from) return false;
+/** Replays steps the client walked: whether the player moved, and the points walked through from where the replay starts. */
+export async function replayGapSteps(currentPlayer: any, steps: readonly string[], from?: { x: number; y: number; direction: string }): Promise<{ moved: boolean; path: Array<{ x: number; y: number }> }> {
+  if (steps.length === 0 && !from) return { moved: false, path: [] };
   await player.preloadMapCollision(currentPlayer.location.map);
   const directionOffsets = getDirectionOffsets(walkSpeedOf(currentPlayer));
   const fromX = currentPlayer.location.position.x;
@@ -103,6 +125,7 @@ export async function replayGapSteps(currentPlayer: any, steps: readonly string[
     currentPlayer.location.position.y = from.y;
     currentPlayer.location.position.direction = from.direction;
   }
+  const path = [{ x: currentPlayer.location.position.x, y: currentPlayer.location.position.y }];
   let last = "";
   for (const direction of steps) {
     const offset = directionOffsets[direction];
@@ -111,6 +134,7 @@ export async function replayGapSteps(currentPlayer: any, steps: readonly string[
     if (direction !== last) currentPlayer._stepCarry = undefined;
     last = direction;
     takeStep(currentPlayer, direction, offset.dx, offset.dy);
+    path.push({ x: currentPlayer.location.position.x, y: currentPlayer.location.position.y });
   }
   if (last && !(currentPlayer.casting && !currentPlayer.castOnSelf)) currentPlayer.location.position.direction = last;
   const moved = currentPlayer.location.position.x !== fromX || currentPlayer.location.position.y !== fromY;
@@ -122,7 +146,7 @@ export async function replayGapSteps(currentPlayer: any, steps: readonly string[
       String(currentPlayer.location.map).replaceAll(".json", "")
     );
   }
-  return moved;
+  return { moved, path };
 }
 
 /** The player's own position, echoed to them as a step's is (the binary moveXY), and to no one else. */
@@ -174,7 +198,9 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           ? resumeCatchUpSteps(resumeCatchUp, resumeCatchUp.walk, Date.now(), TICK_MS) + 1
           : 0;
         if (missed > 0 && !currentPlayer.isDead && !currentPlayer.ghostTeleportPending && !(currentPlayer.stunnedUntil > Date.now())) {
-          await replayGapSteps(currentPlayer, Array(missed).fill(resumeCatchUp.walk));
+          const replay = await replayGapSteps(currentPlayer, Array(missed).fill(resumeCatchUp.walk));
+          // A catch-up that walked into a dungeon portal took it: this move is not walked on the old map.
+          if (await dungeonPortalWalk(currentPlayer, replay.path)) return;
         }
 
         if (direction === "abort") {
@@ -309,6 +335,7 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
             }
           }
 
+          const before = { x: Number(currentPlayer.location.position.x), y: Number(currentPlayer.location.position.y) };
           const { collision, isColliding } = takeStep(currentPlayer, direction, stepX, stepY);
 
           if (isColliding && !currentPlayer.isNoclip) {
@@ -370,6 +397,16 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
                 return;
               }
 
+              // A warp to another map waits out the warp cooldown (systems/warpcooldown.ts), as dungeon portals do.
+              const otherMap = withoutJson(warp.map) !== withoutJson(currentPlayer.location.map);
+              if (otherMap) {
+                const waiting = warpWait(currentPlayer);
+                if (waiting.wait) {
+                  if (waiting.notice) sendPacket(wt, packetManager.notify({ message: waiting.notice }));
+                  return;
+                }
+              }
+
               for (const interceptor of warpInterceptors) {
                 if (await interceptor(warp, wt, currentPlayer, sendPacket)) {
                   return;
@@ -391,6 +428,8 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
               );
 
               if (arrived) {
+                // Before the move: a move to a map on another node takes the cooldown along.
+                if (otherMap) setWarpReadyIn(currentPlayer.username, WARP_COOLDOWN_MS);
                 const newMap = warp.map.replace(".json", "");
                 const newPosition = {
                   x: warp.x || 0,
@@ -425,6 +464,13 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           }
 
           bumpStateRevision();
+
+          if (await dungeonPortalStep(currentPlayer, before, currentPlayer.location.position, wt)) {
+            gameLoop.unregisterMovingPlayer(currentPlayer.id);
+            currentPlayer.moving = false;
+            currentPlayer._movementState = undefined;
+            return;
+          }
 
           const warpScanNow = performance.now();
           if (currentPlayer._warpScanAt === undefined) currentPlayer._warpScanAt = warpScanNow;

@@ -89,6 +89,9 @@ export function isMovedChest(v: unknown): v is MovedChest {
   if (!isObject(v) || !isId(v.id) || !isId(v.map) || !finite(v.x, v.y) || !isText(v.iconUrl) || !isText(v.createdBy)) return false;
   if (v.lootTableId != null && !Number.isInteger(v.lootTableId)) return false;
   if (v.inlineLootTable != null && !Array.isArray(v.inlineLootTable)) return false;
+  if (v.resetMs != null && !(finite(v.resetMs) && v.resetMs > 0)) return false;
+  if (v.resetAt != null && !finite(v.resetAt)) return false;
+  if (v.placed != null && !isText(v.placed)) return false;
   return Array.isArray(v.playerLoot) && v.playerLoot.every((entry: unknown) =>
     Array.isArray(entry) && entry.length === 2 && isId(entry[0]) && isObject(entry[1]) && Array.isArray(entry[1].rolled)
     && entry[1].rolled.every(isRolledItem) && Array.isArray(entry[1].taken) && entry[1].taken.every((i: unknown) => Number.isInteger(i)));

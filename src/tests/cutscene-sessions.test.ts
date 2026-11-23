@@ -421,7 +421,7 @@ describe("the packets a held player is refused", () => {
     expect(held.refusedWhileHeld("MOVEXY", "abort", who)).toBe(false);
     expect(held.refusedWhileHeld("MOVEXY", "ABORT", who)).toBe(false);
     for (const type of [
-      "ATTACK", "CREATURE_ATTACK", "HOTBAR", "MOUNT", "GATHER", "NPC_INTERACT", "PICKUP_LOOT", "BATCH_PICKUP_LOOT", "OPEN_LOOT_CHEST",
+      "ATTACK", "HOTBAR", "MOUNT", "GATHER", "NPC_INTERACT", "PICKUP_LOOT", "BATCH_PICKUP_LOOT", "OPEN_LOOT_CHEST",
       "FISH_CAST", "FISH_REEL", "FISH_LAND", "USE_ITEM", "EQUIP_ITEM", "VENDOR_BUY", "QUEST_ACCEPT", "TRADE_REQUEST", "TELEPORTXY",
     ]) {
       expect(held.refusedWhileHeld(type, null, who)).toBe(true);

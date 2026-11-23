@@ -65,7 +65,6 @@ function setup(templateOver: any = {}) {
     onStateChanged: () => {},
     onCombatText: () => {},
     onDied: (c, killer) => events.died.push({ id: c.id, killer }),
-    onAutoAttackStopped: () => {},
     onTapChanged: () => {},
     linkedCreatures: () => [],
     spell: () => undefined,
@@ -142,8 +141,6 @@ test("a creature mirror is in the registry, targetable, and leaves cleanly", () 
   expect(mirror.remote).toBe(true);
   // Phase 5: a mirror is targetable; what is done to it goes to its owner.
   expect(creatures.isTargetableBy({ id: "p", location: { map: "main", position: { x: 300, y: 300 } } }, mirror)).toBe(true);
-  // "p" is not a player of this node, so the engine refuses it as dead; the mirror itself is no longer refused.
-  expect(creatures.startAutoAttack({ id: "p", location: { map: "main", position: { x: 300, y: 300 } } }, 777001)).toBe("dead");
   kind.update(777001, { health: 10 });
   expect(creatures.getCreature(777001)!.health).toBe(10);
   kind.update(777001, { victimId: "p" });
@@ -545,6 +542,37 @@ test("a mirror corpse is shown lootable to its loot owner here, and to nobody el
   kind.despawn(777210, "left");
   removeViewer(owner);
   removeViewer(other);
+});
+
+test("each looter of a mirror corpse is told once that it is no longer lootable, when their name leaves its looters", () => {
+  const kind = (creatures as any).creatureGhostKind;
+  const first = addViewer("pl1", 300, 300);
+  const second = addViewer("pl2", 300, 300);
+  const empty = addViewer("pl3", 300, 300);
+  expect(kind.spawn(record({ id: 777230, state: "dead", looters: ["pl1", "pl2"] }), "a")).toBe(true);
+  const told = (viewer: any) => viewer.wt.reliable.filter((p: any) => p.type === "CREATURE_LOOTABLE" && p.data.id === 777230).map((p: any) => p.data.lootable);
+  // pl1's own record empties; then the corpse does, with pl2's.
+  kind.update(777230, { looters: ["pl2"] });
+  kind.update(777230, { looters: [] });
+  kind.update(777230, { state: "dead", looters: [] });
+  expect(told(first)).toEqual([false]);
+  expect(told(second)).toEqual([false]);
+  expect(told(empty)).toEqual([]);
+  kind.despawn(777230, "left");
+  for (const viewer of [first, second, empty]) removeViewer(viewer);
+});
+
+test("the owner's state of a personal corpse names no member whose own roll is empty", () => {
+  const kind = (creatures as any).creatureGhostKind;
+  const corpse = makeCreature(777240, 300, 300, { state: "dead" });
+  creatures.registry.add(corpse as any);
+  corpseLoot.createPersonal(777240, new Map([
+    ["Rich", { items: [{ index: 0, itemName: "Bone", quantity: 1 }] as any, copper: 0 }],
+    ["Poor", { items: [], copper: 0 }],
+  ]));
+  expect(kind.state(777240).looters).toEqual(["rich"]);
+  corpseLoot.remove(777240);
+  creatures.registry.remove(777240);
 });
 
 test("the owner's state of a corpse names who may loot it, and a live creature's names nobody", () => {

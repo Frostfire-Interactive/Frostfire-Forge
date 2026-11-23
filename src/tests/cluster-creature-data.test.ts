@@ -52,3 +52,32 @@ describe("a creature editor save", () => {
     ]);
   });
 });
+
+describe("a creature data change", () => {
+  test("leaves a dungeon copy's creatures alone: nothing would respawn them", async () => {
+    const despawned: number[] = [];
+    const log = { info: () => {} };
+    const copy: any = { id: 1, templateId: 4, spawnId: 0, map: "crypt~a1", state: "idle" };
+    const copyBusy: any = { id: 2, templateId: 4, spawnId: 0, map: "crypt~a1", state: "combat" };
+    const open: any = { id: 3, templateId: 4, spawnId: 7, map: "crypt", state: "idle" };
+    const given = {
+      repository: { loadIntoCache: async () => {} },
+      buildSpawnerData: async () => ({ spawns: new Map() }),
+      refreshNavGrids: async () => {},
+      spawner: { updateData: () => {}, getSpawn: () => undefined, despawn: (id: number) => despawned.push(id) },
+      registry: { all: () => [copy, copyBusy, open] },
+      AIState: { DEAD: "dead" },
+      isOutOfCombat: (c: any) => c.state === "idle",
+      isCopyKey: (map: string) => map.includes("~"),
+      localCreatureCount: () => 0,
+      log,
+    };
+    let spawnCache: any;
+    const run = withNames([...Object.keys(given), "setSpawnCache"], `${fn("export async function applyDataChange(").replace("export async function applyDataChange", "async function applyDataChange").replace("spawnCache = [...data.spawns.values()];", "setSpawnCache([...data.spawns.values()]);").replace("refreshNavGrids(spawnCache)", "refreshNavGrids()")}\nreturn applyDataChange;`)({ ...given, setSpawnCache: (v: any) => { spawnCache = v; } });
+    await run({ templateIds: [4] });
+    expect(despawned).toEqual([3]);
+    expect(copyBusy.pendingRefresh).toBeUndefined();
+    expect(open.pendingRefresh).toBeUndefined();
+    expect(spawnCache).toEqual([]);
+  });
+});

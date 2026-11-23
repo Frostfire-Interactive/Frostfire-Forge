@@ -5,6 +5,7 @@ import log from "./logger";
 import { removeUnlistedWorlds } from "./mapmirror";
 import { leaveToSave } from "./mapsaves";
 import { cleanZonesLenient, zonesOfKind } from "./zones";
+import { isCopyKey, templateOf } from "../systems/dungeons/copykey";
 
 const BITS_MAGIC = 0x42574646; // "FFWB"
 const BITS_HEADER_BYTES = 32;
@@ -70,7 +71,9 @@ let worldsDir = "";
 
 /** mapName with or without ".json" */
 export function getWorldMap(mapName: string): WorldMap | undefined {
-  return worlds.get(mapName.replace(".json", ""));
+  const name = mapName.replace(".json", "");
+  // A dungeon copy (template~id) of a world plays on that world's collision, no-pvp zones and properties.
+  return worlds.get(name) ?? (isCopyKey(name) ? worlds.get(templateOf(name)) : undefined);
 }
 
 function isPositiveInt(value: unknown): value is number {
@@ -194,6 +197,9 @@ function openWorld(dir: string, id: string): WorldMap {
         layers,
         ...(manifest.warps ? { warps: manifest.warps } : {}),
         ...(manifest.graveyards ? { graveyards: manifest.graveyards } : {}),
+        ...(manifest.chests ? { chests: manifest.chests } : {}),
+        ...(manifest.dungeonPortals ? { dungeonPortals: manifest.dungeonPortals } : {}),
+        ...(manifest.summoningStones ? { summoningStones: manifest.summoningStones } : {}),
         // the named zones drawn in the map editor (zone text and music, modules/zones.ts), sent to the client with the map
         zones,
         // the cave systems of an underworld, as rectangles in tiles (sent to the client with the map)
@@ -415,6 +421,10 @@ export async function checkWorldChanges(): Promise<WorldMap[]> {
           const { warps, graveyards } = warpsAndGraveyardsOf(manifest);
           world.properties.warps = warps;
           world.properties.graveyards = graveyards;
+          // read again from the new objects by the loader (takeInWorldChange)
+          delete world.properties.chests;
+          delete world.properties.dungeonPortals;
+          delete world.properties.summoningStones;
           world.properties.version = String(fs.statSync(path.join(dir, "manifest.json")).mtimeMs);
         }
         changed.push(world);

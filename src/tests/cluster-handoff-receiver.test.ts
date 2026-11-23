@@ -21,6 +21,7 @@ const {
 
 const { SICKNESS_DURATION_MS } = resurrection;
 const consumables = await import("../systems/consumables");
+const warpCooldown = await import("../systems/warpcooldown");
 
 // The spells the limits are read from: a 50-point barrier for 30 s, and a poison of 120 s that stacks to 8.
 const SPELLS = [
@@ -194,6 +195,31 @@ test("an arrival brings at most MAX_ARRIVAL_EFFECTS of one kind, and a consumabl
   expect(s.consumableReadyIn).toBe(0);
   expect(logged.warned).toHaveLength(2);
   expect(handoffStateOf({ consumableReadyIn: Number.NaN }, limits(now)).consumableReadyIn).toBe(0);
+});
+
+test("an arrival brings its warp cooldown, at most a full one, and none for a bad one", () => {
+  const logged = quietLog();
+  expect(state({ warpReadyIn: 2000 }).warpReadyIn).toBe(2000);
+  expect(state({}).warpReadyIn).toBe(0);
+  expect(logged.warned).toEqual([]);
+  expect(state({ warpReadyIn: 9e9 }).warpReadyIn).toBe(warpCooldown.WARP_COOLDOWN_MS);
+  expect(state({ warpReadyIn: -5 }).warpReadyIn).toBe(0);
+  expect(state({ warpReadyIn: Number.NaN }).warpReadyIn).toBe(0);
+  expect(logged.warned.length).toBe(3);
+});
+
+test("seedArrival sets the warp cooldown the arrival brought, and leaves it when none", () => {
+  try {
+    seedArrival("Hop", state({ warpReadyIn: 2000 }));
+    expect(warpCooldown.warpReadyIn("Hop")).toBeGreaterThan(1500);
+    expect(warpCooldown.warpReadyIn("Hop")).toBeLessThanOrEqual(2000);
+    warpCooldown.setWarpReadyIn("Hop", 0);
+    seedArrival("Hop", state({ warpReadyIn: 0 }));
+    expect(warpCooldown.warpReadyIn("Hop")).toBe(0);
+  } finally {
+    warpCooldown.setWarpReadyIn("Hop", 0);
+    forget("Hop");
+  }
 });
 
 test("seedArrival sets the consumable cooldown the arrival brought, and leaves it when none", () => {

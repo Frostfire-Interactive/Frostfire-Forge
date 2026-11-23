@@ -6,6 +6,7 @@ import { encodePoseRecord } from "./pose_codec";
 import playerCache from "../services/playermanager";
 import layerManager, { blockOf, isBaseLayer, MAX_PLAYERS_PER_LAYER } from "../services/layermanager";
 import { getEffectsPayload, mirrorEffectsPayload } from "../systems/spelleffects";
+import { cameThroughPortal } from "../systems/portalpairs";
 import mapIndex from "../services/mapindex";
 import parties from "../systems/parties";
 import { packetManager } from "./packet_manager";
@@ -357,6 +358,8 @@ export function queueSpawnPlayerPacket(
       isDead: spawnedPlayer.isDead || false,
       isGhost: spawnedPlayer.isGhost || false,
       ghostTeleportPending: spawnedPlayer.ghostTeleportPending || false,
+      // a portal just put them here: the client walks them out of it
+      arrived: cameThroughPortal(spawnedPlayer, Date.now()) || undefined,
       stats: spawnedPlayer.stats,
       mounted: spawnedPlayer.mounted,
       animation: null,
@@ -498,6 +501,8 @@ export async function updatePlayerAOI(
             spawnBatchQueue.set(player.id, new Map());
           }
           spawnBatchQueue.get(player.id)!.set(enteredPlayer.id, spawnData);
+          // A despawn still waiting in this batch must not follow the spawn.
+          despawnBatchQueue?.get(player.id)?.delete(enteredPlayer.id);
         }
       }
 
@@ -519,6 +524,7 @@ export async function updatePlayerAOI(
             spawnBatchQueue.set(enteredPlayer.id, new Map());
           }
           spawnBatchQueue.get(enteredPlayer.id)!.set(player.id, spawnData);
+          despawnBatchQueue?.get(enteredPlayer.id)?.delete(player.id);
         }
       }
 
@@ -1165,7 +1171,7 @@ export function releasePlayerAOI(player: any): void {
 export async function handleMapChangeAOI(
   player: any,
   newMapName: string,
-  newPosition: { x: number; y: number },
+  newPosition: { x: number; y: number; direction?: string },
   spawnBatchQueue?: Map<string, Map<string, any>>,
   despawnBatchQueue?: Map<string, Set<string>>
 ): Promise<void> {
@@ -1202,6 +1208,8 @@ export async function handleMapChangeAOI(
     player.location.map = newMapName;
     player.location.position.x = Math.round(newPosition.x);
     player.location.position.y = Math.round(newPosition.y);
+    // A warp's facing is set with its place, so viewers there are spawned the player facing it.
+    if (newPosition.direction) player.location.position.direction = newPosition.direction;
     ghosts.touch("player", player.id);
 
     if (oldMap !== newMap) {

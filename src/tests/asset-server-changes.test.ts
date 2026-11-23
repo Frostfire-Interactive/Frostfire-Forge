@@ -440,7 +440,7 @@ test("a save here is marked before the other nodes are told it is under way, and
 });
 
 test("the map editor's save of a world or a map is marked from before it writes until it ends", () => {
-  const worldStart = editors.indexOf("const saving = await startSaveHere(worldName);");
+  const worldStart = editors.indexOf("saving = await startSaveHere(worldName);");
   const worldWrite = editors.indexOf("await worldSavedHere(", worldStart);
   const worldEnd = editors.indexOf("editorEditHistory.delete(saveData.mapName);", worldWrite);
   expect(worldStart).toBeGreaterThan(0);
@@ -449,7 +449,7 @@ test("the map editor's save of a world or a map is marked from before it writes 
   expect(editors.slice(worldStart, worldWrite)).toContain('saving.tell("world-saved", save);');
   expect(editors.slice(worldWrite, worldEnd)).toMatch(/saved = true;[\s\S]*\} finally \{\s+saving\.end\(saved\);\s+\}/);
 
-  const mapStart = editors.indexOf('const saving = typeof saveData?.mapName === "string" ? await startSaveHere(saveData.mapName) : null;');
+  const mapStart = editors.indexOf('if (typeof saveData?.mapName === "string") saving = await startSaveHere(saveData.mapName);');
   const mapWrite = editors.indexOf("await saveMapChunks(saveData.mapName", mapStart);
   const mapDone = editors.indexOf("Map saved successfully!", mapWrite);
   expect(mapStart).toBeGreaterThan(worldEnd);

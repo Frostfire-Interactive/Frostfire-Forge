@@ -596,6 +596,13 @@ test("the handoff state carries the consumable cooldown", () => {
   expect(serverSource).toContain('import { readyIn as consumableReadyIn, setReadyIn as setConsumableReadyIn } from "../systems/consumables.ts";');
 });
 
+test("the handoff state carries the warp cooldown, and the old node forgets it", () => {
+  const state = body("function handoffState(", "\n}\n");
+  expect(has(state, "warpReadyIn: warpReadyIn(p.username),")).toBe(true);
+  expect(serverSource).toContain('import { setWarpReadyIn, warpReadyIn } from "../systems/warpcooldown.ts";');
+  expect(has(body("function releaseHandedOff(", "\n}\n"), '["drop its warp cooldown", () => setWarpReadyIn(p.username, 0)]')).toBe(true);
+});
+
 test("the handed-off save names its twin, the disconnect's saves", () => {
   const save = body("async function saveHandedOff(", "\n}\n");
   expect(has(save, "await player.setStats(p, p.stats)")).toBe(true);

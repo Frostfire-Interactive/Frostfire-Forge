@@ -18,6 +18,8 @@ import { applyZones, cleanZonesLenient, type MapZone } from "./zones";
 import { followMapEvents } from "./mapevents";
 import { leaveToSave } from "./mapsaves";
 import { placedNpc } from "./mapnpc";
+import { loadedMapObjects, portalTiledProperties, portalsFrom, readChestObject, readPortalObject, readStoneObject, stonesFrom, type SummoningStoneObject } from "../systems/mapobjects";
+import type { DungeonPortalObject, MapChestObject } from "../systems/dungeons/types";
 import * as settings from "../config/settings.json";
 const defaultMap = settings.default_map?.replace(".json", "") || "main";
 const mapDir = path.join('.', 'src', 'assets', 'maps');
@@ -457,6 +459,9 @@ function extractAndCompressLayers(map: MapData) {
   const shadowLayerNames: string[] = [];
   const warps: any[] = [];
   const graveyards: any[] = [];
+  const chests: MapChestObject[] = [];
+  const dungeonPortals: DungeonPortalObject[] = [];
+  const summoningStones: SummoningStoneObject[] = [];
 
   map.data.layers.forEach((layer: any) => {
 
@@ -535,6 +540,24 @@ function extractAndCompressLayers(map: MapData) {
               },
               layer: layerName,
             });
+            break;
+          }
+          case "chest": {
+            const chest = readChestObject(obj, layerName, (message) => log.warn(`Chest in map ${map.name}: ${message}`));
+            if (chest) chests.push(chest);
+            else log.warn(`Invalid chest object in map ${map.name}: ${JSON.stringify(obj)}`);
+            break;
+          }
+          case "dungeon_portal": {
+            const portal = readPortalObject(obj, layerName);
+            if (portal) dungeonPortals.push(portal);
+            else log.warn(`Invalid dungeon portal object in map ${map.name}: ${JSON.stringify(obj)}`);
+            break;
+          }
+          case "summoning_stone": {
+            const stone = readStoneObject(obj, layerName);
+            if (stone) summoningStones.push(stone);
+            else log.warn(`Invalid summoning stone object in map ${map.name}: ${JSON.stringify(obj)}`);
             break;
           }
           case "particles": {
@@ -680,6 +703,14 @@ function extractAndCompressLayers(map: MapData) {
 
       _map.warps = merged;
     }
+
+    // Read once every object layer is: each chest and portal gets a name of its own across all of them
+    const placedChests = loadedMapObjects("Chest", chests, (map.data as any).chests);
+    if (placedChests) _map.chests = placedChests;
+    const placedPortals = loadedMapObjects("DungeonPortal", dungeonPortals, (map.data as any).dungeonPortals);
+    if (placedPortals) _map.dungeonPortals = portalsFrom(placedPortals);
+    const placedStones = loadedMapObjects("SummoningStone", summoningStones, (map.data as any).summoningStones);
+    if (placedStones) _map.summoningStones = stonesFrom(placedStones);
   }
 
   if (!(map as any).world && map.data) {
@@ -937,7 +968,24 @@ export async function saveMapChunks(mapName: string, chunks: any[], bounds?: { m
   }
 }
 
-export async function saveMapProperties(mapName: string, graveyards?: any, warps?: any, zones?: MapZone[]): Promise<void> {
+/** Rewrites one Tiled object layer (made when missing) to hold the given objects, keeping the ids of those that stay. */
+function writeObjectLayer<T extends { name: string; position: { x: number; y: number } }>(mapData: any, layerName: string, type: string, list: T[], shape: (o: T) => Record<string, unknown>): void {
+  let layer = mapData.layers.find((l: any) => l.name === layerName && l.type === "objectgroup");
+  if (!layer) {
+    layer = { draworder: "topdown", id: Math.max(...mapData.layers.map((l: any) => l.id || 0), 0) + 1, name: layerName, objects: [], opacity: 1, type: "objectgroup", visible: true, x: 0, y: 0 };
+    mapData.layers.push(layer);
+  }
+  const existing = new Map<string, any>((layer.objects ?? []).map((o: any) => [o.name, o]));
+  let nextId = Math.max(1, ...(layer.objects ?? []).map((o: any) => o.id || 0)) + 1;
+  layer.objects = list.map((o) => ({
+    ...existing.get(o.name),
+    id: existing.get(o.name)?.id || nextId++,
+    name: o.name, type, x: o.position.x, y: o.position.y, rotation: 0, visible: true,
+    ...shape(o),
+  }));
+}
+
+export async function saveMapProperties(mapName: string, graveyards?: any, warps?: any, zones?: MapZone[], chests?: MapChestObject[], dungeonPortals?: DungeonPortalObject[], summoningStones?: SummoningStoneObject[]): Promise<void> {
   try {
     const fullPath = getValidMapPath(mapName);
     const file = path.basename(fullPath);
@@ -959,6 +1007,9 @@ export async function saveMapProperties(mapName: string, graveyards?: any, warps
     if (zones !== undefined) {
       mapData.zones = zones;
     }
+    if (chests !== undefined) mapData.chests = chests;
+    if (dungeonPortals !== undefined) mapData.dungeonPortals = dungeonPortals;
+    if (summoningStones !== undefined) mapData.summoningStones = summoningStones;
 
     // Update Tiled object layers with the objects
     if (graveyards !== undefined) {
@@ -1086,6 +1137,25 @@ export async function saveMapProperties(mapName: string, graveyards?: any, warps
       }
     }
 
+    if (chests !== undefined) {
+      writeObjectLayer(mapData, "Chests", "chest", chests, (c) => ({
+        width: 0, height: 0, point: true,
+        properties: [{ name: "loot_table", type: "int", value: c.lootTableId }, { name: "reset_minutes", type: "int", value: c.resetMinutes }],
+      }));
+    }
+    if (dungeonPortals !== undefined) {
+      writeObjectLayer(mapData, "Dungeon Portals", "dungeon_portal", dungeonPortals, (p) => ({
+        width: p.size.width, height: p.size.height,
+        properties: portalTiledProperties(p),
+      }));
+    }
+    if (summoningStones !== undefined) {
+      writeObjectLayer(mapData, "Summoning Stones", "summoning_stone", summoningStones, (s) => ({
+        width: 0, height: 0, point: true,
+        properties: [{ name: "glow_color", type: "string", value: s.glowColor }],
+      }));
+    }
+
     fs.writeFileSync(fullPath, JSON.stringify(mapData, null, 2), "utf-8");
     log.success(`Saved graveyards/warps properties for ${file}`);
   } catch (error) {
@@ -1118,6 +1188,9 @@ export async function reloadMap(mapName: string): Promise<MapData> {
       own.warps = null;
       own.graveyards = null;
       own.shadowLayerNames = null;
+      delete own.chests;
+      delete own.dungeonPortals;
+      delete own.summoningStones;
     }
     extractAndCompressLayers(newMap);
 
@@ -1130,6 +1203,9 @@ export async function reloadMap(mapName: string): Promise<MapData> {
     const existingProps = own ?? mapProps.find(m => m.name.replace(".json", "") === newMap.name.replace(".json", ""));
     const existingGraveyards = existingProps?.graveyards;
     const existingWarps = existingProps?.warps;
+    const existingChests = existingProps?.chests;
+    const existingPortals = existingProps?.dungeonPortals;
+    const existingStones = existingProps?.summoningStones;
     const existingShadowLayerNames = existingProps?.shadowLayerNames;
 
     const newProps: MapProperties = {
@@ -1141,6 +1217,9 @@ export async function reloadMap(mapName: string): Promise<MapData> {
       warps: existingWarps || null,
       graveyards: existingGraveyards || null,
       shadowLayerNames: existingShadowLayerNames || null,
+      ...(existingChests ? { chests: existingChests } : {}),
+      ...(existingPortals ? { dungeonPortals: existingPortals } : {}),
+      ...(existingStones ? { summoningStones: existingStones } : {}),
       version: String(fs.statSync(fullPath).mtimeMs),
     };
 

@@ -139,8 +139,11 @@ const lootTable = {
     if (lootTableId) { const t = await this.get(lootTableId); if (!t) return []; entries = t.items.map((i: any) => ({ item_name: i.item_name, min_quantity: i.min_quantity, max_quantity: i.max_quantity, drop_chance: i.drop_chance, quality: i.quality })); }
     else if (inlineEntries?.length) { entries = inlineEntries.map((e: any) => ({ item_name: e.itemName, min_quantity: e.minQuantity, max_quantity: e.maxQuantity, drop_chance: e.dropChance, quality: e.quality })); }
     else { return []; }
+    // The item's own icon, the one the bags show; the item's name when it has none.
+    const known = ((await assetCache.get("items")) as any[]) || [];
+    const iconOf = (name: string) => known.find((k) => String(k?.name ?? "").toLowerCase() === String(name ?? "").toLowerCase())?.icon || name;
     const results: LootRollResult[] = []; let idx = 0;
-    for (const e of entries) { const chance = normalizeDropChance(e.drop_chance); if (chance <= 0 || Math.random() * 100 > chance) continue; const q = Math.floor(Math.random() * (e.max_quantity - e.min_quantity + 1)) + e.min_quantity; if (q <= 0) continue; results.push({ index: idx++, itemName: e.item_name, quantity: q, quality: e.quality || "common", iconUrl: getIconUrl(e.item_name) || "" }); }
+    for (const e of entries) { const chance = normalizeDropChance(e.drop_chance); if (chance <= 0 || Math.random() * 100 > chance) continue; const q = Math.floor(Math.random() * (e.max_quantity - e.min_quantity + 1)) + e.min_quantity; if (q <= 0) continue; results.push({ index: idx++, itemName: e.item_name, quantity: q, quality: e.quality || "common", iconUrl: getIconUrl(iconOf(e.item_name)) || "" }); }
     return results;
   },
 };

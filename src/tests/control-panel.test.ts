@@ -1,6 +1,8 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { characterDatabaseModule as databaseModule } from "./setup";
 import { receiverSource } from "./receiver-source";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 mock.module("../config/settings.json", () => ({
   default: { creatures: {} },
@@ -440,7 +442,8 @@ describe("the live view", () => {
     expect(mine(panel.onlinePlayers(hero)).map((p) => p.username)).toEqual(["cp_boss", "cp_hero", "cp_mod"]);
     // SELECTPLAYER and the spawn code hide a stealthed player from everyone who is not an admin.
     expect(source).toContain("!(p.isStealth && !currentPlayer.isAdmin)");
-    expect(source).toContain("!targetPlayer.isStealth || otherPlayer.isAdmin");
+    // (the summon move, factored out of SUMMON into summonmove.ts)
+    expect(readFileSync(join(import.meta.dir, "..", "socket", "summonmove.ts"), "utf8")).toContain("!target.isStealth || otherPlayer.isAdmin");
   });
 
   test("the status and the world come from what the server already tracks", async () => {

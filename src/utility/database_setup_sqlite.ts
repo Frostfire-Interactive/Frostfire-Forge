@@ -199,9 +199,6 @@ const createItemsTable = async () => {
         equipment_slot TEXT DEFAULT NULL,
         equipable INTEGER NOT NULL DEFAULT 0,
         bag_slots INTEGER DEFAULT 0,
-        damage_min INTEGER DEFAULT NULL,
-        damage_max INTEGER DEFAULT NULL,
-        attack_speed_ms INTEGER DEFAULT NULL,
         sell_price INTEGER NOT NULL DEFAULT 1,
         buy_price INTEGER NOT NULL DEFAULT 0,
         restore_health INTEGER NOT NULL DEFAULT 0,
@@ -381,6 +378,8 @@ const createPermissionTypesTable = async () => {
       ('tools.particle_editor'),
       ('tools.weather_editor'),
       ('tools.class_editor'),
+      ('tools.dungeon_editor'),
+      ('tools.portal_editor'),
       ('tools.mailbox_editor'),
       ('tools.creature_editor'),
       ('tools.item_editor'),
@@ -1077,7 +1076,7 @@ const createLootTables = async () => {
   `);
 };
 
-const addItemWeaponColumns = async () => {
+const addItemColumns = async () => {
   // How many slots an item adds when it is used as a bag: a column the table was first made without here.
   await addMissingColumns("items", [{ name: "bag_slots", type: "INTEGER DEFAULT 0" }]);
   // What a vendor pays for one, in copper: one unless set otherwise. Added with vendors.
@@ -1098,11 +1097,6 @@ const addItemWeaponColumns = async () => {
     await query("ALTER TABLE items ADD COLUMN buy_price INTEGER NOT NULL DEFAULT 0");
     await query("UPDATE items SET buy_price = sell_price * 4");
   }
-  await addMissingColumns("items", [
-    { name: "damage_min", type: "INTEGER DEFAULT NULL" },
-    { name: "damage_max", type: "INTEGER DEFAULT NULL" },
-    { name: "attack_speed_ms", type: "INTEGER DEFAULT NULL" },
-  ]);
 };
 
 /** Columns added to creature_templates after its first release. */
@@ -1383,6 +1377,37 @@ const addColumnIfMissing = async (table: string, column: string, definition: str
   if (!(await columnsOf(table)).includes(column)) await query(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 };
 
+/** Dungeons and raids: what the editor defines, and each character's entry window and the portal it came through. Needs characters, so addCharacterKeys runs it. */
+const createDungeonTables = async () => {
+  log.info("Creating dungeons and dungeon_characters tables...");
+  await query(`
+    CREATE TABLE IF NOT EXISTS dungeons (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      map TEXT NOT NULL UNIQUE,
+      type TEXT NOT NULL,
+      sizes TEXT NOT NULL,
+      multipliers TEXT NOT NULL,
+      entrance_x INTEGER NOT NULL,
+      entrance_y INTEGER NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      portal_color TEXT NULL
+    )
+  `);
+  await query(`
+    CREATE TABLE IF NOT EXISTS dungeon_characters (
+      character_id INTEGER PRIMARY KEY REFERENCES characters(id) ON DELETE CASCADE,
+      window_start INTEGER NOT NULL DEFAULT 0,
+      used INTEGER NOT NULL DEFAULT 0,
+      portal_map TEXT NULL,
+      portal_x INTEGER NULL,
+      portal_y INTEGER NULL
+    )
+  `);
+  await addColumnIfMissing("dungeons", "portal_color", "TEXT DEFAULT NULL");
+  await addColumnIfMissing("parties", "raid", "INTEGER NOT NULL DEFAULT 0");
+};
+
 const addCharacterKeys = async () => {
   log.info("Adding characters table and character_id keys...");
   await query(`
@@ -1423,6 +1448,7 @@ const addCharacterKeys = async () => {
   await query("CREATE INDEX IF NOT EXISTS idx_guilds_leader_id ON guilds (leader_id)");
   await query("CREATE INDEX IF NOT EXISTS idx_mail_recipient_id ON mail (recipient_id)");
   await query("CREATE INDEX IF NOT EXISTS idx_parties_leader_id ON parties (leader_id)");
+  await createDungeonTables();
 };
 
 export const setupDatabase = async () => {
@@ -1479,7 +1505,7 @@ export const setupDatabase = async () => {
   await addCreatureTemplateColumns();
   await addPatrolPathColumns();
   await addInventorySlotColumns();
-  await addItemWeaponColumns();
+  await addItemColumns();
   await createPlayerHomeTable();
   await insertHomeItem();
   await addSpellColumns();

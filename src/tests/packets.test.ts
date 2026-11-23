@@ -168,3 +168,13 @@ test("packetManager.createNpc says whether the NPC is an innkeeper", () => {
     expect(sent({ ...npc, innkeeper: false }).innkeeper).toBe(false);
     expect(sent(npc).innkeeper).toBe(false);
 });
+
+test("packetManager.spawnPlayer carries the party's raid flag when the login sends it, and no leader", () => {
+    const base = { id: "1", location: { map: "m", x: 0, y: 0, direction: "down" }, username: "a", stats: {}, party: ["a", "b"] };
+    const [raid] = packetManager.spawnPlayer({ ...base, party_raid: true, party_leader: "a" });
+    expect(decode(raid).data.party_raid).toBe(true);
+    // The client keeps no party leader: the member list is leader-first.
+    expect(decode(raid).data).not.toHaveProperty("party_leader");
+    const [plain] = packetManager.spawnPlayer(base);
+    expect(decode(plain).data.party_raid).toBeUndefined();
+});

@@ -10,7 +10,7 @@ const item = (name: string, over: Record<string, unknown> = {}): any => ({
   name, quality: "common", type: "equipment", description: "", icon: `${name.toLowerCase().replace(/ /g, "_")}.png`,
   stat_armor: null, stat_damage: null, stat_critical_chance: null, stat_critical_damage: null,
   stat_health: null, stat_stamina: null, stat_avoidance: null, level_requirement: null,
-  equipable: true, equipment_slot: null, bag_slots: null, damage_min: null, damage_max: null, attack_speed_ms: null,
+  equipable: true, equipment_slot: null, bag_slots: null,
   sell_price: 5, buy_price: 50, restore_health: 10, restore_stamina: 10, no_combat: false, teleports_home: false, soulbound: false,
   ...over,
 });
@@ -80,7 +80,7 @@ describe("findItemLinks", () => {
     const [sword] = findItemLinks("[Iron Sword]", items);
     const sent = Object.keys(sword).sort();
     expect(sent).toEqual([...LINK_FIELDS, "iconUrl", "kind"].sort());
-    for (const field of ["buy_price", "restore_health", "restore_stamina", "teleports_home", "equipable", "bag_slots", "damage_min", "damage_max", "attack_speed_ms"]) {
+    for (const field of ["buy_price", "restore_health", "restore_stamina", "teleports_home", "equipable", "bag_slots"]) {
       expect(field in sword).toBe(false);
     }
   });

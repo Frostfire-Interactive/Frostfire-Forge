@@ -103,8 +103,6 @@ test("the engine releases and adopts a creature's combat bookkeeping", () => {
   const release = source.slice(source.indexOf("  release(creature: CreatureInstance): void {"), source.indexOf("  adopt(creature: CreatureInstance): void {"));
   expect(release).toContain("this.clearThreatIndex(creature)");
   expect(release).toContain("this.active.delete(creature.id)");
-  // Auto-attacks on it go on: they become hits on the mirror (phase 5).
-  expect(release).not.toContain("stopAutoAttack");
   const adopt = source.slice(source.indexOf("  adopt(creature: CreatureInstance): void {"));
   expect(adopt.slice(0, 900)).toContain("this.unitIndex");
   expect(adopt.slice(0, 900)).toContain("this.active.add(creature.id)");

@@ -628,3 +628,40 @@ test("condensation moves overflow players down per player and never moves anyone
   expect(layerManager.countInBlock(L1, "0,0")).toBe(40);
   expectReverseIndexConsistent([...base, ...overflow]);
 });
+
+test("a player moved to another map facing a new way is spawned for viewers there facing it", async () => {
+  const from = `vistest${++mapSeq}`;
+  const to = `vistest${++mapSeq}`;
+  const spawn = new Map<string, Map<string, any>>();
+  const despawn = new Map<string, Set<string>>();
+  const a = await loginPlayer(makePlayer("FA", "Faye", from, 500, 500), spawn, despawn);
+  await loginPlayer(makePlayer("FB", "Finn", to, 510, 500), spawn, despawn);
+  a.location.position.direction = "up";
+  spawn.clear();
+  despawn.clear();
+
+  await handleMapChangeAOI(a, to, { x: 500, y: 500, direction: "down" }, spawn, despawn);
+
+  expect(spawn.get("FB")?.get("FA")?.location.direction).toBe("down");
+  expect(a.location.position.direction).toBe("down");
+});
+
+test("two players moved to another map one after the other still see each other", async () => {
+  const from = `vistest${++mapSeq}`;
+  const to = `vistest${++mapSeq}`;
+  const spawn = new Map<string, Map<string, any>>();
+  const despawn = new Map<string, Set<string>>();
+  const a = await loginPlayer(makePlayer("A", "Alice", from, 500, 500), spawn, despawn);
+  const b = await loginPlayer(makePlayer("B", "Bob", from, 510, 500), spawn, despawn);
+  spawn.clear();
+  despawn.clear();
+
+  await handleMapChangeAOI(a, to, { x: 500, y: 500 }, spawn, despawn);
+  await handleMapChangeAOI(b, to, { x: 510, y: 500 }, spawn, despawn);
+
+  expect(spawn.get("A")?.has("B")).toBe(true);
+  expect(despawn.get("A")?.has("B") ?? false).toBe(false);
+  expect(spawn.get("B")?.has("A")).toBe(true);
+  expect(despawn.get("B")?.has("A") ?? false).toBe(false);
+  expectReverseIndexConsistent(["A", "B"]);
+});

@@ -131,9 +131,6 @@ export function normalizeItem(input: any): Item {
     equipable,
     equipment_slot: equipable ? slot : null,
     bag_slots: num(input?.bag_slots),
-    damage_min: num(input?.damage_min),
-    damage_max: num(input?.damage_max),
-    attack_speed_ms: num(input?.attack_speed_ms),
     // What a vendor pays for one, in copper: one unless the item says otherwise. Nothing (0) is an item vendors do not buy.
     sell_price: num(input?.sell_price) ?? 1,
     buy_price: num(input?.buy_price) ?? (num(input?.sell_price) ?? 1) * BUY_PRICE_MARKUP,
@@ -184,16 +181,6 @@ export function validateItem(input: any, existingNames: Set<string>, originalNam
     const isHomeItem = homeItem !== null && originalName !== null && originalName.toLowerCase() === homeItem.toLowerCase();
     if (item.teleports_home && homeItem !== null && !isHomeItem) errors.push(`${homeItem} is already the home item. Only one item can be.`);
   }
-
-  const min = item.damage_min;
-  const max = item.damage_max;
-  if (min !== null && min < 1) errors.push("Minimum damage must be at least 1.");
-  if (max !== null && max < 1) errors.push("Maximum damage must be at least 1.");
-  if (min !== null && max !== null && max < min) errors.push("Maximum damage cannot be below minimum damage.");
-  if (item.attack_speed_ms !== null && item.attack_speed_ms < 500) errors.push("Attack speed must be at least 500ms.");
-  if ((min !== null || max !== null || item.attack_speed_ms !== null) && item.equipment_slot !== "weapon") {
-    errors.push("Weapon damage and speed only apply to items in the weapon slot.");
-  }
   return errors;
 }
 
@@ -201,7 +188,7 @@ const COLUMNS = [
   "name", "quality", "type", "description", "icon", "stat_armor", "stat_damage",
   "stat_critical_chance", "stat_critical_damage", "stat_health", "stat_stamina",
   "stat_avoidance", "level_requirement", "equipable", "equipment_slot",
-  "damage_min", "damage_max", "attack_speed_ms", "sell_price", "buy_price",
+  "sell_price", "buy_price",
   "restore_health", "restore_stamina", "no_combat", "teleports_home", "soulbound", "sprite_sheet",
 ];
 
@@ -209,7 +196,7 @@ const values = (item: Item) => [
   item.name, item.quality, item.type, item.description, item.icon, item.stat_armor, item.stat_damage,
   item.stat_critical_chance, item.stat_critical_damage, item.stat_health, item.stat_stamina,
   item.stat_avoidance, item.level_requirement, item.equipable ? 1 : 0, item.equipment_slot,
-  item.damage_min, item.damage_max, item.attack_speed_ms, item.sell_price ?? 1, item.buy_price ?? 0,
+  item.sell_price ?? 1, item.buy_price ?? 0,
   item.restore_health ?? 0, item.restore_stamina ?? 0, item.no_combat ? 1 : 0, item.teleports_home ? 1 : 0,
   item.soulbound ? 1 : 0, item.sprite_sheet ?? null,
 ];

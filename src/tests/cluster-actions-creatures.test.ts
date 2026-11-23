@@ -47,7 +47,6 @@ function setup() {
     onStateChanged: () => {},
     onCombatText: (text) => texts.push(text),
     onDied: () => {},
-    onAutoAttackStopped: () => {},
     onTapChanged: () => {},
     linkedCreatures: () => [],
     spell: () => undefined,
@@ -64,7 +63,7 @@ function setup() {
     const p = {
       id, username: id, map: "main", layerId: null, x, y, dir: "up", level: 10, alive: true,
       gmHidden: false, stealthed: false, casting: false, dodgePct: 0, critPct: 0, critDamagePct: 0,
-      statDamage: 7, armorPct: 0, weapon: null, ...over,
+      statDamage: 7, armorPct: 0, ...over,
     };
     players.set(id, p);
     return p;
@@ -102,20 +101,6 @@ test("a local hit with a text kind shows the text once, with the damage dealt", 
   expect(texts).toEqual([{ creatureId: 51, targetId: "creature:51", sourceId: "p1", kind: "spell", amount: 20 }]);
 });
 
-test("an auto-attack swing on a mirror is rolled here and forwarded", () => {
-  const { registry, system, forwarded, texts, addPlayer } = setup();
-  const mirror = makeCreature(50, 100, 100, { remote: true });
-  registry.add(mirror as any);
-  addPlayer("p1", 100, 110);
-  expect(system.startAutoAttack("p1", 50, 1000)).toBeNull();
-  system.tickPlayerAttacks(1000);
-  expect(forwarded.length).toBe(1);
-  expect(forwarded[0].attackerId).toBe("p1");
-  expect(typeof forwarded[0].textKind).toBe("string");
-  expect(texts).toEqual([]);
-  expect(mirror.health).toBe(100);
-});
-
 test("the owner applies a forwarded hit: damage, text, threat and tap", () => {
   const { registry, system, texts, addPlayer } = setup();
   const owned = makeCreature(51, 100, 100);
@@ -129,18 +114,6 @@ test("the owner applies a forwarded hit: damage, text, threat and tap", () => {
   expect(owned.combat.threat.top()).toBe("p1");
   expect(system.applyForwardedHit(owned as any, { attackerId: "p1", amount: 500, threatMultiplier: 1, textKind: "hit" }, 1100)).toEqual({ landed: true, killed: true });
   expect(system.applyForwardedHit(owned as any, { attackerId: "p1", amount: 5, threatMultiplier: 1, textKind: "hit" }, 1200)).toEqual({ landed: false, killed: false });
-});
-
-test("an avoided forwarded swing deals nothing but still pulls and taps", () => {
-  const { registry, system, texts, addPlayer } = setup();
-  const owned = makeCreature(51, 100, 100);
-  registry.add(owned as any);
-  addPlayer("p1", 110, 100);
-  system.applyForwardedHit(owned as any, { attackerId: "p1", amount: 0, threatMultiplier: 1, textKind: "dodge" as any, avoided: true }, 1000);
-  expect(owned.health).toBe(100);
-  expect(texts).toEqual([{ creatureId: 51, targetId: "creature:51", sourceId: "p1", kind: "dodge", amount: 0 }]);
-  expect(owned.combat.tapper?.playerId).toBe("p1");
-  expect(owned.state).toBe("combat");
 });
 
 test("a spell on a mirror is forwarded with the caster's damage stat, and the owner uses it", () => {
@@ -512,97 +485,29 @@ test("a link that fails while a creature attacks a mirrored player leaves no unh
 
 // ------------------------------------------------------------------ a player's hit on a mirrored creature: the player's node
 
-test("a swing the owner turns away ends the auto-attack; one it takes, or a spell it refuses, does not", async () => {
-  const owner = spyOn(ghosts, "ownerOf").mockReturnValue("a");
-  const attacker: any = { id: "pl", username: "pl", location: { map: "main", position: { x: 300, y: 310, direction: "up" } }, stats: { level: 10, health: 100 } };
-  playerCache.set("pl", attacker);
-  let sent = sentCalls({ ok: true, answer: { outcome: "applied" } });
-  try {
-    expect(kind.spawn(record({ id: 770004 }), "a")).toBe(true);
-    const swing = async (answer: any, now: number) => {
-      sent.mockRestore();
-      sent = sentCalls(answer);
-      expect(creatures.startAutoAttack(attacker, 770004)).toBeNull();
-      mod.combat.tickPlayerAttacks(now);
-      await settle();
-      expect(sent).toHaveBeenCalledTimes(1);
-      expect(sent.mock.calls[0]![2]).toMatchObject({ op: "creature_hit", target: 770004 });
-    };
-    await swing({ ok: true, answer: { outcome: "applied" } }, Date.now() + 1000);
-    expect(mod.combat.autoAttackTarget("pl")).toBe(770004);
-    const turnedAway: any[] = [
-      { ok: true, answer: { outcome: "refused", reason: "layer" } },
-      { ok: true, answer: { outcome: "refused", reason: "attacker" } },
-      { ok: true, answer: { outcome: "refused", reason: "dead" } },
-      { ok: true, answer: { outcome: "missing" } },
-      { ok: false, why: "down" },
-    ];
-    for (const answer of turnedAway) {
-      mod.combat.stopAutoAttack("pl", false);
-      await swing(answer, Date.now() + 1000);
-      expect(mod.combat.autoAttackTarget("pl")).toBeNull();
-    }
-    // A spell is not an auto-attack: its refusal leaves the swing going.
-    mod.combat.stopAutoAttack("pl", false);
-    expect(creatures.startAutoAttack(attacker, 770004)).toBeNull();
-    sent.mockRestore();
-    sent = sentCalls({ ok: true, answer: { outcome: "refused", reason: "layer" } });
-    mod.combat.applySpellToCreature(creatures.getCreature(770004), "pl", { id: 9, name: "Burn", effects: [{ type: "taunt" }] }, 1);
-    await settle();
-    expect(sent).toHaveBeenCalledTimes(1);
-    expect(mod.combat.autoAttackTarget("pl")).toBe(770004);
-  } finally {
-    sent.mockRestore();
-    owner.mockRestore();
-    mod.combat.stopAutoAttack("pl", false);
-    playerCache.remove("pl");
-    clearCreatures();
-  }
-});
-
 /** A mirrored creature and a player of this node standing at it, with `ghosts.ownerOf` answering "a". */
-async function withMirrorTarget(fn: (attacker: any) => Promise<void>): Promise<void> {
+async function withMirrorTarget(fn: () => Promise<void>): Promise<void> {
   const owner = spyOn(ghosts, "ownerOf").mockReturnValue("a");
   const attacker: any = { id: "pl", username: "pl", location: { map: "main", position: { x: 300, y: 310, direction: "up" } }, stats: { level: 10, health: 100 } };
   playerCache.set("pl", attacker);
   try {
     expect(kind.spawn(record({ id: 770004 }), "a")).toBe(true);
-    await fn(attacker);
+    await fn();
   } finally {
     owner.mockRestore();
-    mod.combat.stopAutoAttack("pl", false);
     playerCache.remove("pl");
     clearCreatures();
   }
 }
 
-test("a refused hit on a mirror leaves the attacker's auto-attack on another creature running", async () => {
-  await withMirrorTarget(async (attacker) => {
-    owned(770001);
-    const sent = sentCalls({ ok: true, answer: { outcome: "refused", reason: "layer" } });
-    try {
-      expect(creatures.startAutoAttack(attacker, 770001)).toBeNull();
-      // A zone tick, say, on the mirror: it is refused, and it is not what the player is swinging at.
-      mod.combat.damageCreature(creatures.getCreature(770004), "pl", 5, Date.now(), 1, "spell");
-      await settle();
-      expect(sent).toHaveBeenCalledTimes(1);
-      expect(sent.mock.calls[0]![2]).toMatchObject({ op: "creature_hit", target: 770004 });
-      expect(mod.combat.autoAttackTarget("pl")).toBe(770001);
-    } finally {
-      sent.mockRestore();
-    }
-  });
-});
-
-test("a swing whose link call rejects throws nothing and leaves no unhandled rejection", async () => {
+test("a hit on a mirror whose link call rejects throws nothing and leaves no unhandled rejection", async () => {
   const unhandled: unknown[] = [];
   const record_ = (reason: unknown) => { unhandled.push(reason); };
   process.on("unhandledRejection", record_);
   const sent = spyOn(linkCalls, "call").mockRejectedValue(new Error("link gone"));
   try {
-    await withMirrorTarget(async (attacker) => {
-      expect(creatures.startAutoAttack(attacker, 770004)).toBeNull();
-      expect(() => mod.combat.tickPlayerAttacks(Date.now() + 1000)).not.toThrow();
+    await withMirrorTarget(async () => {
+      expect(() => mod.combat.damageCreature(creatures.getCreature(770004), "pl", 5, Date.now(), 1, "spell")).not.toThrow();
       await settle();
       expect(sent).toHaveBeenCalledTimes(1);
       expect(unhandled).toEqual([]);

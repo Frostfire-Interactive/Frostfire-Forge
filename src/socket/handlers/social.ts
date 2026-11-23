@@ -9,6 +9,7 @@ import spellEffects from "../../systems/spelleffects";
 import trades from "../../systems/trades";
 import { Events } from "../../systems/events";
 import { GuildPermission, refusalText } from "../../systems/guildranks";
+import { canInvite, capital, joinOutcome, newLeaderNotice, RAID_CONVERT_MS } from "../../systems/partyrules";
 import { clusterEnabled } from "../../cluster/config";
 import { deliverToPlayer, isOnline, runOnPlayer } from "../../cluster/deliver";
 import { greetContacts, sendFriends } from "../contacts";
@@ -18,15 +19,79 @@ import { invitations } from "../../cluster/invitations";
 import { listener } from "../../modules/event_bus";
 import { packetManager } from "../packet_manager";
 import { clearParty } from "../partystate";
+import { isHeld } from "../../systems/cutsceneheld";
+import { summonClaims, stoneKey } from "../../cluster/summonclaims";
+import { summonMove } from "../summonmove";
+import { summonSpot, targetProblem, touchStone } from "../summonstones";
 import { randomBytes } from "../../modules/hash";
 import { forgetLook } from "../looks";
 import { syncPartyLayers, queueSpawnPlayerPacket, broadcastPlayerUpdate } from "../aoi";
 import { answerTradeIfAcross, channelLineOk, chatHearing, chatLinksOf, getAnimationNameForDirection, guildDone, guildEditOk, isQuestRateLimited, kickedFromGuild, offerInvitation, officerChat, pushGuild, partyViewChanged, queueSpawnForReceivers, sendAnimationTo, sendIgnoreAnswer, sendPacket, sendReport, sendTradeState, shownName, subscriptionLocked, tradeRefusal, withSender } from "../receiver";
 import type { PacketContext } from "./context";
 
+/** The sixth player has accepted: the leader is asked to turn the full party into a raid group, and the joiner is told it is full if the leader does not agree. */
+async function offerRaidConvert(joiner: any, leaderUsername: string, partyId: number): Promise<void> {
+  const authorization = randomBytes(16).toString();
+  const offered = await offerInvitation(joiner, leaderUsername, {
+    action: "RAID_CONVERT",
+    message: "Your party is full. Convert this party into a raid group?",
+    originator: String(joiner.id),
+    authorization,
+  }, partyId);
+  if (!offered) {
+    sendPacket(joiner.wt, packetManager.notify({ message: "The party is full" }));
+    return;
+  }
+  setTimeout(async () => {
+    try {
+      // Still there: the leader did not answer in time.
+      if (await invitations.take(authorization)) sendPacket(joiner.wt, packetManager.notify({ message: "The party is full" }));
+    } catch (error) {
+      log.error(`The raid conversion offer could not be closed: ${error}`);
+    }
+  }, RAID_CONVERT_MS);
+}
+
+/** The joiner is in the party (at the leader's word): everyone is shown the new list, and the layers and vanished members are brought in sync. */
+async function announceJoin(joinerName: string, leaderName: string, partyId: number, members: string[], joinerHere?: any): Promise<void> {
+  const view = { leader: await parties.getPartyLeader(partyId), raid: await parties.isRaid(partyId) };
+  await deliverToPlayer(joinerName, packetManager.notify({ message: `You have joined ${capital(leaderName)}'s party` }));
+  await deliverToPlayer(leaderName, packetManager.notify({ message: `${capital(joinerName)} has joined your party` }));
+  for (const member of members) {
+    await runOnPlayer(member, "party-update", { members, notice: null, ...view });
+  }
+  const joinerSession = await player.getSessionIdByUsername(joinerName);
+  const joiner = joinerHere || (joinerSession && playerCache.get(joinerSession));
+  if (joiner) await greetContacts(joiner, members);
+  if (view.leader) await syncPartyLayers(view.leader, members, playerCache, sendAnimationTo);
+  for (const memberUsername of members) {
+    const memberSessionId = await player.getSessionIdByUsername(memberUsername);
+    const memberPlayer = memberSessionId && playerCache.get(memberSessionId);
+    if (!memberPlayer || !memberPlayer.isVanished) continue;
+    const sd = queueSpawnPlayerPacket(memberPlayer);
+    if (!sd) continue;
+    const an = getAnimationNameForDirection(memberPlayer.location.position?.direction || "down", !!memberPlayer.moving, !!memberPlayer.mounted, memberPlayer.mount_type, !!memberPlayer.casting);
+    const ss = await getPlayerSpriteSheetData(an, memberPlayer.equipment || null);
+    const ms = memberPlayer.mount_type ? getMountSpriteUrl(memberPlayer.mount_type) : null;
+    if (ss?.bodySprite || ss?.headSprite || ms) {
+      (sd as any).spriteData = { mountSprite: ms, bodySprite: ss.bodySprite || null, headSprite: ss.headSprite || null, armorHelmetSprite: ss.armorHelmetSprite || null, armorShoulderguardsSprite: ss.armorShoulderguardsSprite || null, armorNeckSprite: ss.armorNeckSprite || null, armorHandsSprite: ss.armorHandsSprite || null, armorChestSprite: ss.armorChestSprite || null, armorFeetSprite: ss.armorFeetSprite || null, armorLegsSprite: ss.armorLegsSprite || null, armorWeaponSprite: ss.armorWeaponSprite || null, animationState: ss.animationState };
+    }
+    const fx = spellEffects.getEffectsPayload(memberPlayer);
+    if (fx.length > 0) (sd as any).effects = fx;
+    const receivers: any[] = [];
+    for (const otherUsername of members) {
+      if (otherUsername.toLowerCase() === memberUsername.toLowerCase()) continue;
+      const otherSessionId = await player.getSessionIdByUsername(otherUsername);
+      const otherPlayer = otherSessionId && playerCache.get(otherSessionId);
+      if (otherPlayer && otherPlayer.wt) receivers.push(otherPlayer);
+    }
+    queueSpawnForReceivers(memberPlayer, receivers, (sd as any).spriteData);
+  }
+}
+
 // Packet handlers moved from receiver.ts's packetReceiver switch (phase 6, Task 1). The case bodies are unchanged.
 
-export const handles: ReadonlySet<string> = new Set(["KICK_PARTY_MEMBER", "LEAVE_PARTY", "DISBAND_GUILD", "LEAVE_GUILD", "KICK_GUILD_MEMBER", "GUILD_PROMOTE", "GUILD_DEMOTE", "GUILD_SET_MOTD", "GUILD_SET_NOTE", "GUILD_ADD_RANK", "GUILD_EDIT_RANK", "GUILD_DELETE_RANK", "GUILD_TRANSFER_LEADER", "CREATE_GUILD", "INVITE_GUILD", "GUILD_CHAT", "OFFICER_CHAT", "INVITE_PARTY", "IGNORE_PLAYER", "UNIGNORE_PLAYER", "REPORT_PLAYER", "ADD_FRIEND", "INVITATION_RESPONSE", "REMOVE_FRIEND"]);
+export const handles: ReadonlySet<string> = new Set(["KICK_PARTY_MEMBER", "LEAVE_PARTY", "DISBAND_GUILD", "LEAVE_GUILD", "KICK_GUILD_MEMBER", "GUILD_PROMOTE", "GUILD_DEMOTE", "GUILD_SET_MOTD", "GUILD_SET_NOTE", "GUILD_ADD_RANK", "GUILD_EDIT_RANK", "GUILD_DELETE_RANK", "GUILD_TRANSFER_LEADER", "CREATE_GUILD", "INVITE_GUILD", "GUILD_CHAT", "OFFICER_CHAT", "INVITE_PARTY", "IGNORE_PLAYER", "UNIGNORE_PLAYER", "REPORT_PLAYER", "ADD_FRIEND", "INVITATION_RESPONSE", "REMOVE_FRIEND", "SUMMON_STONE_TOUCH"]);
 
 export async function handle(ctx: PacketContext): Promise<unknown> {
   const { currentPlayer, data, type, wt } = ctx;
@@ -118,9 +183,10 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
             currentPlayer.username.slice(1)
             } has kicked ${member.charAt(0).toUpperCase() + member.slice(1)
             } from the party`;
+          const view = { leader: await parties.getPartyLeader(partyId), raid: await parties.isRaid(partyId) };
           result.forEach(async (m: string) => {
             const isKicker = m.toLowerCase() === currentPlayer.username.toLowerCase();
-            await runOnPlayer(m, "party-update", { members: result, notice: isKicker ? null : kickedNotice });
+            await runOnPlayer(m, "party-update", { members: result, notice: isKicker ? null : kickedNotice, ...view });
           });
 
           const partyLeader = await parties.getPartyLeader(partyId);
@@ -158,6 +224,7 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           return;
         }
 
+        const leaderBefore = await parties.getPartyLeader(partyId);
         const result = await parties.leave(currentPlayer.username);
 
         const type = typeof result;
@@ -196,8 +263,7 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           );
           // and the hidden members of another node in view are no longer shown (cluster mode)
           await partyViewChanged(currentPlayer, () => {
-            if (clusterEnabled()) clearParty(currentPlayer);
-            else currentPlayer.party = [];
+            clearParty(currentPlayer);
             playerCache.set(currentPlayer.id, currentPlayer);
           });
           sendPacket(wt, packetManager.updateParty({ members: [] }));
@@ -206,9 +272,17 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           const leftNotice = `${currentPlayer.username.charAt(0).toUpperCase() +
             currentPlayer.username.slice(1)
             } has left the party`;
+          const view = { leader: await parties.getPartyLeader(partyId), raid: await parties.isRaid(partyId) };
           (result as string[]).forEach(async (member: string) => {
-            await runOnPlayer(member, "party-update", { members: result, notice: leftNotice });
+            await runOnPlayer(member, "party-update", { members: result, notice: leftNotice, ...view });
           });
+          // The leader left and the lead went to the next member.
+          if (view.leader && leaderBefore && view.leader.toLowerCase() !== leaderBefore.toLowerCase()) {
+            const message = newLeaderNotice(view.leader);
+            for (const member of (result as string[])) {
+              await deliverToPlayer(member, packetManager.notify({ message }));
+            }
+          }
 
           if ((result as string[]).length > 0) {
             const remainingPartyId = await parties.getPartyId((result as string[])[0]);
@@ -599,6 +673,10 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
             );
             return;
           }
+          if (!canInvite((await parties.getPartyMembers(partyId)).length)) {
+            sendPacket(wt, packetManager.notify({ message: "Your party is full." }));
+            return;
+          }
         }
 
         const invitedUserPartyId = await parties.getPartyId(
@@ -756,6 +834,11 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         break;
       }
 
+      case "SUMMON_STONE_TOUCH": {
+        await touchStone(currentPlayer, data);
+        break;
+      }
+
       case "INVITATION_RESPONSE": {
         const { action, originator, authorization, response } = data as any;
         if (!action || !originator || !authorization || !response) return;
@@ -763,6 +846,51 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         log.info(
           `Invitation response received: ${action}, ${originator}, ${authorization}, ${response}`
         );
+
+        // A summoning stone's offer: answered on the target's node, whether or not the summoner is still here.
+        if (action.toUpperCase() === "SUMMON_STONE") {
+          const summonInvite = await invitations.take(authorization);
+          const summon = summonInvite?.summon;
+          if (!summonInvite || !summon || summonInvite.action !== action || summonInvite.originator !== originator) {
+            // An answer that does not match leaves the invitation open, as the others do.
+            if (summonInvite) await invitations.add(summonInvite);
+            sendPacket(wt, packetManager.notify({ message: summonInvite ? "Invitation not found or has already been processed" : "The summon has expired." }));
+            break;
+          }
+          const summoner = summonInvite.originatorName;
+          const key = stoneKey(summon.map, summon.stone);
+          // Held in a cutscene: refused, as SUMMON refuses it. The summoner is told; the target is not shown an admin command.
+          const heldInScene = async (): Promise<boolean> => {
+            if (!isHeld(currentPlayer)) return false;
+            sendPacket(wt, packetManager.notify({ message: "You cannot be summoned during a cutscene." }));
+            await deliverToPlayer(summoner, packetManager.notify({ message: `${shownName(currentPlayer.username)} is in a cutscene.` }));
+            return true;
+          };
+          const shownTarget = shownName(currentPlayer.username);
+          try {
+            if (String(summonInvite.target ?? "").toLowerCase() !== currentPlayer.username.toLowerCase()) break;
+            if (response.toUpperCase() !== "ACCEPT") {
+              await deliverToPlayer(summoner, packetManager.notify({ message: `${shownTarget} declined the summon.` }));
+              break;
+            }
+            // Things may have changed since it was asked: the target died or walked into a dungeon.
+            const problem = targetProblem(currentPlayer, false);
+            if (problem) {
+              sendPacket(wt, packetManager.notify({ message: problem }));
+              await deliverToPlayer(summoner, packetManager.notify({ message: problem }));
+              break;
+            }
+            if (await heldInScene()) break;
+            if (await summonMove(currentPlayer, summonSpot({ map: summon.map, x: summon.x, y: summon.y }), null)) {
+              await deliverToPlayer(summoner, packetManager.notify({ message: `${shownTarget} has been summoned.` }));
+            } else {
+              sendPacket(wt, packetManager.notify({ message: "The summon failed." }));
+            }
+          } finally {
+            await summonClaims.release(key, currentPlayer.username, summoner);
+          }
+          break;
+        }
 
         const inviterGone = () => sendPacket(
           wt,
@@ -884,6 +1012,41 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
             }
             break;
           }
+          // Roles are inverted here: the one who made the offer is the joiner, and the one answering is the party's leader.
+          case "RAID_CONVERT": {
+            const joinerName = inviterName;
+            const full = () => deliverToPlayer(joinerName, packetManager.notify({ message: "The party is full" }));
+            if (response.toUpperCase() !== "ACCEPT") {
+              await full();
+              break;
+            }
+            const partyId = await parties.getPartyId(currentPlayer.username);
+            if (!partyId || !(await parties.isPartyLeader(currentPlayer.username))) {
+              sendPacket(wt, packetManager.notify({ message: "You are not the party leader" }));
+              await full();
+              break;
+            }
+            // The offer was for one party: the leader leading another now, or that party no longer at the size that asks, does not convert.
+            if (invite.partyId !== partyId || joinOutcome((await parties.getPartyMembers(partyId)).length, await parties.isRaid(partyId)) !== "convert") {
+              await full();
+              break;
+            }
+            // Things may have changed since the offer: the joiner left, or joined another party.
+            if (!(await isOnline(joinerName)) || (await parties.isInParty(joinerName))) {
+              sendPacket(wt, packetManager.notify({ message: `${capital(joinerName)} can no longer join your party` }));
+              break;
+            }
+            await parties.setRaid(partyId);
+            const members = await parties.add(joinerName.toLowerCase(), partyId);
+            if (!members || members.length === 0) {
+              sendPacket(wt, packetManager.notify({ message: "Failed to join party" }));
+              await full();
+              break;
+            }
+            await announceJoin(joinerName, currentPlayer.username, partyId, members);
+            listener.emit(Events.PARTY_CHANGED, { type: "join", username: joinerName, members });
+            break;
+          }
           case "INVITE_PARTY": {
 
             const partyId = await parties.getPartyId(inviterName);
@@ -891,6 +1054,17 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
             if (response.toUpperCase() === "ACCEPT") {
 
               if (partyId) {
+
+                // The party may be full: a joiner past five asks the leader to make it a raid group, and at the cap there is no room.
+                const outcome = joinOutcome((await parties.getPartyMembers(partyId)).length, await parties.isRaid(partyId));
+                if (outcome === "full") {
+                  sendPacket(wt, packetManager.notify({ message: "The party is full" }));
+                  return;
+                }
+                if (outcome === "convert") {
+                  await offerRaidConvert(currentPlayer, (await parties.getPartyLeader(partyId)) || inviterName, partyId);
+                  return;
+                }
 
                 updatedPartyMembers = await parties.add(
                   currentPlayer.username.toLowerCase(),
@@ -904,56 +1078,8 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
                   );
                   return;
                 }
-                sendPacket(
-                  wt,
-                  packetManager.notify({
-                    message: `You have joined ${inviterName.charAt(0).toUpperCase() +
-                      inviterName.slice(1)
-                      }'s party`,
-                  })
-                );
-                await deliverToPlayer(
-                  inviterName,
-                  packetManager.notify({
-                    message: `${currentPlayer.username.charAt(0).toUpperCase() +
-                      currentPlayer.username.slice(1)
-                      } has joined your party`,
-                  })
-                );
-
-                for (const member of (updatedPartyMembers as string[])) {
-                  await runOnPlayer(member, "party-update", { members: updatedPartyMembers, notice: null });
-                }
-                await greetContacts(currentPlayer, updatedPartyMembers as string[]);
-
-                const partyLeader = await parties.getPartyLeader(partyId);
-                if (partyLeader && updatedPartyMembers.length > 0) {
-                  await syncPartyLayers(partyLeader, updatedPartyMembers as string[], playerCache, sendAnimationTo);
-                }
-
-                for (const memberUsername of (updatedPartyMembers as string[])) {
-                  const memberSessionId = await player.getSessionIdByUsername(memberUsername);
-                  const memberPlayer = memberSessionId && playerCache.get(memberSessionId);
-                  if (!memberPlayer || !memberPlayer.isVanished) continue;
-                  const sd = queueSpawnPlayerPacket(memberPlayer);
-                  if (!sd) continue;
-                  const an = getAnimationNameForDirection(memberPlayer.location.position?.direction || "down", !!memberPlayer.moving, !!memberPlayer.mounted, memberPlayer.mount_type, !!memberPlayer.casting);
-                  const ss = await getPlayerSpriteSheetData(an, memberPlayer.equipment || null);
-                  const ms = memberPlayer.mount_type ? getMountSpriteUrl(memberPlayer.mount_type) : null;
-                  if (ss?.bodySprite || ss?.headSprite || ms) {
-                    (sd as any).spriteData = { mountSprite: ms, bodySprite: ss.bodySprite || null, headSprite: ss.headSprite || null, armorHelmetSprite: ss.armorHelmetSprite || null, armorShoulderguardsSprite: ss.armorShoulderguardsSprite || null, armorNeckSprite: ss.armorNeckSprite || null, armorHandsSprite: ss.armorHandsSprite || null, armorChestSprite: ss.armorChestSprite || null, armorFeetSprite: ss.armorFeetSprite || null, armorLegsSprite: ss.armorLegsSprite || null, armorWeaponSprite: ss.armorWeaponSprite || null, animationState: ss.animationState };
-                  }
-                  const fx = spellEffects.getEffectsPayload(memberPlayer);
-                  if (fx.length > 0) (sd as any).effects = fx;
-                  const receivers: any[] = [];
-                  for (const otherUsername of (updatedPartyMembers as string[])) {
-                    if (otherUsername.toLowerCase() === memberUsername.toLowerCase()) continue;
-                    const otherSessionId = await player.getSessionIdByUsername(otherUsername);
-                    const otherPlayer = otherSessionId && playerCache.get(otherSessionId);
-                    if (otherPlayer && otherPlayer.wt) receivers.push(otherPlayer);
-                  }
-                  queueSpawnForReceivers(memberPlayer, receivers, (sd as any).spriteData);
-                }
+                // Notices, the new list for everyone, contacts, layers and vanished members.
+                await announceJoin(currentPlayer.username, inviterName, partyId, updatedPartyMembers as string[], currentPlayer);
               } else {
 
                 updatedPartyMembers = await parties.create(
@@ -967,64 +1093,9 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
                   );
                   return;
                 }
-                sendPacket(
-                  wt,
-                  packetManager.notify({
-                    message: `You have joined ${inviterName.charAt(0).toUpperCase() +
-                      inviterName.slice(1)
-                      }'s party`,
-                  })
-                );
-                await deliverToPlayer(
-                  inviterName,
-                  packetManager.notify({
-                    message: `${currentPlayer.username.charAt(0).toUpperCase() +
-                      currentPlayer.username.slice(1)
-                      } has joined your party`,
-                  })
-                );
-                await deliverToPlayer(
-                  inviterName,
-                  packetManager.updateParty({ members: updatedPartyMembers })
-                );
-                sendPacket(
-                  wt,
-                  packetManager.updateParty({ members: updatedPartyMembers })
-                );
-                for (const member of (updatedPartyMembers as string[])) {
-                  await runOnPlayer(member, "party-update", { members: updatedPartyMembers, notice: null });
-                }
-                await greetContacts(currentPlayer, updatedPartyMembers as string[]);
-
-                if (Array.isArray(updatedPartyMembers) && updatedPartyMembers.length > 0) {
-                  // Local: layers are synced among the party members on this node (the leader too, or nothing is).
-                  await syncPartyLayers(inviterName.toLowerCase(), updatedPartyMembers as string[], playerCache, sendAnimationTo);
-                }
-
-                for (const memberUsername of (updatedPartyMembers as string[])) {
-                  const memberSessionId = await player.getSessionIdByUsername(memberUsername);
-                  const memberPlayer = memberSessionId && playerCache.get(memberSessionId);
-                  if (!memberPlayer || !memberPlayer.isVanished) continue;
-                  const sd = queueSpawnPlayerPacket(memberPlayer);
-                  if (!sd) continue;
-                  const an = getAnimationNameForDirection(memberPlayer.location.position?.direction || "down", !!memberPlayer.moving, !!memberPlayer.mounted, memberPlayer.mount_type, !!memberPlayer.casting);
-                  const ss = await getPlayerSpriteSheetData(an, memberPlayer.equipment || null);
-                  const ms = memberPlayer.mount_type ? getMountSpriteUrl(memberPlayer.mount_type) : null;
-                  if (ss?.bodySprite || ss?.headSprite || ms) {
-                    (sd as any).spriteData = { mountSprite: ms, bodySprite: ss.bodySprite || null, headSprite: ss.headSprite || null, armorHelmetSprite: ss.armorHelmetSprite || null, armorShoulderguardsSprite: ss.armorShoulderguardsSprite || null, armorNeckSprite: ss.armorNeckSprite || null, armorHandsSprite: ss.armorHandsSprite || null, armorChestSprite: ss.armorChestSprite || null, armorFeetSprite: ss.armorFeetSprite || null, armorLegsSprite: ss.armorLegsSprite || null, armorWeaponSprite: ss.armorWeaponSprite || null, animationState: ss.animationState };
-                  }
-                  const fx = spellEffects.getEffectsPayload(memberPlayer);
-                  if (fx.length > 0) (sd as any).effects = fx;
-                  const receivers: any[] = [];
-                  for (const otherUsername of (updatedPartyMembers as string[])) {
-                    if (otherUsername.toLowerCase() === memberUsername.toLowerCase()) continue;
-                    const otherSessionId = await player.getSessionIdByUsername(otherUsername);
-                    const otherPlayer = otherSessionId && playerCache.get(otherSessionId);
-                    if (otherPlayer && otherPlayer.wt) receivers.push(otherPlayer);
-                  }
-                  queueSpawnForReceivers(memberPlayer, receivers, (sd as any).spriteData);
-                }
-
+                // The new party's two members, the leader and the joiner, are shown it as for any join.
+                const createdId = await parties.getPartyId(inviterName);
+                await announceJoin(currentPlayer.username, inviterName, createdId as number, updatedPartyMembers as string[], currentPlayer);
               }
             }
             // Only a join is a join: a declined invitation leaves this false.

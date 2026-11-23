@@ -80,12 +80,24 @@ export class BlockTable {
   private extents = new Map<string, BlockExtent>();
   private bus: ClusterBus | null = null;
   private listeners = new Set<(map: string) => void>();
+  /** The maps with a read of their table under way, and how many reads. */
+  private reading = new Map<string, number>();
+  /** Maps forgotten while a read of their table was under way: that read is not kept. */
+  private forgottenWhileRead = new Set<string>();
 
   constructor(private store: ClusterStore) {}
 
   /** The maps' sizes in blocks: `ownerOf` then puts a position on or past a map's far edge in its edge block. */
   useExtents(extents: Array<BlockExtent & { name: string }>): void {
     for (const extent of extents) this.extents.set(bare(extent.name), { blocksX: extent.blocksX, blocksY: extent.blocksY });
+  }
+
+  /** Drops a closed map from the cache and the extents; no listener is told. */
+  forget(map: string): void {
+    const name = bare(map);
+    this.cache.delete(name);
+    this.extents.delete(name);
+    if (this.reading.has(name)) this.forgottenWhileRead.add(name);
   }
 
   onChange(listener: (map: string) => void): () => void {
@@ -96,7 +108,8 @@ export class BlockTable {
   attach(bus: ClusterBus): void {
     this.bus = bus;
     bus.on("blocks-changed", async (data: { map?: string }) => {
-      if (data?.map) await this.reload(bare(data.map));
+      // A map with no table that is not held here is one closed here (a late message) or never opened: nothing is kept for it.
+      if (data?.map) await this.reload(bare(data.map), true);
     });
   }
 
@@ -186,9 +199,24 @@ export class BlockTable {
     return table ? { state: "ok", table } : { state: "corrupt" };
   }
 
-  private async reload(name: string): Promise<MapBlocks> {
-    const raw = await this.store.get(tableKey(name));
+  private async reload(name: string, onlyTables = false): Promise<MapBlocks> {
+    this.reading.set(name, (this.reading.get(name) ?? 0) + 1);
+    let raw: string | null;
+    let forgotten: boolean;
+    try {
+      raw = await this.store.get(tableKey(name));
+    } finally {
+      forgotten = this.forgottenWhileRead.has(name);
+      const left = (this.reading.get(name) ?? 1) - 1;
+      if (left > 0) {
+        this.reading.set(name, left);
+      } else {
+        this.reading.delete(name);
+        this.forgottenWhileRead.delete(name);
+      }
+    }
     const table = (raw ? parseTable(raw) : null) ?? empty();
+    if (forgotten || (onlyTables && raw === null && !this.cache.has(name))) return table;
     const cached = this.cache.get(name);
     if (cached && cached.epoch > table.epoch) return cached;
     this.keep(name, table);

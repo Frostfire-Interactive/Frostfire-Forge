@@ -159,55 +159,11 @@ describe("attack tables", () => {
     expect(roll).toEqual({ outcome: "crush", multiplier: 1.5 });
   });
 
-  test("player vs creature: glancing vs same/higher level, no parry for beasts or from behind", () => {
-    const humanoid = combatRolls.playerVsCreatureTable(10, 10, "humanoid", true, 5);
-    expect(humanoid).toEqual({ miss: 5, dodge: 5, parry: 5, glancing: 10, crit: 5 });
-    expect(combatRolls.playerVsCreatureTable(10, 10, "beast", true, 5).parry).toBe(0);
-    expect(combatRolls.playerVsCreatureTable(10, 10, "humanoid", false, 5).parry).toBe(0);
-    expect(combatRolls.playerVsCreatureTable(10, 8, "humanoid", true, 5).glancing).toBe(0);
-    expect(combatRolls.playerVsCreatureTable(10, 13, "humanoid", true, 5).miss).toBeCloseTo(9, 5);
-
-    const r = seeded(7);
-    const pct = distribution(() => combatRolls.rollPlayerVsCreature(humanoid, 2, r));
-    expect(pct.glancing).toBeCloseTo(10, 0);
-    expect(pct.hit).toBeCloseTo(70, 0);
-  });
-
-  test("weapon profile prefers its damage range, falls back to the damage stat", () => {
-    expect(combatRolls.weaponProfile({ damage_min: 8, damage_max: 14, attack_speed_ms: 2600 }))
-      .toEqual({ damageMin: 8, damageMax: 14, swingMs: 2600 });
-    // Older weapons carry only a flat damage stat.
-    expect(combatRolls.weaponProfile({ stat_damage: 10 }))
-      .toEqual({ damageMin: 10, damageMax: 15, swingMs: 2000 });
-    // A single bound still yields a usable range, and speed has a floor.
-    expect(combatRolls.weaponProfile({ damage_max: 6, attack_speed_ms: 100 }))
-      .toEqual({ damageMin: 6, damageMax: 6, swingMs: 500 });
-    expect(combatRolls.weaponProfile({})).toBeNull();
-    expect(combatRolls.weaponProfile(null)).toBeNull();
-  });
-
-  test("swing damage: weapon range plus speed-scaled damage stat, unarmed scales with level", () => {
-    // Slow weapon gets proportionally more from the damage stat than a fast one.
-    const slow = combatRolls.playerMeleeDamageRange(10, 20, { damageMin: 10, damageMax: 20, swingMs: 3000 });
-    const fast = combatRolls.playerMeleeDamageRange(10, 20, { damageMin: 10, damageMax: 20, swingMs: 1500 });
-    expect(slow).toEqual([40, 50]);
-    expect(fast).toEqual([25, 35]);
-
-    // Bare-handed: weak, but still scales with level so low levels can fight.
-    expect(combatRolls.playerMeleeDamageRange(10, 0, null)).toEqual([11, 22]);
-    expect(combatRolls.playerMeleeDamageRange(1, 0, null)).toEqual([2, 4]);
-  });
-
-  test("spell miss, armor and facing", () => {
+  test("spell miss and player armor", () => {
     expect(combatRolls.spellMissChance(10, 10)).toBe(4);
     expect(combatRolls.spellMissChance(10, 12)).toBe(6);
     expect(combatRolls.spellMissChance(10, 13)).toBe(17);
-    expect(combatRolls.armorReduction(0, 10)).toBe(0);
-    expect(combatRolls.armorReduction(1250, 10)).toBeCloseTo(0.5, 5);
-    expect(combatRolls.armorReduction(1e9, 1)).toBe(0.75);
     expect(combatRolls.playerArmorReduction(90)).toBe(0.75);
-    expect(combatRolls.isInFront({ x: 0, y: 0 }, "right", { x: 10, y: 3 })).toBe(true);
-    expect(combatRolls.isInFront({ x: 0, y: 0 }, "right", { x: -10, y: 0 })).toBe(false);
   });
 });
 
@@ -229,7 +185,7 @@ function makeCreature(id: number, x: number, y: number, over: any = {}) {
   };
 }
 
-function setup(templateOver: any = {}, gridOverride?: any, extraTemplates: Record<number, any> = {}) {
+function setup(templateOver: any = {}, gridOverride?: any, extraTemplates: Record<number, any> = {}, worldOver: any = {}) {
   const registry = new CreatureRegistry(128);
   const template = normalizeTemplate({
     id: 1, name: "Wolf", level_min: 10, level_max: 10, damage_min: 10, damage_max: 10, attack_speed_ms: 2000,
@@ -237,7 +193,7 @@ function setup(templateOver: any = {}, gridOverride?: any, extraTemplates: Recor
   });
   const spawn = normalizeSpawn({ id: 1, template_id: 1, map: "main" });
   const players = new Map<string, any>();
-  const events: any = { damage: [] as any[], texts: [] as any[], died: [] as any[], stopped: [] as any[], combatMarks: new Set<string>(), dazed: [] as string[], taps: [] as any[], playerEffects: [] as any[], casts: [] as any[], auraChanges: [] as number[], pendingImpacts: [] as any[], launches: [] as any[] };
+  const events: any = { damage: [] as any[], texts: [] as any[], died: [] as any[], combatMarks: new Set<string>(), dazed: [] as string[], taps: [] as any[], playerEffects: [] as any[], casts: [] as any[], auraChanges: [] as number[], pendingImpacts: [] as any[], launches: [] as any[] };
   const others = new Map<number, any>(Object.entries(extraTemplates).map(([id, t]) => [Number(id), normalizeTemplate({ id: Number(id), name: "Other", ...t })]));
   const links = new Map<number, number[]>();
   const abilities = new Map<number, any[]>();
@@ -266,7 +222,6 @@ function setup(templateOver: any = {}, gridOverride?: any, extraTemplates: Recor
     onStateChanged: () => {},
     onCombatText: (t) => events.texts.push(t),
     onDied: (c, killer) => events.died.push({ id: c.id, killer }),
-    onAutoAttackStopped: (playerId, creatureId) => events.stopped.push({ playerId, creatureId }),
     onTapChanged: (c) => events.taps.push({ id: c.id, tapper: c.combat.tapper }),
     linkedCreatures: (c) => (links.get(c.id) ?? []).map((id) => registry.get(id)).filter(Boolean) as any[],
     spell: (id) => spells.get(id),
@@ -280,6 +235,7 @@ function setup(templateOver: any = {}, gridOverride?: any, extraTemplates: Recor
     onCastStart: (c) => events.casts.push({ id: c.id, phase: "start", spell: c.casting?.spellName }),
     onCastEnd: (c, spell, result) => events.casts.push({ id: c.id, phase: "end", spell, result }),
     onAurasChanged: (c) => events.auraChanges.push(c.id),
+    ...worldOver,
   });
   const addPlayer = (id: string, pos: { x: number; y: number }, over: any = {}) => {
     const p = {
@@ -515,54 +471,52 @@ describe("creature combat engine", () => {
     expect(c.state).toBe("combat");
   });
 
-  test("killing blow: dead state, corpse timer, auto-attacks stop, killer reported", () => {
+  test("killing blow: dead state, corpse timer, killer reported", () => {
     const { registry, system, addPlayer, events } = setup();
     const c = makeCreature(1, tile(10, 10).x, tile(10, 10).y, { health: 10 });
     registry.add(c);
     addPlayer("p", tile(10, 10));
-    expect(system.startAutoAttack("p", 1, 0)).toBeNull();
     expect(system.damageCreature(c, "p", 50, 100)).toBe(10);
     expect(c.state).toBe("dead");
     expect(c.combat.corpseUntil).toBeGreaterThan(100);
     expect(events.died).toEqual([{ id: 1, killer: "p" }]);
-    expect(events.stopped).toEqual([{ playerId: "p", creatureId: 1 }]);
     expect(system.isInCombatWith("p")).toBe(false);
     expect(system.damageCreature(c, "p", 50, 200)).toBe(0);
   });
+});
 
-  test("player auto-attack swings every 2s in melee range and pulls the creature", () => {
-    const { registry, system, addPlayer, events, setRoll } = setup({ stance: "neutral", armor: 0 });
-    setRoll(0.9); // 90 on the table: a normal hit
-    const c = makeCreature(1, tile(10, 10).x, tile(10, 10).y, { health: 1000, maxHealth: 1000 });
+describe("a dungeon copy's creatures", () => {
+  // A copy's creature has no spawn slot (spawnId 0) and names the template map's spawn it was made from.
+  const spawns = new Map<number, any>([
+    [7, normalizeSpawn({ id: 7, template_id: 1, map: "crypt", movement_type: "wander", wander_radius: 6 })],
+    [8, normalizeSpawn({ id: 8, template_id: 1, map: "crypt", movement_type: "patrol", patrol_path_id: 3 })],
+  ]);
+  const path = { id: 3, map: "crypt", loop: false, pause_mode: "continuous", pause_ms: 0, end_pause_ms: 0, points: [tile(20, 10), tile(20, 14)].map((p) => ({ ...p, wait_ms: 0 })) };
+  const world = { spawn: (id: number) => spawns.get(id), patrol: (spawn: any) => (spawn?.patrol_path_id === 3 ? path : undefined) };
+
+  test("wander about their home in the copy as the template map's spawn says", () => {
+    const { registry, system } = setup({ move_speed_walk: 3 }, undefined, {}, world);
+    const home = tile(10, 10);
+    const c = makeCreature(1, home.x, home.y, { spawnId: 0, copySpawnId: 7, map: "crypt~a1" });
     registry.add(c);
-    const p = addPlayer("p", { x: c.x + 100, y: c.y });
-    expect(system.startAutoAttack("p", 1, 0)).toBeNull();
-    system.tickPlayerAttacks(0);
-    expect(c.health).toBe(1000); // out of range
-
-    p.x = c.x + 10;
-    system.tickPlayerAttacks(100);
-    expect(c.health).toBeLessThan(1000);
-    expect(c.state).toBe("combat");
-    const afterFirst = c.health;
-    system.tickPlayerAttacks(1000);
-    expect(c.health).toBe(afterFirst);
-    system.tickPlayerAttacks(2100);
-    expect(c.health).toBeLessThan(afterFirst);
-    expect(events.texts.some((t: any) => t.sourceId === "p" && t.kind === "hit")).toBe(true);
+    let strayed = 0;
+    for (let now = 0; now <= 20000; now += 100) {
+      system.tick(c, now, 100);
+      strayed = Math.max(strayed, Math.hypot(c.x - home.x, c.y - home.y));
+    }
+    expect(c.state).toBe("wander");
+    expect(strayed).toBeGreaterThan(0);
+    expect(strayed).toBeLessThanOrEqual(yards(6) + T);
   });
 
-  test("auto-attack stops when the player dies or changes map", () => {
-    const { registry, system, addPlayer, events } = setup({ stance: "neutral" });
-    const c = makeCreature(1, tile(10, 10).x, tile(10, 10).y);
+  test("walk the template map's patrol path in the copy", () => {
+    const { registry, system } = setup({ move_speed_walk: 3 }, undefined, {}, world);
+    const home = tile(10, 10);
+    const c = makeCreature(1, home.x, home.y, { spawnId: 0, copySpawnId: 8, map: "crypt~a1" });
     registry.add(c);
-    const p = addPlayer("p", tile(10, 10));
-    system.startAutoAttack("p", 1, 0);
-    p.map = "cave";
-    system.tickPlayerAttacks(100);
-    expect(system.autoAttackTarget("p")).toBeNull();
-    expect(events.stopped.length).toBe(1);
-    expect(system.startAutoAttack("p", 1, 200)).toBe("invalid_target");
+    run(system, c, 0, 2000);
+    expect(c.state).toBe("patrol");
+    expect(c.x).toBeGreaterThan(home.x);
   });
 });
 
@@ -840,6 +794,27 @@ describe("creature casting", () => {
     expect(c.casting).toBeNull();
     expect(events.casts.at(-1)).toMatchObject({ phase: "end", result: "success" });
     expect(events.damage.some((d: any) => d.playerId === "p")).toBe(true);
+  });
+
+  test("a copy creature's spell hits for its damage multiplier", () => {
+    const hit = (damageMult?: number) => {
+      const ctx = setup({ stance: "neutral" });
+      ctx.spells.set(100, spell());
+      ctx.abilities.set(1, [ability()]);
+      const c = makeCreature(1, tile(10, 10).x, tile(10, 10).y, { health: 1000, maxHealth: 1000, ...(damageMult === undefined ? {} : { damageMult }) });
+      ctx.registry.add(c);
+      ctx.addPlayer("p", tile(14, 10));
+      ctx.setRoll(0.5);
+      ctx.system.damageCreature(c, "p", 1, 0);
+      ctx.system.tick(c, 100);
+      run(ctx.system, c, 200, 2000);
+      ctx.system.tick(c, 2100);
+      return ctx.events.damage.find((d: any) => d.playerId === "p")!.amount as number;
+    };
+    const plain = hit();
+    expect(plain).toBeGreaterThan(0);
+    expect(hit(1)).toBe(plain);
+    expect(hit(2)).toBe(plain * 2);
   });
 
   test("casting stops melee swings", () => {

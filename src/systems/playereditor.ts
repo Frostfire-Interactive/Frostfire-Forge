@@ -16,6 +16,7 @@ import spells from "./spells";
 import friends from "./friends";
 import guilds from "./guild";
 import parties from "./parties";
+import { newLeaderNotice } from "./partyrules";
 import bags from "./bags";
 import questLog, { rowsOf } from "./quests/log";
 import questDefinitions from "./quests/definitions";
@@ -891,20 +892,25 @@ async function disbandGuild({ username }: ActionContext): Promise<string[]> {
 // ------------------------------------------------------------------- party
 
 /** Give the online players in `usernames` their party as it now stands. */
-function pushParty(usernames: string[], partyId: number | null, members: string[], message?: string): void {
+function pushParty(usernames: string[], partyId: number | null, members: string[], message?: string, view: { leader: string | null; raid: boolean } = { leader: null, raid: false }): void {
   for (const member of usernames) {
     const live = findOnline(member);
     if (!live) {
       // A member on another node gets the same through that node.
-      const told = partyId === null ? runOnPlayer(member, "party-cleared", { message }) : runOnPlayer(member, "party-update", { members, notice: message });
+      const told = partyId === null ? runOnPlayer(member, "party-cleared", { message }) : runOnPlayer(member, "party-update", { members, notice: message, ...view });
       void told.catch((error) => log.error(`The party could not be sent to ${member}: ${error}`));
       continue;
     }
     live.party_id = partyId;
     live.party = members;
-    send(live.wt, packetManager.updateParty({ members }));
+    send(live.wt, packetManager.updateParty({ members, ...view }));
     if (message) send(live.wt, packetManager.notify({ message }));
   }
+}
+
+/** Who leads the party and whether it is a raid group, as its members are shown. */
+async function partyView(partyId: number | null): Promise<{ leader: string | null; raid: boolean }> {
+  return partyId ? { leader: await parties.getPartyLeader(partyId), raid: await parties.isRaid(partyId) } : { leader: null, raid: false };
 }
 
 async function joinParty({ username, data }: ActionContext): Promise<string[]> {
@@ -920,7 +926,7 @@ async function joinParty({ username, data }: ActionContext): Promise<string[]> {
 
   const partyId = await parties.getPartyId(username);
   const leader = (partyId && (await parties.getPartyLeader(partyId))) || other.username;
-  pushParty(members, partyId, members);
+  pushParty(members, partyId, members, undefined, await partyView(partyId));
   await greetFrom(username, members);
   await bridge?.syncPartyLayers(leader, members);
   listener.emit(Events.PARTY_CHANGED, { type: "join", username, members });
@@ -941,8 +947,14 @@ async function leaveParty({ admin, username }: ActionContext): Promise<string[]>
     return [];
   }
   pushParty([username], null, [], "You have been removed from the party");
-  pushParty(result, party.id, result);
-  await bridge?.syncPartyLayers(party.leader, result);
+  const view = await partyView(party.id);
+  pushParty(result, party.id, result, undefined, view);
+  // The leader left and the lead went to the next member.
+  if (view.leader && lower(view.leader) !== lower(party.leader)) {
+    const message = newLeaderNotice(view.leader);
+    for (const member of result) await deliverToPlayer(member, packetManager.notify({ message })).catch((error) => log.error(`The new leader could not be told to ${member}: ${error}`));
+  }
+  await bridge?.syncPartyLayers(view.leader || party.leader, result);
   listener.emit(Events.PARTY_CHANGED, { type: "kick", username: admin.username, kickedUsername: username, members: [username] });
   return [];
 }

@@ -121,6 +121,7 @@ const { default: log } = await import("../modules/logger");
 const { default: consumables, CONSUMABLE_COOLDOWN_MS, HOME_GIVE_TRIES, isKept, teleportsHome } = await import("../systems/consumables");
 const { default: cooldownManager } = await import("../services/cooldownmanager");
 const { resetCooldowns } = await import("../systems/cooldowns");
+const { setWarpReadyIn, warpReadyIn } = await import("../systems/warpcooldown");
 const { caveMarkers, houseMarkers, innMarkers, mapMarkers, merchantMarkers } = await import("../systems/mapmarkers");
 const { default: homes, cannotSetHome, isInnkeeper, HOME_COOLDOWN_MS, HOME_CAST_MS, INN_RANGE } = await import("../systems/homes");
 
@@ -334,6 +335,7 @@ describe("an admin resets a player's cooldowns", () => {
     cooldownManager.setCooldown("ally", 3, performance.now() + 60_000);
     await use(hero, "Health Potion");
     await homes.arrive("hero", NOW);
+    setWarpReadyIn("hero", 3000);
 
     await resetCooldowns(hero);
 
@@ -343,6 +345,7 @@ describe("an admin resets a player's cooldowns", () => {
     expect(hero.spellLockoutUntil).toBe(0);
     expect(consumables.cooldownLeft("hero", NOW)).toBe(0);
     expect(await homes.cooldownLeft("hero", NOW)).toBe(0);
+    expect(warpReadyIn("hero")).toBe(0);
     // Nobody else's are touched.
     expect(cooldownManager.hasCooldown("ally", 3)).toBe(true);
     cooldownManager.removePlayer("ally");

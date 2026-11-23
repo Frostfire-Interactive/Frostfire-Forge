@@ -1,4 +1,5 @@
 import * as classEditor from "../../systems/classeditor";
+import * as dungeonEditor from "../../systems/dungeoneditor";
 import * as controlPanel from "../../systems/controlpanel";
 import * as cutsceneEditor from "../../systems/cutscenes";
 import * as cutscenePlayer from "../../systems/cutsceneplayer";
@@ -24,6 +25,7 @@ import loot from "../../systems/loot";
 import lootChest from "../../systems/lootChest";
 import lootTable, { normalizeDropChance } from "../../systems/lootTable";
 import mapIndex from "../../services/mapindex";
+import { templateOf } from "../../systems/dungeons/copykey";
 import parties from "../../systems/parties.ts";
 import permissions, { canGrant, outranks } from "../../systems/permissions";
 import player from "../../systems/player.ts";
@@ -48,13 +50,14 @@ import { ghosts } from "../../cluster/ghosts";
 import { gracefulShutdown } from "../server.ts";
 import { followWhitelist, isWhitelistEnabled, setWhitelistEnabled, shareWhitelistChanges } from "../../services/whitelist";
 import { listener } from "../../modules/event_bus";
-import { notifyLayerChanged, updatePlayerAOI, broadcastToAOI, findPlayersWithTargetInAOI, relayToMirrorViewers } from "../aoi";
+import { notifyLayerChanged, updatePlayerAOI, broadcastToAOI, relayToMirrorViewers } from "../aoi";
 import { packetManager } from "../packet_manager";
 import { randomBytes } from "../../modules/hash";
 import { reloadMap } from "../../modules/assetloader";
 import { resetCooldowns } from "../../systems/cooldowns";
 import { setLock as setSubscriptionLock, isLockId as isSubscriptionLock, subscriptionState } from "../../systems/subscriptions";
 import { forgetLook } from "../looks";
+import { summonMove } from "../summonmove";
 import { MAX_COMMAND_LENGTH, TORNADO, bumpStateRevision, busyNote, channelLineOk, chatHearing, chatLinksOf, chatRateOk, defaultMap, despawnBatchQueue, destinationLayerFor, draggedPlayersMap, filterPlayersByMap, getAnimationNameForDirection, guardedAction, guildDone, guildEditOk, handlePlayerDeath, isCiphertext, kickedFromGuild, mapPropertiesCache, maps, noticeRegion, offerInvitation, officerChat, panelCommands, panelHears, pushGuild, queueSpawnForReceivers, resolvedWeatherCache, reviveDeps, resyncNpcChunks, rowOf, sendAnimationTo, sendIgnoreAnswer, sendPacket, sendReport, sendToWholeMap, spawnBatchQueue, stateRevision, subscriptionLocked, takeInMapChange, transitionPlayerToMap, weatherShown, withSender, worldsCache } from "../receiver";
 import { remoteAdminOf } from "../arrival";
 import { revivePlayer } from "../revive";
@@ -1155,202 +1158,40 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
 
             if (heldInScene(wt, targetPlayer, currentPlayer)) break;
 
-            if (targetPlayer.location.map !== currentPlayer.location.map) {
-
-              const result = await player.setLocation(
-                targetPlayer.id,
-                currentPlayer.location.map,
-                {
-                  x: currentPlayer.location.position.x,
-                  y: currentPlayer.location.position.y,
-                  direction: targetPlayer.location.position?.direction || "down",
-                }
-              );
-
-              if (
-                result &&
-                typeof result === "object" &&
-                "affectedRows" in result &&
-                ((result as { affectedRows: number | null; count?: number }).affectedRows ?? (result as { count?: number }).count) != 0
-              ) {
-                if (!currentPlayer.forceVisibleTo) currentPlayer.forceVisibleTo = new Set();
-                currentPlayer.forceVisibleTo.add(targetPlayer.id);
-
-                playerCache.set(targetPlayer.id, targetPlayer);
-
-                setTimeout(() => {
-                  const admin = playerCache.get(currentPlayer.id);
-                  if (admin?.forceVisibleTo) {
-                    admin.forceVisibleTo.delete(targetPlayer.id);
-                    playerCache.set(admin.id, admin);
-                  }
-                }, 5000);
-
-                await transitionPlayerToMap(
-                  targetPlayer,
-                  currentPlayer.location.map,
-                  {
-                    x: Math.round(currentPlayer.location.position.x),
-                    y: Math.round(currentPlayer.location.position.y),
-                    direction: targetPlayer.location.position?.direction || "down",
-                  },
-                  targetPlayer.wt,
-                  spawnBatchQueue,
-                  despawnBatchQueue
-                );
-
-                sendPacket(
-                  targetPlayer.wt,
-                  packetManager.notify({
-                    message: `You have been summoned by an admin`,
-                  })
-                );
-
-                sendPacket(
-                  wt,
-                  packetManager.notify({
-                    message: `Summoned ${targetPlayer.username.charAt(0).toUpperCase() +
-                      targetPlayer.username.slice(1)
-                      } to your location`,
-                  })
-                );
-              } else {
-                const notifyData = {
-                  message: "Failed to summon player",
-                };
-                sendPacket(wt, packetManager.notify(notifyData));
-              }
-            } else {
-
-              targetPlayer.location.position = {
+            const summonedAcross = targetPlayer.location.map !== currentPlayer.location.map;
+            const summoned = await summonMove(
+              targetPlayer,
+              {
+                map: currentPlayer.location.map,
                 x: Math.round(currentPlayer.location.position.x),
                 y: Math.round(currentPlayer.location.position.y),
                 direction: targetPlayer.location.position?.direction || "down",
+              },
+              currentPlayer
+            );
+            if (!summoned) {
+              const notifyData = {
+                message: "Failed to summon player",
               };
-              const summonedLayerId = destinationLayerFor(
-                targetPlayer,
-                currentPlayer.aoi?.layerId,
-                layerManager.updatePlayerBlock(targetPlayer.id, targetPlayer.location.position.x, targetPlayer.location.position.y)
-              );
-              if (summonedLayerId) {
-                layerManager.movePlayerToLayer(targetPlayer.id, summonedLayerId);
-                targetPlayer.aoi.layerId = summonedLayerId;
-                notifyLayerChanged(targetPlayer.id);
-                log.info(`[SUMMON] ${targetPlayer.username} moved to layer ${summonedLayerId}`);
-              }
-
-              playerCache.set(targetPlayer.id, targetPlayer);
-
-              await updatePlayerAOI(targetPlayer, spawnBatchQueue, despawnBatchQueue);
-              await updatePlayerAOI(currentPlayer, spawnBatchQueue, despawnBatchQueue);
-              await resyncNpcChunks(targetPlayer, targetPlayer.wt); // summoned within the map
-
-              const targetAnimationNameForSprite = getAnimationNameForDirection(
-                targetPlayer.location.position?.direction || "down",
-                !!targetPlayer.moving,
-                !!targetPlayer.mounted,
-                targetPlayer.mount_type,
-                !!targetPlayer.casting
-              );
-              const targetSpriteData = await getPlayerSpriteSheetData(targetAnimationNameForSprite, targetPlayer.equipment || null);
-
-              let targetSpritesData = null;
-              if (targetSpriteData?.bodySprite || targetSpriteData?.headSprite) {
-                targetSpritesData = {
-                  mountSprite: targetPlayer.mounted && targetPlayer.mount_type ? getMountSpriteUrl(targetPlayer.mount_type) : null,
-                  bodySprite: targetSpriteData.bodySprite || null,
-                  headSprite: targetSpriteData.headSprite || null,
-                  armorHelmetSprite: targetSpriteData.armorHelmetSprite || null,
-                  armorShoulderguardsSprite: targetSpriteData.armorShoulderguardsSprite || null,
-                  armorNeckSprite: targetSpriteData.armorNeckSprite || null,
-                  armorHandsSprite: targetSpriteData.armorHandsSprite || null,
-                  armorChestSprite: targetSpriteData.armorChestSprite || null,
-                  armorFeetSprite: targetSpriteData.armorFeetSprite || null,
-                  armorLegsSprite: targetSpriteData.armorLegsSprite || null,
-                  armorWeaponSprite: targetSpriteData.armorWeaponSprite || null,
-                  animationState: targetSpriteData.animationState,
-                };
-              }
-
-              const targetSpawnData = {
-                id: targetPlayer.id,
-                userid: targetPlayer.userid,
-                location: {
-                  map: targetPlayer.location.map,
-                  x: targetPlayer.location.position.x,
-                  y: targetPlayer.location.position.y,
-                  direction: targetPlayer.location.position?.direction || "down",
-                  moving: targetPlayer.moving || false,
-                },
-                username: targetPlayer.username,
-                isAdmin: targetPlayer.isAdmin,
-                isGuest: targetPlayer.isGuest,
-                isStealth: targetPlayer.isStealth,
-                isNoclip: targetPlayer.isNoclip,
-                stats: targetPlayer.stats,
-                animation: null,
-                spriteData: targetSpritesData,
-                mounted: targetPlayer.mounted,
-                guild: targetPlayer.guild || [],
-                guild_name: targetPlayer.guild_name || null,
-              };
-
-              forgetLook(wt, String(targetPlayer.id));
-              sendPacket(wt, packetManager.loadPlayers({
-                players: [targetSpawnData],
-                snapshotRevision: stateRevision()
-              }));
-
-              const targetAnimationName = getAnimationNameForDirection(
-                targetPlayer.location.position?.direction || "down",
-                !!targetPlayer.moving,
-                !!targetPlayer.mounted,
-                targetPlayer.mount_type || undefined,
-                !!targetPlayer.casting
-              );
-              await sendAnimationTo(wt, targetAnimationName, targetPlayer.id);
-
-              bumpStateRevision();
-
-              const targetMovementData = {
-                i: targetPlayer.id,
-                d: {
-                  x: Number(targetPlayer.location.position.x),
-                  y: Number(targetPlayer.location.position.y),
-                  dr: targetPlayer.location.position.direction
-                },
-                r: stateRevision(),
-                s: targetPlayer.isStealth ? 1 : 0
-              };
-              sendPacket(targetPlayer.wt, packetManager.moveXY(targetMovementData));
-
-              sendPacket(wt, packetManager.moveXY(targetMovementData));
-
-              for (const otherPlayer of findPlayersWithTargetInAOI(targetPlayer.id)) {
-                if (!otherPlayer.wt || otherPlayer.id === targetPlayer.id || otherPlayer.id === currentPlayer.id) continue;
-
-                const canSeeTarget = !targetPlayer.isStealth || otherPlayer.isAdmin;
-                if (canSeeTarget) {
-                  sendPacket(otherPlayer.wt, packetManager.moveXY(targetMovementData));
-                }
-              }
-
-              sendPacket(
-                targetPlayer.wt,
-                packetManager.notify({
-                  message: `You have been summoned by an admin`,
-                })
-              );
-
-              sendPacket(
-                wt,
-                packetManager.notify({
-                  message: `Summoned ${targetPlayer.username.charAt(0).toUpperCase() +
-                    targetPlayer.username.slice(1)
-                    }`,
-                })
-              );
+              sendPacket(wt, packetManager.notify(notifyData));
+              break;
             }
+
+            sendPacket(
+              targetPlayer.wt,
+              packetManager.notify({
+                message: `You have been summoned by an admin`,
+              })
+            );
+
+            sendPacket(
+              wt,
+              packetManager.notify({
+                message: `Summoned ${targetPlayer.username.charAt(0).toUpperCase() +
+                  targetPlayer.username.slice(1)
+                  }${summonedAcross ? " to your location" : ""}`,
+              })
+            );
             break;
           }
 
@@ -2340,6 +2181,26 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
             break;
           }
 
+          case "POE":
+          case "PORTALEDITOR": {
+            if (!(await dungeonEditor.canUseEditor(currentPlayer))) {
+              sendPacket(wt, packetManager.notify({ message: "You don't have permission to use this command" }));
+              break;
+            }
+            sendPacket(wt, packetManager.toggleDungeonEditor());
+            break;
+          }
+
+          case "DE":
+          case "DUNGEONEDITOR": {
+            if (!(await dungeonEditor.canUseEditor(currentPlayer))) {
+              sendPacket(wt, packetManager.notify({ message: "You don't have permission to use this command" }));
+              break;
+            }
+            sendPacket(wt, packetManager.toggleDungeonEditor());
+            break;
+          }
+
           case "QE":
           case "QUESTEDITOR": {
             if (!questEditor.canUseEditor(currentPlayer)) {
@@ -3129,7 +2990,8 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
               }
             }
 
-            const currentMapName = currentPlayer.location.map;
+            // In a dungeon copy (template~id) this sets its template map's world, which the copies show.
+            const currentMapName = templateOf(currentPlayer.location.map);
 
             const existingWorld = worldsCache.find((w) => w.name === currentMapName);
             await worlds.update({ name: currentMapName, weather: weatherName, players: existingWorld?.players || 0 });
@@ -3158,7 +3020,7 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
               weatherData = rowOf(await assetCache.get("weather") as WeatherData[], weatherName);
             }
 
-            const playerIds = mapIndex.getPlayersOnMap(currentMapName);
+            const playerIds = mapIndex.playersInWorld(currentMapName);
             for (const playerId of playerIds) {
               const player = playerCache.get(playerId);
               if (player?.wt && player.wt.readyState === 1) {

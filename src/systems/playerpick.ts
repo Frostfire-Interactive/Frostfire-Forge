@@ -33,3 +33,24 @@ export function pickPlayerAt<T extends Placed>(players: T[], x: number, y: numbe
   }
   return top ?? nearest;
 }
+
+/** The player of this name (any case) other than the viewer, or null: a party frame clicked picks its member. */
+export function pickPlayerNamed<T extends { id: string; username?: unknown }>(players: T[], username: string, viewerId: string): T | null {
+  const want = String(username ?? "").toLowerCase();
+  if (!want) return null;
+  return players.find((p) => p.id !== viewerId && String(p.username ?? "").toLowerCase() === want) ?? null;
+}
+
+/** A member of the viewer's party of this name (any case), on any map: a party frame clicked targets them at any distance. */
+export function pickPartyMember<T extends { id: string; username?: unknown }>(players: T[], username: string, viewer: { id: string; party?: unknown }): T | null {
+  const want = String(username ?? "").toLowerCase();
+  if (!want || !Array.isArray(viewer.party) || !viewer.party.some((m) => String(m).toLowerCase() === want)) return null;
+  return pickPlayerNamed(players, want, viewer.id);
+}
+
+/** The player a party frame clicked names: the viewer for their own frame, else one shown here by that name, else a
+ *  member of the viewer's party on any map. */
+export function pickFromPartyFrame<T extends { id: string; username?: unknown }>(shown: T[], everyone: T[], username: string, viewer: T & { party?: unknown }): T | null {
+  if (String(username ?? "").toLowerCase() === String(viewer.username ?? "").toLowerCase()) return viewer;
+  return pickPlayerNamed(shown, username, viewer.id) ?? pickPartyMember(everyone, username, viewer);
+}

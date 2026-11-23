@@ -155,21 +155,21 @@ registerPlayerAction("party-cleared", async (p, { message }) => {
   sendPacket(p.wt, packetManager.updateParty({ members: [] }));
   sendPacket(p.wt, packetManager.notify({ message }));
   await partyViewChanged(p, () => {
-    if (clusterEnabled()) clearParty(p);
-    else p.party = [];
+    clearParty(p);
     playerCache.set(p.id, p);
   });
 });
 /** The party's members as they now are, with a notice when there is one for this member. */
-registerPlayerAction("party-update", async (p, { members, notice }) => {
-  sendPacket(p.wt, packetManager.updateParty({ members }));
+registerPlayerAction("party-update", async (p, { members, notice, leader, raid }) => {
+  sendPacket(p.wt, packetManager.updateParty({ members, leader, raid }));
   if (notice) sendPacket(p.wt, packetManager.notify({ message: notice }));
   await partyViewChanged(p, async () => {
     if (clusterEnabled()) {
       await trackPacket(String(p.id), () => applyPartyMembers(p, Array.isArray(members) ? members : [], (username) => parties.getPartyId(username)));
       cacheIfHeld(playerCache, p);
     } else {
-      p.party = members;
+      // The id goes with the list: a dungeon copy's party check reads it.
+      await applyPartyMembers(p, Array.isArray(members) ? members : [], (username) => parties.getPartyId(username));
       playerCache.set(p.id, p);
     }
   });
@@ -396,14 +396,16 @@ async function sendInvitation(from: any, toUsername: string, invitation: any): P
   return await deliverToPlayer(toUsername, packetManager.invitation(invitation));
 }
 
-export async function offerInvitation(from: any, toUsername: string, invitation: { action: string; message: string; originator: string; authorization: string }): Promise<boolean> {
+export async function offerInvitation(from: any, toUsername: string, invitation: { action: string; message: string; originator: string; authorization: string }, partyId?: number, opts?: { summon?: SummonInvite; ttlMs?: number }): Promise<boolean> {
   await invitations.add({
     action: invitation.action,
     originator: invitation.originator,
     originatorName: from.username,
     authorization: invitation.authorization,
     target: toUsername,
-  });
+    ...(partyId ? { partyId } : {}),
+    ...(opts?.summon ? { summon: opts.summon } : {}),
+  }, opts?.ttlMs);
   if (await sendInvitation(from, toUsername, invitation)) return true;
   await invitations.take(invitation.authorization);
   return false;
@@ -1681,6 +1683,7 @@ import { refusal as subscriptionRefusal } from "../systems/subscriptions";
 import { deliverToPlayer, hearDeliveries, isOnline, registerPlayerAction, runOnPlayer } from "../cluster/deliver";
 import { greetContacts, sendFriends, tellContactsOffline } from "./contacts";
 import { clusterEnabled, nodeId } from "../cluster/config";
+import { clientMapName, isCopyKey, templateOf } from "../systems/dungeons/copykey";
 import { applyPartyMembers, cacheIfHeld, clearParty } from "./partystate";
 import { clusterBlocks, clusterMapAdded, clusterNodes, clusterStore, useEngineHooks } from "../cluster/index";
 import { adoptOwnerEpoch } from "../cluster/ownerepoch";
@@ -1704,6 +1707,7 @@ import { askOwner, itemOwner, serveItems } from "../cluster/remoteitems";
 import { grantWrittenBefore, recordGrantWrite } from "../systems/grantwrites";
 import { bagRoom, formatMoney, type LootError } from "../systems/creatures/kill";
 import type { CorpseItem } from "../systems/creatures/loot";
+import type { SummonInvite } from "./summonstones";
 import { bareMap, entityById, mirrorByUsername, mirrorOwner, mirrorPlayers, mirrorsNearPoint, mirrorsOnLayerNear, playerLayer } from "../cluster/mirrors";
 import { refusalOf, sendPlayerHit, setPlayerHitApplier, type PlayerHit } from "../cluster/playerhits";
 import { forgetVictim, recordAttack } from "../cluster/attackers";
@@ -1785,7 +1789,7 @@ async function showWeatherHere(worldName: string, weatherName: string, weatherDa
   // Only a "random" world has settled on a weather: it has settled on this one now.
   if (resolvedWeatherCache.has(worldName)) resolvedWeatherCache.set(worldName, { weather: weatherName, weatherData });
   const shown = await weatherShown(weatherName, weatherData);
-  for (const playerId of mapIndex.getPlayersOnMap(worldName)) {
+  for (const playerId of mapIndex.playersInWorld(worldName)) {
     const player = playerCache.get(playerId);
     if (player?.wt && player.wt.readyState === 1) {
       sendPacket(player.wt, packetManager.changeWeather(shown));
@@ -2122,6 +2126,9 @@ async function takeInWorldChanges(): Promise<void> {
     if (props && world.properties) {
       props.warps = world.properties.warps;
       props.graveyards = world.properties.graveyards;
+      props.chests = world.properties.chests;
+      props.dungeonPortals = world.properties.dungeonPortals;
+      props.summoningStones = world.properties.summoningStones;
       props.version = world.properties.version;
       await assetCache.add("mapProperties", propsList);
     }
@@ -2741,7 +2748,7 @@ export function constructMapMetadata(
   const mapVersion = mapProps?.version || '';
 
   const metadata = {
-    name: normalizedName,
+    name: clientMapName(normalizedName),
     assetServerUrl,
     width: map?.data?.width || 0,
     height: map?.data?.height || 0,
@@ -2755,6 +2762,9 @@ export function constructMapMetadata(
     chunks: null,
     warps: mapProps?.warps || null,
     graveyards: mapProps?.graveyards || null,
+    chests: mapProps?.chests || null,
+    dungeonPortals: mapProps?.dungeonPortals || null,
+    summoningStones: mapProps?.summoningStones || null,
     shadowLayerNames: mapProps?.shadowLayerNames || null,
     sections: Array.isArray(map?.data?.sections) ? map.data.sections : null,
     // The desert zones of a world, as outlines in tiles (modules/worldmaps.ts): a sandstorm is only drawn inside them
@@ -2763,7 +2773,8 @@ export function constructMapMetadata(
     snowfields: Array.isArray(map?.data?.snowfields) ? map.data.snowfields : null,
     zones: Array.isArray(map?.data?.zones) ? map.data.zones : null,
     interior: isInteriorMap(normalizedName),
-    hasWeather: !!worldsArr.find((w) => w.name === normalizedName),
+    // A dungeon copy (template~id) has its template map's world weather.
+    hasWeather: !!worldsArr.find((w) => w.name === templateOf(normalizedName)),
     objectLayers,
     mapVersion,
   };
@@ -2809,6 +2820,7 @@ export async function transitionPlayerToMap(
   }
 
   loot.cancelCleanup(player.username);
+  player._dungeonChoice = undefined;
 
   const dismounted = player.mounted === true && isInteriorMap(newMapName);
   if (dismounted) {
@@ -2817,7 +2829,7 @@ export async function transitionPlayerToMap(
     playerCache.set(player.id, player);
   }
 
-  await handleMapChangeAOI(player, newMapName, { x: newPosition.x, y: newPosition.y }, spawnBatchQueue, despawnBatchQueue);
+  await handleMapChangeAOI(player, newMapName, { x: newPosition.x, y: newPosition.y, direction: newPosition.direction }, spawnBatchQueue, despawnBatchQueue);
 
   clearTargetOnMapChange(player.id);
 
@@ -2844,9 +2856,10 @@ export async function transitionPlayerToMap(
 
   setImmediate(async () => {
     try {
-      const normalizedMap = newMapName.replace(".json", "");
-      if ((await getLiveWorlds()).some((w) => w.name === normalizedMap)) {
-        const resolved = await resolveWorldWeather(normalizedMap);
+      // A dungeon copy (template~id) shows its template map's world weather.
+      const weatherWorld = templateOf(newMapName);
+      if ((await getLiveWorlds()).some((w) => w.name === weatherWorld)) {
+        const resolved = await resolveWorldWeather(weatherWorld);
         if (resolved.weather) {
           sendPacket(wt, packetManager.weather(await weatherShown(resolved.weather, resolved.weatherData)));
         }
@@ -3396,6 +3409,33 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
       };
     }
 
+    const copyAtLogin = arrival ? null
+      : isCopyKey(bareMap(spawnLocation.map)) ? spawnLocation.map
+      : Number(playerData.isDead) === 1 && playerData.corpse?.map && isCopyKey(bareMap(playerData.corpse.map)) ? String(playerData.corpse.map)
+      : null;
+    if (copyAtLogin) {
+      const { dungeonLoginSpot } = await import("./dungeons");
+      const placed = await dungeonLoginSpot(playerData.username, copyAtLogin).catch((e: any) => {
+        log.error(`Dungeon login placement for ${playerData.username} failed: ${e?.message || e}`);
+        return { kind: "default" as const };
+      });
+      if (placed.kind !== "as_saved") {
+        spawnLocation = placed.kind === "portal"
+          ? { map: `${placed.spot.map}.json`, x: placed.spot.x, y: placed.spot.y, direction: "down" }
+          : { ...default_map_spawnpoint };
+        if (Number(playerData.isDead) !== 0) {
+          playerData.isDead = 0;
+          playerData.corpse = null;
+          if (playerData.stats) {
+            playerData.stats.health = playerData.stats.total_max_health ?? playerData.stats.max_health ?? playerData.stats.health;
+            playerData.stats.stamina = playerData.stats.total_max_stamina ?? playerData.stats.max_stamina ?? playerData.stats.stamina;
+          }
+          await player.setDeadState(playerData.username, 0, null).catch((e: any) =>
+            log.error(`Failed to clear death state for ${playerData.username}: ${e?.message || e}`));
+        }
+      }
+    }
+
     const loginDeadState = arrivalState ? arrivalState.deadState : Number(playerData.isDead) || 0;
     if (!arrival && loginDeadState === 1 && playerData.corpse?.map) {
       spawnLocation = {
@@ -3472,9 +3512,10 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
       }
     }
 
-    // Only apply weather/ambience if the map has a defined world entry
-    if (world) {
-      const resolved = await resolveWorldWeather(spawnLocation.map.replace(".json", ""));
+    // Only apply weather/ambience if the map has a defined world entry: a dungeon copy (template~id) has its template map's.
+    const weatherWorld = worldData.find((w) => w.name === templateOf(spawnLocation.map));
+    if (weatherWorld) {
+      const resolved = await resolveWorldWeather(weatherWorld.name);
       if (resolved.weather) {
         sendPacket(wt, packetManager.weather(await weatherShown(resolved.weather, resolved.weatherData)));
       }
@@ -3640,12 +3681,13 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
       const gapPlan = replayable ? gapPlanOf(gap?.input, resumeCatchUp, Date.now(), TICK_MS) : null;
       let walk = arrivalState?.walk ?? null;
       let catchUp = resumeCatchUp;
+      let replay: Awaited<ReturnType<typeof movement.replayGapSteps>> | null = null;
       if (gapPlan) {
-        const moved = await movement.replayGapSteps(_pcache, gapPlan.steps);
+        replay = await movement.replayGapSteps(_pcache, gapPlan.steps);
         walk = gapPlan.walk;
         catchUp = walk && resumeCatchUp ? { ...resumeCatchUp, walk, spentMs: gapPlan.spentMs } : null;
         // They stand where the replay left them: their viewers are told.
-        if (moved && !walk) queueFinalMovement(_pcache);
+        if (replay.moved && !walk) queueFinalMovement(_pcache);
       }
       // The walk about to be resumed below, not the facing (a cast keeps the facing while the player walks another way).
       const doneWalk = doneWalkOf(walk, _pcache);
@@ -3662,6 +3704,9 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
         gapSeq: applied.seq,
       }));
       applied.at = Date.now();
+      // A replay that walked into a dungeon portal takes it, as the walk's step would have: that walk is not resumed.
+      const { dungeonPortalWalk } = await import("./dungeons");
+      if (replay && await dungeonPortalWalk(_pcache, replay.path)) walk = null;
       if (walk) {
         // (movement.ts undoes a stray stop of the superseded mover for this long, for this arrival only)
         wt.data.walkRecoverUntil = Date.now() + RESUME_WALK_RECOVER_MS;
@@ -3734,6 +3779,7 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
         };
       }
 
+      const partyId = playerData.party_id ? Number(playerData.party_id) : null;
       const spawnDataForAll = {
         id: wt.data.id,
         userid: playerData.id,
@@ -3759,6 +3805,7 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
         friends: playerData.friends || [],
         party_id: playerData.party_id ? Number(playerData.party_id) : null,
         party: playerData.party || [],
+        party_raid: partyId ? await parties.isRaid(partyId) : false,
         guild_id: playerData.guild_id ? Number(playerData.guild_id) : null,
         guild: playerData.guild || [],
         guild_name: playerData.guild_name || null,
@@ -3766,6 +3813,10 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
         effects: spellEffects.getEffectsPayload(currentPlayer),
       };
       sendPacket(wt, packetManager.spawnPlayer(spawnDataForAll));
+      // The tools this player may open, for the staff bar: sent to everyone, so a player who lost them loses the bar.
+      // (imported here: it loads the editor modules, which the handlers load at the first packet, not at startup)
+      const { staffToolsFor } = await import("../systems/stafftools");
+      sendPacket(wt, packetManager.staffTools({ tools: await staffToolsFor(currentPlayer) }));
       if (currentPlayer.guild_id) {
         sendPacket(wt, packetManager.updateGuild(await guilds.packetFor(currentPlayer.guild_id, currentPlayer.username)));
         const motd = await guilds.getMotd(currentPlayer.guild_id);
@@ -4119,6 +4170,7 @@ export async function applyLateGap(wt: any, update: GapUpdate): Promise<void> {
   applied.ready = false;
   // (resumeArrivalWalk numbers its move before returning: the next report, walked after the finally, supersedes it)
   let resumed: Promise<void> | null = null;
+  let replay: { moved: boolean; path: Array<{ x: number; y: number }> } | null = null;
   try {
     const now = Date.now();
     const walkable = !!applied.catchUp && p.location.map === applied.map && now - applied.at <= MAX_GAP_LATE_MS && !!doneWalkOf(applied.catchUp.walk, p);
@@ -4129,7 +4181,7 @@ export async function applyLateGap(wt: any, update: GapUpdate): Promise<void> {
       gameLoop.unregisterMovingPlayer(p.id);
       wt.data.resumeCatchUp = undefined;
       p._stepCarry = undefined;
-      await (await import("./handlers/movement")).replayGapSteps(p, plan.steps, applied.from);
+      replay = await (await import("./handlers/movement")).replayGapSteps(p, plan.steps, applied.from);
     }
     const walk = doneWalkOf(plan ? plan.walk : walkOf(p), p);
     const catchUp = plan && walk ? { ...applied.catchUp!, walk, spentMs: plan.spentMs } : null;
@@ -4144,6 +4196,9 @@ export async function applyLateGap(wt: any, update: GapUpdate): Promise<void> {
       t: Date.now(),
     }));
     if (!plan) return;
+    // A replay that walked into a dungeon portal takes it, as the walk's step would have: the walk is neither resumed nor stopped here.
+    const { dungeonPortalWalk } = await import("./dungeons");
+    if (replay && await dungeonPortalWalk(p, replay.path)) return;
     if (walk) {
       wt.data.walkRecoverUntil = Date.now() + RESUME_WALK_RECOVER_MS;
       wt.data.resumeCatchUp = catchUp;
@@ -5146,7 +5201,7 @@ export async function takeCorpseLootHere(player: any, creatureId: number, indice
       sendPacket(player.wt, packetManager.lootReceived({ itemName: item.itemName, quantity: item.quantity, quality: item.quality || "common" }));
       listener.emit(Events.PLAYER_LOOT_RETRIEVED, { player, itemName: item.itemName, quantity: item.quantity, mapName: bareMap(player.location?.map), x: player.location?.position?.x, y: player.location?.position?.y } as any);
     }
-    if (asked.empty) sendPacket(player.wt, packetManager.creatureLootable({ id: creatureId, lootable: false }));
+    // That the corpse is no longer lootable to them comes with the mirror's looters from its owner (sendLootableChanges).
     return { taken, empty: !!asked.empty, full: !!asked.full, remaining: (asked.remaining as CorpseItem[]) || [], copper: 0 };
   });
 }
@@ -5749,7 +5804,7 @@ function normalizeDirection(direction: string): string {
   return "down";
 }
 
-async function getAnimationData(name: string, playerId: string, revision?: number): Promise<any | null> {
+export async function getAnimationData(name: string, playerId: string, revision?: number): Promise<any | null> {
   // A mirrored player (cluster mode) is animated from its record, for the viewers here.
   const targetPlayer = entityById(playerId);
   if (!targetPlayer) return null;
@@ -5842,22 +5897,24 @@ function scheduleLightning() {
         const resolved = resolvedWeatherCache.get(world.name);
         const activeWeather = resolved ? resolved.weather : world.weather;
         if (lookOf(activeWeather) !== "thunderstorm") continue;
-        const playersOnMap = mapIndex.getPlayersOnMap(world.name);
-        if (playersOnMap.size === 0) continue;
+        // One strike on the world's map and one in each dungeon copy of it with players.
+        for (const map of mapIndex.mapsInWorld(world.name)) {
+          const playerIds = Array.from(mapIndex.getPlayersOnMap(map));
+          if (playerIds.length === 0) continue;
 
-        const playerIds = Array.from(playersOnMap);
-        const randomId = playerIds[Math.floor(Math.random() * playerIds.length)];
-        const player = playerCache.get(randomId);
-        if (!player?.location?.position) continue;
+          const randomId = playerIds[Math.floor(Math.random() * playerIds.length)];
+          const player = playerCache.get(randomId);
+          if (!player?.location?.position) continue;
 
-        const strikeX = player.location.position.x + (Math.random() * 600 - 300);
-        const strikeY = player.location.position.y + (Math.random() * 400 - 200);
+          const strikeX = player.location.position.x + (Math.random() * 600 - 300);
+          const strikeY = player.location.position.y + (Math.random() * 400 - 200);
 
-        broadcastToAOIBestEffort(
-          player,
-          packetManager.lightning({ x: Math.round(strikeX), y: Math.round(strikeY), map: world.name }),
-          true
-        );
+          broadcastToAOIBestEffort(
+            player,
+            packetManager.lightning({ x: Math.round(strikeX), y: Math.round(strikeY), map: world.name }),
+            true
+          );
+        }
       }
     } catch (e) {
       // silently ignore
@@ -5883,7 +5940,7 @@ function scheduleWeatherCycle() {
         resolvedWeatherCache.set(world.name, { weather: settled.name, weatherData: settled });
 
         const shown = await weatherShown(settled.name, settled);
-        for (const playerId of mapIndex.getPlayersOnMap(world.name)) {
+        for (const playerId of mapIndex.playersInWorld(world.name)) {
           const player = playerCache.get(playerId);
           if (player?.wt && player.wt.readyState === 1) {
             sendPacket(player.wt, packetManager.changeWeather(shown));

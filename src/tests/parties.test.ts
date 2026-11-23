@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { characterDatabaseModule as databaseModule } from "./setup";
 import { receiverSource } from "./receiver-source";
+import { applyPartyMembers, clearParty } from "../socket/partystate";
 
 type Row = Record<string, any>;
 let partiesTable: Row[];
@@ -15,7 +16,7 @@ let lostAfterWriting: boolean;
 /** Whether an INSERT reports the id it gave the row. */
 let reportsInsertId: boolean;
 
-const LOAD = "SELECT id, leader, members FROM parties";
+const LOAD = "SELECT id, leader, members, raid FROM parties";
 
 const accountOf = (username: string) => accountsTable.find((row) => row.username === String(username).toLowerCase());
 
@@ -42,6 +43,20 @@ function run(sql: string, params: any[]): any {
     case "UPDATE parties SET members = ? WHERE id = ?": {
       const [members, id] = params;
       for (const row of partiesTable) if (row.id === id) row.members = members;
+      return { affectedRows: 1 };
+    }
+    case "UPDATE parties SET members = ? WHERE id = ? AND members = ?": {
+      const [members, id, was] = params;
+      let changed = 0;
+      for (const row of partiesTable) if (row.id === id && row.members === was) { row.members = members; changed++; }
+      return { affectedRows: changed };
+    }
+    case "UPDATE parties SET raid = 1 WHERE id = ?":
+      for (const row of partiesTable) if (row.id === params[0]) row.raid = 1;
+      return { affectedRows: 1 };
+    case "UPDATE parties SET leader = ?, leader_id = ?, members = ? WHERE id = ?": {
+      const [leader, , members, id] = params;
+      for (const row of partiesTable) if (row.id === id) { row.leader = leader; row.members = members; }
       return { affectedRows: 1 };
     }
     case "DELETE FROM parties WHERE id = ?":
@@ -77,6 +92,7 @@ mock.module("../controllers/sqldatabase", () => databaseModule({ default: databa
 const datacache = await import("../services/datacache");
 const { default: log } = await import("../modules/logger");
 const { default: parties } = await import("../systems/parties");
+const { capital, joinOutcome, newLeaderNotice } = await import("../systems/partyrules");
 
 const reads = () => queries.map(([sql]) => sql).filter((sql) => sql.startsWith("SELECT"));
 const writes = () => queries.filter(([sql]) => !sql.startsWith("SELECT"));
@@ -255,8 +271,8 @@ describe("a party change is written to the database, then to the table held", ()
   test("add puts the account and the member list in step", async () => {
     expect(await parties.add("user3", 1)).toEqual(["user1", "user2", "user3"]);
     expect(writes()).toEqual([
+      ["UPDATE parties SET members = ? WHERE id = ? AND members = ?", ["user1, user2, user3", 1, "user1, user2"]],
       ["UPDATE accounts SET party_id = ? WHERE username = ?", [1, "user3"]],
-      ["UPDATE parties SET members = ? WHERE id = ?", ["user1, user2, user3", 1]],
     ]);
     expect(accountsDropped()).toEqual(["user3"]);
 
@@ -264,6 +280,22 @@ describe("a party change is written to the database, then to the table held", ()
     expect(await parties.getPartyId("user3")).toBe(1);
     expect(await parties.isInParty("user3")).toBe(true);
     expect(reads()).toEqual([LOAD]);
+  });
+
+  test("two joining at once are both on the list", async () => {
+    expect((await Promise.all([parties.add("user3", 1), parties.add("user7", 1)])).map((list) => list.length).sort()).toEqual([3, 4]);
+    expect(inDatabase().find((party) => party.id === 1)!.members.sort()).toEqual(["user1", "user2", "user3", "user7"]);
+    expect(partyIdOf("user3")).toBe(1);
+    expect(partyIdOf("user7")).toBe(1);
+  });
+
+  test("a join after the list changed elsewhere reads it again, and is refused once the party is full", async () => {
+    await parties.getPartyMembers(1);
+    // Another node fills the party behind this one's back.
+    partiesTable[0].members = "user1, user2, user8, user9, user10";
+    expect(await parties.add("user3", 1)).toEqual([]);
+    expect(partiesTable[0].members).toBe("user1, user2, user8, user9, user10");
+    expect(partyIdOf("user3")).not.toBe(1);
   });
 
   test("add refuses a member of any party, a full party and a party that is not there", async () => {
@@ -316,12 +348,46 @@ describe("a party change is written to the database, then to the table held", ()
     expect(reads()).toEqual([LOAD]);
   });
 
-  // A party with nobody leading it could not invite or kick: it goes with its leader, as when the leader leaves.
-  test("remove of the leader ends the party, however many were in it", async () => {
-    expect(await parties.remove("user4")).toBe(true);
-    expect(await parties.getAllParties()).toEqual([{ id: 1, leader: "user1", members: ["user1", "user2"] }]);
+  // Three or more: the next member leads. Two: one alone is no party, and it ends.
+  test("remove of the leader passes the lead on when three or more were in the party", async () => {
+    expect(await parties.remove("user4")).toEqual(["user5", "user6"]);
+    expect(await parties.getPartyLeader(2)).toBe("user5");
+    expect(await parties.getPartyMembers(2)).toEqual(["user5", "user6"]);
+    expect(partiesTable[1]).toMatchObject({ leader: "user5", members: "user5, user6" });
+    expect(partyIdOf("user4")).toBeNull();
+    expect([partyIdOf("user5"), partyIdOf("user6")]).toEqual([2, 2]);
     expect(await parties.getAllParties()).toEqual(inDatabase());
-    expect([partyIdOf("user4"), partyIdOf("user5"), partyIdOf("user6")]).toEqual([null, null, null]);
+  });
+
+  test("remove of the leader ends a party of two", async () => {
+    expect(await parties.remove("user1")).toBe(true);
+    expect(await parties.getAllParties()).toEqual([{ id: 2, leader: "user4", members: ["user4", "user5", "user6"] }]);
+    expect(await parties.getAllParties()).toEqual(inDatabase());
+    expect([partyIdOf("user1"), partyIdOf("user2")]).toEqual([null, null]);
+  });
+
+  test("leave by the leader of three writes the new leader and the members in one UPDATE and keeps the party", async () => {
+    expect(await parties.leave("user4")).toEqual(["user5", "user6"]);
+    const leaderWrites = writes().filter(([sql]) => sql.startsWith("UPDATE parties SET leader"));
+    expect(leaderWrites).toEqual([["UPDATE parties SET leader = ?, leader_id = ?, members = ? WHERE id = ?", ["user5", expect.anything(), "user5, user6", 2]]]);
+    expect(writes().some(([sql]) => sql.startsWith("DELETE"))).toBe(false);
+    expect(await parties.getPartyId("user6")).toBe(2);
+  });
+
+  test("add refuses a sixth member unless the party is a raid, and the twenty-first always", async () => {
+    partiesTable[1].members = "user4, user5, user6, user8, user9";
+    await datacache.clearCaches();
+    expect(await parties.isRaid(2)).toBe(false);
+    expect(await parties.add("user3", 2)).toEqual([]);
+    await parties.setRaid(2);
+    expect(writes()).toContainEqual(["UPDATE parties SET raid = 1 WHERE id = ?", [2]]);
+    expect(await parties.isRaid(2)).toBe(true);
+    expect(await parties.add("user3", 2)).toEqual(["user4", "user5", "user6", "user8", "user9", "user3"]);
+
+    partiesTable[1].members = Array.from({ length: 20 }, (_, i) => `m${i}`).join(", ");
+    await datacache.clearCaches();
+    expect(await parties.isRaid(2)).toBe(true);
+    expect(await parties.add("user7", 2)).toEqual([]);
   });
 
   test("remove of someone in no party writes nothing", async () => {
@@ -416,7 +482,8 @@ const unanswered: Array<[string, RegExp, () => Promise<unknown>, unknown, string
   ["create (the party)", /^INSERT INTO parties/, () => parties.create("user3", "user7"), false, []],
   ["create (the accounts)", /^UPDATE accounts/, () => parties.create("user3", "user7"), false, ["user3", "user7"]],
   ["add (the account)", /^UPDATE accounts/, () => parties.add("user3", 1), [], ["user3"]],
-  ["add (the member list)", /^UPDATE parties/, () => parties.add("user3", 1), [], ["user3"]],
+  // The list is written first: the account is not touched when that fails.
+  ["add (the member list)", /^UPDATE parties/, () => parties.add("user3", 1), [], []],
   ["remove (the account)", /^UPDATE accounts/, () => parties.remove("user6"), [], ["user6"]],
   ["remove (the member list)", /^UPDATE parties/, () => parties.remove("user6"), [], ["user6"]],
   ["delete (the party)", /^DELETE FROM parties/, () => parties.delete(1), false, []],
@@ -488,7 +555,8 @@ function cut(source: string, from: string, until: RegExp): string {
 const caseNames = [
   "type", "data", "response", "inviterName", "currentPlayer", "wt", "parties", "player", "playerCache", "sendPacket", "packetManager",
   "listener", "Events", "syncPartyLayers", "sendAnimationTo", "queueSpawnPlayerPacket", "getAnimationNameForDirection",
-  "getPlayerSpriteSheetData", "getMountSpriteUrl", "spellEffects", "queueSpawnForReceivers", "runOnPlayer", "deliverToPlayer", "greetContacts", "clusterEnabled", "partyViewChanged",
+  "getPlayerSpriteSheetData", "getMountSpriteUrl", "spellEffects", "queueSpawnForReceivers", "runOnPlayer", "deliverToPlayer", "greetContacts", "clusterEnabled", "partyViewChanged", "joinOutcome", "offerRaidConvert", "announceJoin", "clearParty",
+  "invite", "isOnline", "capital", "newLeaderNotice",
 ];
 
 /** One of the receiver's player actions (registerPlayerAction at module level), as a function of the names it uses. */
@@ -496,6 +564,16 @@ function receiverAction(name: string): (given: Row) => (member: any, args: any) 
   const from = `registerPlayerAction("${name}", `;
   const action = cut(receiver, from, /\r?\n\}\);\r?\n/).slice(from.length);
   return new Function(`"use strict";\n${transpiler.transformSync(`function make({ sendPacket, packetManager, playerCache, clusterEnabled, clearParty, trackPacket, applyPartyMembers, cacheIfHeld, parties, partyViewChanged }: any) { return ${action}\n}; }`)}\nreturn make;`)();
+}
+
+/** The module's announceJoin, as a function of the names it uses: the one copy of what follows a join. */
+function announceJoinWith(given: Row): (...args: any[]) => Promise<void> {
+  const from = "async function announceJoin(";
+  const body = cut(receiver, from, /\r?\n\}\r?\n/) + "\n}";
+  const names = "deliverToPlayer, packetManager, parties, runOnPlayer, player, playerCache, greetContacts, syncPartyLayers, sendAnimationTo, queueSpawnPlayerPacket, getAnimationNameForDirection, getPlayerSpriteSheetData, getMountSpriteUrl, spellEffects, queueSpawnForReceivers, capital";
+  return new Function(`"use strict";
+${transpiler.transformSync(`function make({ ${names} }: any) { return ${body}; }`)}
+return make;`)()(given);
 }
 
 const partyActions: Record<string, ReturnType<typeof receiverAction>> = {
@@ -514,6 +592,8 @@ const kickCase = receiverCase("KICK_PARTY_MEMBER", 6);
 const leaveCase = receiverCase("LEAVE_PARTY", 6);
 // The answer to an invitation, not the sending of one: the case inside INVITATION_RESPONSE.
 const inviteAnswerCase = receiverCase("INVITE_PARTY", 10);
+// The leader's answer to a joiner's offer to make the party a raid group.
+const raidAnswerCase = receiverCase("RAID_CONVERT", 10);
 
 let online: Record<string, any>;
 /** Who was sent what, in order. */
@@ -522,17 +602,28 @@ let emitted: any[][];
 let synced: Array<[string, string[]]>;
 
 function connect(username: string): any {
-  const live = { id: `session-${username}`, username, isGuest: false, party: ["as", "it", "was"], invitations: [], wt: { username } };
+  const live = { id: `session-${username}`, username, isGuest: false, party: ["as", "it", "was"], party_id: -1, invitations: [], wt: { username } };
   online[live.id] = live;
   return live;
 }
 
 const sentTo = (username: string) => sent.filter(([to]) => to === username).map(([, packet]) => packet);
 const notice = (message: string) => ({ type: "NOTIFY", data: { message } });
-const partyNow = (members: string[]) => ({ type: "UPDATE_PARTY", data: { members } });
+/** What UPDATE_PARTY now carries: the list, who leads (the first of it, as the lists here are leader-first) and whether it is a raid. A cleared party has only the empty list. */
+const partyNow = (members: string[], raid = false) => ({ type: "UPDATE_PARTY", data: members.length ? { members, leader: members[0], raid } : { members } });
+
+/** The raid conversion offers made: who asked, and of which leader. */
+let converts: Array<[string, string]>;
 
 const given = () => ({
   parties,
+  applyPartyMembers,
+  clearParty,
+  joinOutcome,
+  capital,
+  newLeaderNotice,
+  announceJoin: (...args: any[]) => announceJoinWith(given())(...args),
+  offerRaidConvert: async (joiner: any, leader: string) => { converts.push([joiner.username, leader]); },
   player: { getSessionIdByUsername: async (username: string) => Object.values(online).find((live) => live.username === username)?.id },
   playerCache: { get: (id: string) => online[id], set: (id: string, value: any) => { online[id] = value; }, list: () => online },
   // One node: the party actions take their single-node path.
@@ -594,6 +685,7 @@ describe("what the socket layer does with a party's answer", () => {
     sent = [];
     emitted = [];
     synced = [];
+    converts = [];
   });
 
   test("a kick from a party of three: those left get the new list, the kicked player is told they have no party", async () => {
@@ -636,23 +728,46 @@ describe("what the socket layer does with a party's answer", () => {
 
     expect(partiesTable[1]).toEqual({ id: 2, leader: "user4", members: "user4, user5" });
     expect(sentTo("user6")).toEqual([notice("You have left the party"), partyNow([])]);
+    expect(leaver.party_id).toBeNull();
     for (const username of ["user4", "user5"]) expect(sentTo(username)).toEqual([partyNow(["user4", "user5"]), notice("User6 has left the party")]);
     expect([leader.party, stays.party, leaver.party]).toEqual([["user4", "user5"], ["user4", "user5"], []]);
     expect(synced).toEqual([["user4", ["user4", "user5"]]]);
     expect(emitted).toEqual([["onPartyChanged", { type: "leave", username: "user6", members: ["user6"] }]]);
   });
 
-  test("the leader leaving, or one of only two, ends the party for everyone", async () => {
+  test("the leader leaving a party of three passes the lead to the next member, who is told", async () => {
     const three = ["user4", "user5", "user6"].map(connect);
     await leave(three[0]);
-    for (const username of ["user4", "user5", "user6"]) expect(sentTo(username)).toEqual([partyNow([]), notice("The party has been disbanded")]);
-    expect(three.map((live) => live.party)).toEqual([[], [], []]);
+    expect(partiesTable[1]).toMatchObject({ leader: "user5", members: "user5, user6" });
+    expect(sentTo("user4")).toEqual([notice("You have left the party"), partyNow([])]);
+    for (const username of ["user5", "user6"]) {
+      expect(sentTo(username)).toEqual([partyNow(["user5", "user6"]), notice("User4 has left the party"), notice("User5 is now the party leader.")]);
+    }
+    expect(three.map((live) => live.party)).toEqual([[], ["user5", "user6"], ["user5", "user6"]]);
+    expect(synced).toEqual([["user5", ["user5", "user6"]]]);
+    expect(emitted.map(([, event]) => event.type)).toEqual(["leave"]);
+  });
 
+  test("the notice that the lead has passed is the party rules' own", async () => {
+    const three = ["user4", "user5", "user6"].map(connect);
+    await leaveCase({ ...given(), newLeaderNotice: (leader: string) => `lead: ${leader}`, type: "LEAVE_PARTY", data: {}, currentPlayer: three[0], wt: three[0].wt });
+    await settled();
+    expect(sentTo("user6").at(-1)).toEqual(notice("lead: user5"));
+  });
+
+  test("one of only two leaving ends the party for everyone", async () => {
     const two = ["user1", "user2"].map(connect);
     await leave(two[1]);
     for (const username of ["user1", "user2"]) expect(sentTo(username)).toEqual([partyNow([]), notice("The party has been disbanded")]);
-    expect(partiesTable).toEqual([]);
-    expect(emitted.map(([, event]) => event.type)).toEqual(["disband", "disband"]);
+    expect(partiesTable.map((row) => row.id)).toEqual([2]);
+    expect(emitted.map(([, event]) => event.type)).toEqual(["disband"]);
+  });
+
+  test("the leader leaving a party of two ends it for everyone", async () => {
+    const two = ["user1", "user2"].map(connect);
+    await leave(two[0]);
+    for (const username of ["user1", "user2"]) expect(sentTo(username)).toEqual([partyNow([]), notice("The party has been disbanded")]);
+    expect(emitted.map(([, event]) => event.type)).toEqual(["disband"]);
   });
 
   test("a leave the database does not answer is reported as failed", async () => {
@@ -675,13 +790,16 @@ describe("what the socket layer does with a party's answer", () => {
     expect(sentTo("user1")).toEqual([notice("User3 has joined your party"), partyNow(["user1", "user2", "user3"])]);
     expect(leader.party).toEqual(["user1", "user2", "user3"]);
     expect(member.party).toEqual(["user1", "user2", "user3"]);
+    // The party's id goes with its list: a copy's party check reads it.
+    expect([leader.party_id, member.party_id, joins.party_id]).toEqual([partiesTable[0].id, partiesTable[0].id, partiesTable[0].id]);
 
     const [inviter, invited] = [connect("user7"), connect("user8")];
     accountsTable.push({ username: "user8", party_id: null });
     await answerInvite(invited, inviter);
     expect(partiesTable[2]).toEqual({ id: 3, leader: "user7", members: "user7, user8" });
-    expect(sentTo("user8")[0]).toEqual(notice("You have joined User7's party"));
-    expect(sentTo("user7")).toEqual([notice("User8 has joined your party"), partyNow(["user7", "user8"]), partyNow(["user7", "user8"])]);
+    // Each of the two is sent the new party once.
+    expect(sentTo("user8")).toEqual([notice("You have joined User7's party"), partyNow(["user7", "user8"])]);
+    expect(sentTo("user7")).toEqual([notice("User8 has joined your party"), partyNow(["user7", "user8"])]);
     expect(inviter.party).toEqual(["user7", "user8"]);
     expect(invited.party).toEqual(["user7", "user8"]);
   });
@@ -711,6 +829,38 @@ describe("what the socket layer does with a party's answer", () => {
     expect(writes()).toHaveLength(before);
   });
 
+  test("a sixth accepts a full party: its leader is asked to convert it, and the joiner does not join yet", async () => {
+    partiesTable[1].members = "user4, user5, user6, user8, user9";
+    await datacache.clearCaches();
+    const joins = connect("user3");
+    const before = writes().length;
+    await answerInvite(joins, connect("user4"));
+    expect(converts).toEqual([["user3", "user4"]]);
+    expect(writes()).toHaveLength(before);
+    expect(sentTo("user3")).toEqual([]);
+    expect(emitted).toEqual([]);
+  });
+
+  test("a raid group takes a sixth, and at twenty the joiner is told the party is full", async () => {
+    partiesTable[1].members = "user4, user5, user6, user8, user9";
+    partiesTable[1].raid = 1;
+    await datacache.clearCaches();
+    const joins = connect("user3");
+    await answerInvite(joins, connect("user4"));
+    expect(converts).toEqual([]);
+    expect(partiesTable[1].members).toBe("user4, user5, user6, user8, user9, user3");
+    expect(sentTo("user3")[0]).toEqual(notice("You have joined User4's party"));
+    expect(sentTo("user3")[1]).toEqual(partyNow(["user4", "user5", "user6", "user8", "user9", "user3"], true));
+
+    sent = [];
+    partiesTable[1].members = Array.from({ length: 20 }, (_, i) => i === 0 ? "user4" : `m${i}`).join(", ");
+    await datacache.clearCaches();
+    const late = connect("user7");
+    await answerInvite(late, connect("user4"));
+    expect(sentTo("user7")).toEqual([notice("The party is full")]);
+    expect(converts).toEqual([]);
+  });
+
   test("an invitation from a player without a party is refused to one who has since joined another", async () => {
     const [inviter, invited] = [connect("user3"), connect("user2")];
     await answerInvite(invited, inviter);
@@ -720,6 +870,45 @@ describe("what the socket layer does with a party's answer", () => {
     expect(await parties.getAllParties()).toEqual(inDatabase());
     expect(partiesTable.map((row) => row.members)).toEqual(["user1, user2", "user4, user5, user6"]);
     expect(emitted).toEqual([]);
+  });
+
+  describe("the leader's answer to an offer to make the party a raid group", () => {
+    /** Party 1 grown to five, its leader online, and user3 the one asking to join as the sixth, by an offer for `offeredFor`. */
+    async function offered(offeredFor: number) {
+      partiesTable[0].members = "user1, user2, user8, user9, user10";
+      await datacache.clearCaches();
+      const leader = connect("user1");
+      connect("user3");
+      return (response = "ACCEPT") => raidAnswerCase({
+        ...given(), type: "RAID_CONVERT", response, inviterName: "user3", currentPlayer: leader, wt: leader.wt,
+        invite: { action: "RAID_CONVERT", originator: "session-user3", originatorName: "user3", authorization: "a", target: "user1", partyId: offeredFor },
+        isOnline: async (name: string) => Object.values(online).some((live) => live.username === name),
+      }).then(settled);
+    }
+
+    test("accepted: the party becomes a raid group and the joiner is in it", async () => {
+      await (await offered(1))();
+      expect(partiesTable[0].raid).toBe(1);
+      expect(partiesTable[0].members).toBe("user1, user2, user8, user9, user10, user3");
+      expect(partyIdOf("user3")).toBe(1);
+    });
+
+    test("an offer made for another party than the one the leader leads now: no raid, and the joiner is told the party is full", async () => {
+      await (await offered(2))();
+      expect(partiesTable[0].raid).toBeUndefined();
+      expect(partyIdOf("user3")).toBeNull();
+      expect(sentTo("user3")).toContainEqual(notice("The party is full"));
+    });
+
+    test("a member left since the offer, so there is room without a raid: no raid, and the joiner is told the party is full", async () => {
+      const answer = await offered(1);
+      partiesTable[0].members = "user1, user2, user8, user9";
+      await datacache.clearCaches();
+      await answer();
+      expect(partiesTable[0].raid).toBeUndefined();
+      expect(partyIdOf("user3")).toBeNull();
+      expect(sentTo("user3")).toContainEqual(notice("The party is full"));
+    });
   });
 });
 

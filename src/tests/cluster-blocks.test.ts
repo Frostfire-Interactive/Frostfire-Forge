@@ -211,6 +211,56 @@ test("an older read landing after a newer write does not replace it", async () =
   expect(blocks.ownerOf("main", 0, 0)?.nodeId).toBe("b");
 });
 
+test("a world message for a map closed here holds nothing for it; one for a table another node made is learnt", async () => {
+  const store = new MemoryStore();
+  const writer = new BlockTable(store);
+  const reader = new BlockTable(store);
+  const writerBus = new ClusterBus(store, "coord", TEST_BUS_KEY);
+  const readerBus = new ClusterBus(store, "n1", TEST_BUS_KEY);
+  writer.attach(writerBus);
+  reader.attach(readerBus);
+  await writerBus.start();
+  await readerBus.start();
+
+  // A copy pinned on another node: the message is how this node learns who runs it.
+  await writer.write("vault~a1", table);
+  await settle();
+  await settle();
+  expect(reader.ownerOf("vault~a1", 0, 0)?.nodeId).toBe("a");
+
+  // The copy closes: its table is gone and this node forgets it. A late message then holds nothing.
+  await store.del("cells:blocks:vault~a1");
+  reader.forget("vault~a1");
+  await writerBus.toWorld("blocks-changed", { map: "vault~a1" });
+  await settle();
+  await settle();
+  expect(reader.maps()).not.toContain("vault~a1");
+  await writerBus.stop();
+  await readerBus.stop();
+});
+
+test("a read of a table under way when its map is forgotten is not kept", async () => {
+  const store = new MemoryStore();
+  await store.set("cells:blocks:vault~a1", JSON.stringify(table));
+  const blocks = new BlockTable(store);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const get = store.get.bind(store);
+  store.get = async (key: string) => {
+    const raw = await get(key);
+    await held;
+    return raw;
+  };
+  const reading = blocks.refresh(["vault~a1"]);
+  blocks.forget("vault~a1");
+  release();
+  await reading;
+  store.get = get;
+  expect(blocks.maps()).toEqual([]);
+  // A load after that reads it again.
+  expect((await blocks.load("vault~a1")).epoch).toBe(1);
+});
+
 test("onChange tells each map whose epoch changed: by a world message, a refresh or a write", async () => {
   const store = new MemoryStore();
   const writerBus = new ClusterBus(store, "coordinator", TEST_BUS_KEY);

@@ -116,7 +116,7 @@ const item = (name: string, over: Partial<Item> = {}): Item => ({
   name, quality: "common", type: "equipment", description: "", icon: name.toLowerCase().replaceAll(" ", "_"),
   stat_armor: null, stat_damage: null, stat_critical_chance: null, stat_critical_damage: null, stat_health: null,
   stat_stamina: null, stat_avoidance: null, level_requirement: 1, equipable: true, equipment_slot: null,
-  bag_slots: null, damage_min: null, damage_max: null, attack_speed_ms: null, ...over,
+  bag_slots: null, ...over,
 });
 
 const quest = (id: number, name: string): Quest => ({
@@ -580,13 +580,35 @@ describe("party", () => {
 
     expect(hero.live).toMatchObject({ party_id: null, party: [] });
     expect(partyPackets(hero)).toEqual([
-      { type: "UPDATE_PARTY", data: { members: [] } },
+      { type: "UPDATE_PARTY", data: { members: [], leader: null, raid: false } },
       { type: "NOTIFY", data: { message: "You have been removed from the party" } },
     ]);
     for (const stays of [ally, mod]) {
       expect(stays.live).toMatchObject({ party_id: 50, party: ["ally", "mod"] });
-      expect(partyPackets(stays)).toEqual([{ type: "UPDATE_PARTY", data: { members: ["ally", "mod"] } }]);
+      expect(partyPackets(stays)).toEqual([{ type: "UPDATE_PARTY", data: { members: ["ally", "mod"], leader: "ally", raid: false } }]);
     }
+    expect(bridged).toEqual(["syncPartyLayers:ally:ally+mod"]);
+  });
+
+  test("the leader taken out of a party of three: the lead passes to the next member, and those left are told so", async () => {
+    const members = ["hero", "ally", "mod"];
+    tables.parties.push({ id: 51, leader: "hero", members: members.join(", ") });
+    for (const row of tables.accounts) if (members.includes(row.username)) row.party_id = 51;
+    const [hero, ally, mod] = members.map((name, i) => login(name, `710${i + 1}`, { party_id: 51, party: members }));
+
+    expect((await act("party.leave")).ok).toBe(true);
+    expect(tables.parties).toMatchObject([{ id: 51, leader: "ally", members: "ally, mod" }]);
+    expect(partyPackets(hero)).toEqual([
+      { type: "UPDATE_PARTY", data: { members: [], leader: null, raid: false } },
+      { type: "NOTIFY", data: { message: "You have been removed from the party" } },
+    ]);
+    for (const stays of [ally, mod]) {
+      expect(partyPackets(stays)).toEqual([
+        { type: "UPDATE_PARTY", data: { members: ["ally", "mod"], leader: "ally", raid: false } },
+        { type: "NOTIFY", data: { message: "Ally is now the party leader." } },
+      ]);
+    }
+    // The layers follow the leader the party has now.
     expect(bridged).toEqual(["syncPartyLayers:ally:ally+mod"]);
   });
 
@@ -614,12 +636,12 @@ describe("party", () => {
       expect((await act(action, data)).ok).toBe(true);
     }
     // The two tables as wholes, and none of the questions that used to be asked one by one.
-    const asked = queries.filter((q) => /^SELECT (guild_id|party_id) FROM accounts|^SELECT (id|name|leader|members|id, name, leader, members|id, name, leader, motd|id, leader, members) FROM (guilds|parties)\b|^SELECT .+ FROM (guild_ranks|guild_members)\b/.test(q));
+    const asked = queries.filter((q) => /^SELECT (guild_id|party_id) FROM accounts|^SELECT (id|name|leader|members|id, name, leader, members|id, name, leader, motd|id, leader, members|id, leader, members, raid) FROM (guilds|parties)\b|^SELECT .+ FROM (guild_ranks|guild_members)\b/.test(q));
     expect(asked).toEqual([
       "SELECT id, name, leader, motd FROM guilds",
       "SELECT username, guild_id, rank_index, public_note, officer_note FROM guild_members",
       "SELECT guild_id, rank_index, name, permissions FROM guild_ranks",
-      "SELECT id, leader, members FROM parties",
+      "SELECT id, leader, members, raid FROM parties",
     ]);
   });
 });
@@ -918,8 +940,8 @@ describe("a player on another node", () => {
     const run = theirNode();
 
     expect((await act("party.leave")).ok).toBe(true);
-    expect(run.mock.calls as unknown[]).toContainEqual(["ally", "party-update", { members: ["ally", "mod"], notice: undefined }]);
-    expect(run.mock.calls as unknown[]).toContainEqual(["mod", "party-update", { members: ["ally", "mod"], notice: undefined }]);
+    expect(run.mock.calls as unknown[]).toContainEqual(["ally", "party-update", { members: ["ally", "mod"], notice: undefined, leader: "ally", raid: false }]);
+    expect(run.mock.calls as unknown[]).toContainEqual(["mod", "party-update", { members: ["ally", "mod"], notice: undefined, leader: "ally", raid: false }]);
   });
 
   test("a party that ends is cleared for those on another node", async () => {

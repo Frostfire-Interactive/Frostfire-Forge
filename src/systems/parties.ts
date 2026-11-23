@@ -1,14 +1,15 @@
 import query from "../controllers/sqldatabase";
 import log from "../modules/logger";
 import { tableCache, dropRows } from "../services/datacache";
-import { needCharacterId } from "./characterids";
+import { characterIdOf, needCharacterId } from "./characterids";
+import { afterLeaving, joinOutcome } from "./partyrules";
 
 /** A party as the table has it: `members` is the comma-separated list, the leader first. */
-type PartyRow = { id: number; leader: string; members: string | null };
+type PartyRow = { id: number; leader: string; members: string | null; raid: boolean };
 
 const rows = tableCache<PartyRow>("parties", async () => {
-    const result = await query("SELECT id, leader, members FROM parties", []) as any[];
-    return (result || []).map((row: any) => ({ id: row.id, leader: row.leader, members: row.members }));
+    const result = await query("SELECT id, leader, members, raid FROM parties", []) as any[];
+    return (result || []).map((row: any) => ({ id: row.id, leader: row.leader, members: row.members, raid: !!Number(row.raid) }));
 });
 
 const lower = (value: string | null) => String(value ?? "").toLowerCase();
@@ -35,6 +36,12 @@ async function change(partyId: number, changed: Partial<PartyRow>): Promise<void
     const party = await rows.find(byId(partyId));
     if (party) await rows.put({ ...party, ...changed }, byId(partyId));
 }
+
+/** The rows a write changed: Bun reports `affectedRows` on MySQL and `count` elsewhere. */
+const changedRows = (result: any): number => (typeof result?.affectedRows === "number" ? result.affectedRows : Number(result?.count ?? 0));
+
+/** How often a join is tried again after another join or leave changed the list first. */
+const ADD_ATTEMPTS = 3;
 
 async function writing<T>(accounts: Array<string | null | undefined>, write: () => Promise<T>): Promise<T> {
     try {
@@ -91,6 +98,23 @@ const parties = {
             return [];
         }
     },
+    /** Whether the party has been made a raid group. */
+    async isRaid(partyId: number): Promise<boolean> {
+        if (!partyId) return false;
+        try {
+            const party = await rows.find(byId(partyId));
+            return !!party?.raid;
+        } catch (error) {
+            log.error(`Error reading whether a party is a raid: ${error}`);
+            return false;
+        }
+    },
+    /** Makes the party a raid group, which may hold up to the party cap. */
+    async setRaid(partyId: number): Promise<void> {
+        if (!partyId) return;
+        await writing([], () => query("UPDATE parties SET raid = 1 WHERE id = ?", [partyId]));
+        await change(partyId, { raid: true });
+    },
     async getPartyLeader(partyId: number): Promise<string | null> {
         if (!partyId) return null;
         try {
@@ -114,19 +138,29 @@ const parties = {
             const existingParty = await this.exists(username);
             if (existingParty) return [];
 
-            const members = await this.getPartyMembers(partyId) as string[];
-            if (!members || members?.length === 0) return [];
-
-            if (members.length >= 5) return [];
-
-            if (members.includes(username)) return [];
-
             const joiningId = await needCharacterId(username);
-            await writing([username], () => query("UPDATE characters SET party_id = ? WHERE id = ?", [partyId, joiningId]));
-            const updatedMembers = [...members, username].join(", ");
-            await writing([], () => query("UPDATE parties SET members = ? WHERE id = ?", [updatedMembers, partyId]));
-            await change(partyId, { members: updatedMembers });
-            return updatedMembers.split(", ").map((member: string) => member.trim());
+            // The list is written only if it is still the one read: two joining at once, on any node, cannot drop each other or pass the cap together.
+            for (let attempt = 0; attempt < ADD_ATTEMPTS; attempt++) {
+                const party = await rows.find(byId(partyId));
+                const members = listed(party?.members ?? null);
+                if (!party || members.length === 0) return [];
+
+                if (joinOutcome(members.length, !!party.raid) !== "join") return [];
+
+                if (members.includes(username)) return [];
+
+                const updatedMembers = [...members, username].join(", ");
+                const written = await writing([], () => query("UPDATE parties SET members = ? WHERE id = ? AND members = ?", [updatedMembers, partyId, party.members]));
+                if (changedRows(written) === 0) {
+                    // Changed since it was read: read it again and decide again.
+                    await rows.reload();
+                    continue;
+                }
+                await change(partyId, { members: updatedMembers });
+                await writing([username], () => query("UPDATE characters SET party_id = ? WHERE id = ?", [partyId, joiningId]));
+                return updatedMembers.split(", ").map((member: string) => member.trim());
+            }
+            return [];
         } catch (error) {
             log.error(`Error adding user to party: ${error}`);
             return [];
@@ -145,13 +179,21 @@ const parties = {
             const members = await this.getPartyMembers(partyId);
 
             // In any case, as the account above was matched: the name must leave the list for the player to have left the party.
-            const memberArray = members.filter((member: string) => lower(member) !== lower(username));
+            const after = afterLeaving(members, leader ?? "", username);
+            const memberArray = after.kind === "stay" ? after.members : members.filter((member: string) => lower(member) !== lower(username));
             const updatedMembers = memberArray.join(", ");
-            await writing([], () => query("UPDATE parties SET members = ? WHERE id = ?", [updatedMembers, partyId]));
-            await change(partyId, { members: updatedMembers });
+            if (after.kind === "stay" && lower(after.leader) !== lower(leader)) {
+                // The leader left: the next member leads, in the same write as the list.
+                const leaderId = await characterIdOf(after.leader);
+                await writing([], () => query("UPDATE parties SET leader = ?, leader_id = ?, members = ? WHERE id = ?", [after.leader, leaderId, updatedMembers, partyId]));
+                await change(partyId, { leader: after.leader, members: updatedMembers });
+            } else {
+                await writing([], () => query("UPDATE parties SET members = ? WHERE id = ?", [updatedMembers, partyId]));
+                await change(partyId, { members: updatedMembers });
+            }
 
-            // One player alone is no party, and neither are players nobody leads (as when the leader leaves).
-            if (memberArray.length <= 1 || lower(leader) === lower(username)) {
+            // One player alone is no party.
+            if (after.kind === "disband") {
                 await this.delete(partyId);
                 return true;
             }
@@ -195,7 +237,7 @@ const parties = {
             const result = await writing([], () => query("INSERT INTO parties (leader, members, character_id, leader_id) VALUES (?, ?, ?, ?)", [leader, members, leaderId, leaderId])) as any;
             const partyId = result.lastInsertRowid;
             // Without the id the database gave it, the new row can only be had by reading the table again.
-            if (Number(partyId) > 0) await rows.put({ id: Number(partyId), leader, members }, byId(partyId));
+            if (Number(partyId) > 0) await rows.put({ id: Number(partyId), leader, members, raid: false }, byId(partyId));
             else await rows.reload();
 
             await writing([leader, username], () => query("UPDATE characters SET party_id = ? WHERE id IN (?, ?)", [partyId, leaderId, memberId]));
@@ -212,7 +254,8 @@ const parties = {
             if (!partyId) return false;
 
             const isLeader = await this.isPartyLeader(username);
-            if (isLeader) return await this.delete(partyId);
+            // The leader leaving a party of two ends it outright; with more, remove hands the lead on.
+            if (isLeader && afterLeaving(await this.getPartyMembers(partyId), username, username).kind === "disband") return await this.delete(partyId);
 
             return await this.remove(username);
         } catch (error) {

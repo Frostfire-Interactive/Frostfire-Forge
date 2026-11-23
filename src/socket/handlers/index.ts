@@ -5,6 +5,7 @@ import * as combat from "./combat";
 import * as commands from "./commands";
 import * as cutscenes from "./cutscenes";
 import * as death from "./death";
+import * as dungeons from "./dungeons";
 import * as editors from "./editors";
 import * as gathering from "./gathering";
 import * as items from "./items";
@@ -23,7 +24,7 @@ export interface PacketModule {
   handle(ctx: PacketContext): Promise<unknown>;
 }
 
-const modules: PacketModule[] = [session, movement, chat, targeting, combat, editors, npcs, commands, social, trade, death, items, gathering, mail, cutscenes];
+const modules: PacketModule[] = [session, movement, chat, targeting, combat, editors, npcs, commands, social, trade, death, items, gathering, mail, cutscenes, dungeons];
 const byType = new Map<string, PacketModule>();
 for (const module of modules) {
   for (const type of module.handles) {

@@ -769,12 +769,12 @@ test("a corpse another node owns is taken by a call with the room in the bags, a
   expect(result).toEqual({ taken: [{ itemName: "Bone", quantity: 2, quality: "rare" }], empty: true, full: false, remaining: [], copper: 0 });
   expect(t.calls[0]).toEqual(["ask", "LOOT_TAKE", 50, t.me, { creatureId: 50, indices: null, room: { free: 3, held: ["bone"] } }]);
   expect(t.calls.slice(1)).toEqual([["add", "Zed", { name: "Bone", quantity: 2 }], ["pay", "Zed", 11]]);
-  // The player is told their money and each item; the hook that counts loot runs on this node; an emptied corpse stops sparkling.
+  // The player is told their money and each item; the hook that counts loot runs on this node. That the emptied corpse
+  // is no longer lootable comes once, with the mirror's looters from its owner, not here as well.
   expect(t.sentTo).toEqual([
     'currency:{"copper":11,"silver":0,"gold":0}',
     'notify:{"message":"You receive loot: 11 copper"}',
     'lootReceived:{"itemName":"Bone","quantity":2,"quality":"rare"}',
-    'creatureLootable:{"id":50,"lootable":false}',
   ]);
   expect(t.emitted).toEqual([["retrieved", { player: t.me, itemName: "Bone", quantity: 2, mapName: "main", x: 4, y: 5 }]]);
 });

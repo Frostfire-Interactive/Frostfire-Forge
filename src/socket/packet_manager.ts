@@ -2,8 +2,14 @@ import packet from "../modules/packet";
 import type { TradeView } from "../systems/trades";
 import type { NodeTicket } from "./ticket";
 import type { MapZone } from "../modules/zones";
+import type { PortalPreviewData } from "../systems/dungeons/types";
 import { TICK_RATE } from "../services/tickrate";
 import { joinCreatureMoves } from "./creature_move_codec";
+import { clientMapName } from "../systems/dungeons/copykey";
+
+// A copy's players, chests and ghosts are on the template map as the client knows it.
+const forClient = <T>(map: T): T => (typeof map === "string" ? clientMapName(map) as T : map);
+const corpseForClient = (corpse: any) => (corpse && typeof corpse === "object" ? { ...corpse, map: forClient(corpse.map) } : corpse);
 
 export const packetManager = {
   disconnect: (id: string) => {
@@ -231,7 +237,7 @@ export const packetManager = {
   },
   questMarkers: (data: { map: string; markers: Record<number, QuestMarkerState> }) => {
     return [
-      packet.encode(JSON.stringify({ type: "QUEST_MARKERS", data })),
+      packet.encode(JSON.stringify({ type: "QUEST_MARKERS", data: { ...data, map: forClient(data.map) } })),
     ] as any[];
   },
   npcGossip: (data: { npcId: number; name: string | null; gossipText: string | null; quests: QuestOffer[]; vendor?: boolean; innkeeper?: boolean }) => {
@@ -247,7 +253,7 @@ export const packetManager = {
   /** Where the inns, merchants, caves and houses of the map the player is on are (map px), for their minimap and world map. Sent on entering a map, and again when an NPC changes. */
   mapMarkers: (data: { map: string; markers: Array<{ kind: "inn" | "merchant" | "cave" | "house"; x: number; y: number; name: string | null }> }) => {
     return [
-      packet.encode(JSON.stringify({ type: "MAP_MARKERS", data })),
+      packet.encode(JSON.stringify({ type: "MAP_MARKERS", data: { ...data, map: forClient(data.map) } })),
     ] as any[];
   },
   /** Every cooldown of the player is over (an admin reset them): spells, the spell lockout and items. */
@@ -332,7 +338,7 @@ export const packetManager = {
             dialog: data.dialog,
             gossip: data.gossip || null,
             particles: data.particles,
-            map: data.map,
+            map: forClient(data.map),
             position: data.position,
             sprite_type: data.sprite_type || 'animated',
             spriteLayers: data.spriteLayers || null,
@@ -395,7 +401,7 @@ export const packetManager = {
             id: data.id,
             userid: data.userid,
             location: {
-              map: data.location.map,
+              map: forClient(data.location.map),
               x: data.location.x || 0,
               y: data.location.y || 0,
               direction: data.location.direction,
@@ -409,13 +415,15 @@ export const packetManager = {
             isDead: data.isDead || false,
             isGhost: data.isGhost || false,
             ghostTeleportPending: data.ghostTeleportPending || false,
-            corpse: data.corpse || null,
+            ...(data.arrived ? { arrived: true } : {}),
+            corpse: corpseForClient(data.corpse || null),
             stats: data.stats,
             sprite: data.sprite,
             mounted: data.mounted,
             spriteData: data.spriteData || null,
             ...(data.friends ? { friends: data.friends } : {}),
             ...(data.party ? { party: data.party } : {}),
+            ...(data.party_raid !== undefined ? { party_raid: !!data.party_raid } : {}),
             ...(data.effects ? { effects: data.effects } : {}),
             guild: data.guild ?? [],
             guild_name: data.guild_name ?? null,
@@ -751,9 +759,10 @@ export const packetManager = {
       packet.encode(JSON.stringify({ type: "UPDATE_ONLINE_STATUS", data })),
     ] as any[];
   },
-  updateParty: (data: any) => {
+  /** The party as its members see it: the list (leader first), who leads, and whether it is a raid group. */
+  updateParty: (data: { members: string[]; leader?: string | null; raid?: boolean }) => {
     return [
-      packet.encode(JSON.stringify({ type: "UPDATE_PARTY", data })),
+      packet.encode(JSON.stringify({ type: "UPDATE_PARTY", data: { members: data.members, leader: data.leader ?? null, raid: !!data.raid } })),
     ] as any[];
   },
   updateGuild: (data: any) => {
@@ -793,12 +802,12 @@ export const packetManager = {
   },
   lightning: (data: { x: number; y: number; map: string }) => {
     return [
-      packet.encode(JSON.stringify({ type: "LIGHTNING", data })),
+      packet.encode(JSON.stringify({ type: "LIGHTNING", data: { ...data, map: forClient(data.map) } })),
     ] as any[];
   },
   tornadoes: (data: { map: string; tornadoes: Array<{ id: string; x: number; y: number }> }) => {
     return [
-      packet.encode(JSON.stringify({ type: "TORNADOES", data })),
+      packet.encode(JSON.stringify({ type: "TORNADOES", data: { ...data, map: forClient(data.map) } })),
     ] as any[];
   },
   collisionDebug: (data: { tileX: number; tileY: number }) => {
@@ -964,7 +973,7 @@ export const packetManager = {
       packet.encode(
         JSON.stringify({
           type: "ONLINE_PLAYERS_LIST",
-          data: players
+          data: players.map((p) => ({ ...p, map: forClient(p.map) }))
         })
       )
     ] as any[];
@@ -986,12 +995,12 @@ export const packetManager = {
   },
   skeletonSpawn: (data: any) => {
     return [
-      packet.encode(JSON.stringify({ type: "ADD_SKELETON", data })),
+      packet.encode(JSON.stringify({ type: "ADD_SKELETON", data: data && { ...data, map: forClient(data.map) } })),
     ] as any[];
   },
   loadSkeletons: (skeletonItems: any[]) => {
     return [
-      packet.encode(JSON.stringify({ type: "LOAD_SKELETONS", data: { skeletons: skeletonItems } })),
+      packet.encode(JSON.stringify({ type: "LOAD_SKELETONS", data: { skeletons: skeletonItems.map((s) => s && { ...s, map: forClient(s.map) }) } })),
     ] as any[];
   },
   skeletonDespawn: (id: string) => {
@@ -1001,12 +1010,12 @@ export const packetManager = {
   },
   playerDied: (data: any) => {
     return [
-      packet.encode(JSON.stringify({ type: "PLAYER_DIED", data })),
+      packet.encode(JSON.stringify({ type: "PLAYER_DIED", data: data && { ...data, ...(data.corpse ? { corpse: corpseForClient(data.corpse) } : {}) } })),
     ] as any[];
   },
   playerGhost: (data: any) => {
     return [
-      packet.encode(JSON.stringify({ type: "PLAYER_GHOST", data })),
+      packet.encode(JSON.stringify({ type: "PLAYER_GHOST", data: data && "map" in data ? { ...data, map: forClient(data.map) } : data })),
     ] as any[];
   },
   reviveOffer: (data: any) => {
@@ -1016,7 +1025,7 @@ export const packetManager = {
   },
   lootChestSpawn: (data: any) => {
     return [
-      packet.encode(JSON.stringify({ type: "LOOT_CHEST_SPAWN", data })),
+      packet.encode(JSON.stringify({ type: "LOOT_CHEST_SPAWN", data: data && { ...data, map: forClient(data.map) } })),
     ] as any[];
   },
   lootChestDespawn: (chestId: string) => {
@@ -1032,7 +1041,7 @@ export const packetManager = {
   /** The mailboxes of the map the player is on (map px, the middle of each one's foot), and the picture they are drawn with. Sent with the map's markers. */
   mailboxes: (data: { map: string; mailboxes: Array<{ id: string; x: number; y: number }>; iconUrl: string }) => {
     return [
-      packet.encode(JSON.stringify({ type: "MAILBOXES", data })),
+      packet.encode(JSON.stringify({ type: "MAILBOXES", data: { ...data, map: forClient(data.map) } })),
     ] as any[];
   },
   /** A player's mail, the newest first: this opens their mail window, or brings it up to date. */
@@ -1202,11 +1211,6 @@ export const packetManager = {
   creatureCombatText: (data: any) => {
     return [
       packet.encode(JSON.stringify({ type: "CREATURE_COMBAT_TEXT", data })),
-    ] as any[];
-  },
-  creatureAttackStopped: (id: number) => {
-    return [
-      packet.encode(JSON.stringify({ type: "CREATURE_ATTACK_STOPPED", data: { id } })),
     ] as any[];
   },
   creatureTap: (data: { id: number; tap: "none" | "mine" | "other" }) => {
@@ -1427,7 +1431,7 @@ export const packetManager = {
     return [packet.encode(JSON.stringify({ type: "HANDOFF_STAY", data: at }))] as any[];
   },
   handoffDone: (data: { map: string; x: number; y: number; direction: string; walk?: string | null; catchUpMs?: number; gapSeq?: number }) => {
-    return [packet.encode(JSON.stringify({ type: "HANDOFF_DONE", data }))] as any[];
+    return [packet.encode(JSON.stringify({ type: "HANDOFF_DONE", data: { ...data, map: forClient(data.map) } }))] as any[];
   },
   /** The answer to a gap report that came after HANDOFF_DONE (receiver.ts applyLateGap): where the player is now, as at DONE. */
   handoffGapDone: (data: { seq: number; x: number; y: number; direction: string; walk: string | null; catchUpMs: number; t: number }) => {
@@ -1453,6 +1457,89 @@ export const packetManager = {
       packet.encode(JSON.stringify({ type: "CLASS_EDITOR_UPDATED", data })),
     ] as any[];
   },
+  toggleDungeonEditor: () => {
+    return [
+      packet.encode(JSON.stringify({ type: "TOGGLE_DUNGEON_EDITOR", data: null })),
+    ] as any[];
+  },
+  mapObjectOptions: (data: { dungeons: Array<{ id: number; name: string }>; lootTables: Array<{ id: number; name: string }>; message?: string }) => {
+    return [
+      packet.encode(JSON.stringify({ type: "MAP_OBJECT_OPTIONS_DATA", data })),
+    ] as any[];
+  },
+  /** The answer to the map editor's SAVE_MAP: its saveId as it came (none from an older editor), and whether the save worked. */
+  mapSaveResult: (data: { saveId?: unknown; mapName?: unknown; ok: boolean }) => {
+    return [
+      packet.encode(JSON.stringify({ type: "MAP_SAVE_RESULT", data })),
+    ] as any[];
+  },
+  dungeonEditorData: (data: any) => {
+    return [
+      packet.encode(JSON.stringify({ type: "DUNGEON_EDITOR_DATA", data })),
+    ] as any[];
+  },
+  dungeonEditorResult: (data: { ok: boolean; errors: string[]; fields?: Record<string, string>; name?: string; id?: number; notes: string[]; action?: string; data: any }) => {
+    return [
+      packet.encode(JSON.stringify({ type: "DUNGEON_EDITOR_RESULT", data })),
+    ] as any[];
+  },
+  dungeonSizeChoice: (data: { dungeonId: number; name: string; sizes: number[]; authorization: string; expiresInMs: number }) => {
+    return [
+      packet.encode(JSON.stringify({ type: "DUNGEON_SIZE_CHOICE", data })),
+    ] as any[];
+  },
+  dungeonPortalPreview: (data: PortalPreviewData) => {
+    return [
+      packet.encode(JSON.stringify({ type: "DUNGEON_PORTAL_PREVIEW_DATA", data })),
+    ] as any[];
+  },
+  dungeonPortalPeek: (data: { portal: string; players: Array<{ i: string; x: number; y: number; d: string; m: 0 | 1 }>; looks: Array<{ i: string; s: any }> }) => {
+    return [
+      packet.encode(JSON.stringify({ type: "DUNGEON_PORTAL_PEEK_DATA", data })),
+    ] as any[];
+  },
+  dungeonPortalsChanged: () => {
+    return [
+      packet.encode(JSON.stringify({ type: "DUNGEON_PORTALS_CHANGED", data: {} })),
+    ] as any[];
+  },
+  portalEditorData: (data: any) => {
+    return [
+      packet.encode(JSON.stringify({ type: "PORTAL_EDITOR_DATA", data })),
+    ] as any[];
+  },
+  portalEditorResult: (data: { ok: boolean; errors: string[]; fields?: Record<string, string>; name?: string; notes: string[]; action?: string; data: any }) => {
+    return [
+      packet.encode(JSON.stringify({ type: "PORTAL_EDITOR_RESULT", data })),
+    ] as any[];
+  },
+  /** A map's portals after a save in the portal or dungeon editor: its players draw them at once. */
+  mapPortals: (data: { mapName: string; portals: any[] }) => {
+    return [
+      packet.encode(JSON.stringify({ type: "MAP_PORTALS", data })),
+    ] as any[];
+  },
+  stoneEditorData: (data: any) => {
+    return [
+      packet.encode(JSON.stringify({ type: "SUMMON_STONE_EDITOR_DATA", data })),
+    ] as any[];
+  },
+  stoneEditorResult: (data: { ok: boolean; errors: string[]; fields?: Record<string, string>; name?: string; action?: string; data: any }) => {
+    return [
+      packet.encode(JSON.stringify({ type: "SUMMON_STONE_EDITOR_RESULT", data })),
+    ] as any[];
+  },
+  /** A map's summoning stones after a save in the stone editor: its players draw them at once. */
+  mapSummoningStones: (data: { mapName: string; stones: any[] }) => {
+    return [
+      packet.encode(JSON.stringify({ type: "MAP_SUMMONING_STONES", data })),
+    ] as any[];
+  },
+  dungeonEditorUpdated: (data: { by: string }) => {
+    return [
+      packet.encode(JSON.stringify({ type: "DUNGEON_EDITOR_UPDATED", data })),
+    ] as any[];
+  },
   playerEditorOpen: (data: { target: string }) => {
     return [
       packet.encode(JSON.stringify({ type: "PLAYER_EDITOR_OPEN", data })),
@@ -1471,6 +1558,12 @@ export const packetManager = {
   playerEditorResult: (data: { ok: boolean; errors: string[]; action?: string; snapshot?: PlayerEditorSnapshot | null }) => {
     return [
       packet.encode(JSON.stringify({ type: "PLAYER_EDITOR_RESULT", data })),
+    ] as any[];
+  },
+  /** The tools the player may open (systems/stafftools.ts): the game's staff bar shows a button for each. */
+  staffTools: (data: { tools: string[] }) => {
+    return [
+      packet.encode(JSON.stringify({ type: "STAFF_TOOLS", data })),
     ] as any[];
   },
   toggleControlPanel: () => {

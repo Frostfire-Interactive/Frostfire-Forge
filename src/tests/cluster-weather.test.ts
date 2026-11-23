@@ -29,7 +29,7 @@ function playersOf() {
   for (const id of Object.keys(sent)) players[id] = { id, wt: { readyState: 1, id } };
   return {
     sent,
-    mapIndex: { getPlayersOnMap: (map: string) => new Set(map === "w" ? ["p1", "p2"] : map === "x" ? ["q1"] : []) },
+    mapIndex: { playersInWorld: (world: string) => (world === "w" ? ["p1", "p2"] : world === "x" ? ["q1"] : []) },
     playerCache: { get: (id: string) => players[id] },
     sendPacket: (wt: any, packet: any) => sent[wt.id].push(packet),
     packetManager: { changeWeather: (shown: any) => ({ changeWeather: shown }) },

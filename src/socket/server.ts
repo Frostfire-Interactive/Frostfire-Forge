@@ -56,6 +56,7 @@ import { sendHandoffBegin, sendHandoffPrepare, sendHandoffStay } from "./handoff
 import { HandoffGiveUp, playerHandoff, snapshotIdentity, type NodeAddress as HandoffNode } from "../cluster/handoff.ts";
 import { SHUTDOWN_DEADLINE_MS, arrivalId, boundedStep, guardedTeleport, spendsTicket } from "../cluster/handoffguards.ts";
 import { readyIn as consumableReadyIn, setReadyIn as setConsumableReadyIn } from "../systems/consumables.ts";
+import { setWarpReadyIn, warpReadyIn } from "../systems/warpcooldown.ts";
 import { packetsInFlight, waitIdle } from "../cluster/inflight.ts";
 import { playerGhostRecord } from "../cluster/kinds/players.ts";
 import { onLinksAttached } from "../cluster/linkhooks.ts";
@@ -84,9 +85,11 @@ import { ensureSubscriptionSchema, refreshSubscriptions, subscriptionsReady, ref
 import loot from "../systems/loot";
 import creatures from "../systems/creatures";
 import gathering from "../systems/gathering";
+import { startPlacedChests } from "../systems/placedchestsglue";
 import achievements from "../systems/achievements";
 import cooldownManager from "../services/cooldownmanager";
 import { installUnhandledRejectionHandler } from "../services/unhandled";
+import { startDungeonTick } from "./dungeons";
 installUnhandledRejectionHandler();
 
 // The translation model loads in the background while the server starts, so the first chat line does not wait for it.
@@ -699,6 +702,8 @@ function handoffState(p: any): {
   mount_type: string | null;
   /** The shared consumable cooldown left (ms, 0 when ready): the arrival sets it with consumables' setReadyIn. */
   consumableReadyIn: number;
+  /** The warp cooldown left (ms, 0 when ready): the arrival sets it with warpcooldown's setWarpReadyIn. */
+  warpReadyIn: number;
   /** The direction the player is walking (one of the eight), or null when they stand: the new node goes on walking. */
   walk: string | null;
   /** How long that walk has not stepped (ms): the drain stopped the mover, and the new node makes the time up. */
@@ -733,6 +738,7 @@ function handoffState(p: any): {
     mounted: !!p.mounted,
     mount_type: p.mount_type ?? null,
     consumableReadyIn: consumableReadyIn(p.username),
+    warpReadyIn: warpReadyIn(p.username),
     walk: walkOf(p),
     walkIdleMs: walkIdleMsOf(p, now),
     poseRev: Number.isSafeInteger(p.poseRev) && p.poseRev > 0 ? p.poseRev : 0,
@@ -779,6 +785,7 @@ function releaseHandedOff(p: any): void {
     ["forget its sickness", () => forgetSickness(p)],
     // It travels in the snapshot (consumableReadyIn): a hand-back here must not find the old one.
     ["drop its consumable cooldown", () => setConsumableReadyIn(p.username, 0)],
+    ["drop its warp cooldown", () => setWarpReadyIn(p.username, 0)],
     // It travels in the snapshot too: this node's clock must not end the scene the next node goes on with.
     ["drop its cutscene", () => cutscenePlayer.clear(p)],
     ["close its creature editor", () => creatures.closeEditorFor(id)],
@@ -1144,6 +1151,7 @@ listener.emit(Events.START);
 gameLoop.start();
 await creatures.init();
 await gathering.init();
+await startPlacedChests();
 await fishing.init();
 await achievements.init();
 await cutscenePlayer.init();
@@ -1234,6 +1242,8 @@ setInterval(() => {
 setInterval(() => {
   listener.emit(Events.SERVER_TICK);
 }, 1000);
+
+startDungeonTick();
 
 if (settings?.packetRatelimit?.enabled) {
   setInterval(() => {

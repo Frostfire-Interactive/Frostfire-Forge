@@ -578,3 +578,198 @@ test("a takeover with no late beat gives the blocks out without waiting", async 
   expect(slept).toEqual([]);
   expect(owner).toBe("a");
 });
+
+// ---- pinned copies
+
+const pinnedTable = (nodeId: string): MapBlocks => ({
+  epoch: 1,
+  owners: { "0,0": { nodeId, epoch: 1, since: T0 - 60_000 }, "1,0": { nodeId, epoch: 1, since: T0 - 60_000 } },
+});
+
+test("assign leaves a pinned copy's table unchanged", async () => {
+  const { store, join, make, tableOf } = await world();
+  await join("n1", "n2");
+  await new BlockTable(store).write("vault~a1", pinnedTable("n1"));
+  await new MapCatalogue(store).publish([extentOf("vault~a1", 8192, 4096)]);
+  const before = await store.get("cells:blocks:vault~a1");
+  const coordinator = make("coord");
+  await coordinator.tick();
+  expect(await store.get("cells:blocks:vault~a1")).toBe(before);
+  expect(ownersOf(await tableOf("vault~a1"))).toEqual({ "0,0": "n1", "1,0": "n1" });
+});
+
+test("rebalance plans no move for a pinned copy but still moves a normal map", async () => {
+  const { store, registry, join, make } = await world();
+  await join("n1", "n2");
+  await new MapCatalogue(store).publish([extentOf("main", 4 * 4096, 4096), extentOf("vault~a1", 8192, 4096)]);
+  const old = T0 - 60_000;
+  const mainTable: MapBlocks = {
+    epoch: 3,
+    owners: { "0,0": { nodeId: "n1", epoch: 1, since: old }, "1,0": { nodeId: "n1", epoch: 2, since: old }, "2,0": { nodeId: "n2", epoch: 3, since: old }, "3,0": { nodeId: "n2", epoch: 3, since: old } },
+  };
+  await new BlockTable(store).write("main", mainTable);
+  // The copy's blocks are split here, so that it would win the move if copies were not skipped: n1's block of it is the heaviest, and borders n2's.
+  await new BlockTable(store).write("vault~a1", { epoch: 1, owners: { "0,0": { nodeId: "n1", epoch: 1, since: old }, "1,0": { nodeId: "n2", epoch: 1, since: old } } });
+  const coordinator = make("coord");
+  for (let i = 0; i < 3; i++) {
+    advance(1000);
+    await registry.beat("n1");
+    await registry.beat("n2");
+    await registry.report({ nodeId: "n1", at: clock, players: 0, creatures: 0, blocks: { "main|0,0": 100, "main|1,0": 50, "vault~a1|0,0": 120 } });
+    await registry.report({ nodeId: "n2", at: clock, players: 0, creatures: 0, blocks: { "main|2,0": 20 } });
+    await coordinator.tick();
+    await settle();
+  }
+  const orders = (await store.members("cells:moves")).map((id) => id);
+  const bodies = await Promise.all(orders.map(async (id) => JSON.parse((await store.get(`cells:move:${id}`)) ?? "{}")));
+  // The normal map's border block goes from the loaded node to its neighbour, and nothing of the copy moves.
+  expect(bodies.map((o) => ({ map: o.map, bx: o.bx, by: o.by, from: o.from, to: o.to }))).toEqual([{ map: "main", bx: 1, by: 0, from: "n1", to: "n2" }]);
+});
+
+test("a dead node's pinned copy is removed, not given to a neighbour", async () => {
+  const { store, registry, join, make } = await world();
+  await join("n1", "n2");
+  await new MapCatalogue(store).publish([extentOf("vault~a1", 8192, 4096)]);
+  await new BlockTable(store).write("vault~a1", pinnedTable("n1"));
+  const coordinator = make("coord", );
+  for (let i = 0; i < 4; i++) {
+    advance(1000);
+    await registry.beat("n2");
+    await coordinator.tick().catch(() => {});
+    await settle();
+  }
+  for (let i = 0; i < 30; i++) {
+    advance(1000);
+    await registry.beat("n2");
+    await coordinator.tick().catch(() => {});
+    await settle();
+  }
+  expect((await new MapCatalogue(store).all()).map((e) => e.name)).not.toContain("vault~a1");
+  expect(await store.get("cells:blocks:vault~a1")).toBeNull();
+});
+
+/** n1 dies while the catalogue lists the copy vault~a1, set up by `setUp`, and main, half of it n1's; n2 lives on, reporting `n2Blocks`. */
+async function deadOwnerCopy(setUp: (store: MemoryStore) => Promise<void>, n2Blocks: Record<string, number> = {}) {
+  const { store, registry, join, make, tableOf } = await world();
+  await join("n1", "n2");
+  await new MapCatalogue(store).publish([extentOf("main", 8192, 4096), extentOf("vault~a1", 8192, 4096)]);
+  const old = T0 - 60_000;
+  await new BlockTable(store).write("main", { epoch: 1, owners: { "0,0": { nodeId: "n1", epoch: 1, since: old }, "1,0": { nodeId: "n2", epoch: 1, since: old } } });
+  await setUp(store);
+  const errors = spyOn(log, "error").mockImplementation(() => {});
+  const coordinator = make("coord");
+  try {
+    for (let i = 0; i < 34; i++) {
+      advance(1000);
+      await registry.beat("n2");
+      await registry.report({ nodeId: "n2", at: clock, players: 0, creatures: 0, blocks: n2Blocks });
+      await coordinator.tick().catch(() => {});
+      await settle();
+    }
+  } finally {
+    errors.mockRestore();
+  }
+  // The takeover ran: n1's block of main is n2's now.
+  expect(ownersOf(await tableOf("main"))).toEqual({ "0,0": "n2", "1,0": "n2" });
+  const listed = (await new MapCatalogue(store).all()).map((e) => e.name).includes("vault~a1");
+  return { store, coordinator, listed, errors: errors.mock.calls.map(([line]) => String(line)) };
+}
+
+test("a dead node's copy whose table is gone is taken off the catalogue, with no alarm", async () => {
+  const { listed, errors } = await deadOwnerCopy(async (s) => { await new BlockTable(s).nextEpoch("vault~a1", 0); });
+  expect(listed).toBe(false);
+  expect(errors.filter((line) => line.includes("vault~a1"))).toEqual([]);
+});
+
+test("a copy whose table cannot be read is taken off the catalogue when a node dies and no live node runs it", async () => {
+  const { store, listed } = await deadOwnerCopy(async (s) => { await s.set("cells:blocks:vault~a1", "not a table"); });
+  expect(listed).toBe(false);
+  expect(await store.get("cells:blocks:vault~a1")).toBeNull();
+});
+
+test("a copy whose table cannot be read is kept when a live node reports load on it", async () => {
+  const { store, listed } = await deadOwnerCopy(async (s) => { await s.set("cells:blocks:vault~a1", "not a table"); }, { "vault~a1|0,0": 3 });
+  expect(listed).toBe(true);
+  expect(await store.get("cells:blocks:vault~a1")).toBe("not a table");
+});
+
+test("the coordinator keeps nothing of a copy it removed", async () => {
+  const { coordinator, listed } = await deadOwnerCopy(async (s) => { await new BlockTable(s).write("vault~a1", pinnedTable("n1")); });
+  expect(listed).toBe(false);
+  const held = coordinator as unknown as { tablesSeen: Set<string>; missingLogged: Set<string>; unreadable: Set<string> };
+  for (const set of [held.tablesSeen, held.missingLogged, held.unreadable]) expect([...set].filter((key) => key.includes("vault~a1"))).toEqual([]);
+});
+
+test("rebalance does not seed an idle node from a pinned copy", async () => {
+  const { store, registry, join, make } = await world();
+  await join("n1", "n2");
+  await new MapCatalogue(store).publish([extentOf("vault~a1", 8192, 4096)]);
+  await new BlockTable(store).write("vault~a1", pinnedTable("n1"));
+  const coordinator = make("coord");
+  for (let i = 0; i < 3; i++) {
+    advance(1000);
+    await registry.beat("n1");
+    await registry.beat("n2");
+    await registry.report({ nodeId: "n1", at: clock, players: 0, creatures: 0, blocks: { "vault~a1|0,0": 700, "vault~a1|1,0": 300 } });
+    await registry.report({ nodeId: "n2", at: clock, players: 0, creatures: 0, blocks: {} });
+    await coordinator.tick();
+    await settle();
+  }
+  expect(await store.members("cells:moves")).toEqual([]);
+  expect(await store.get("cells:blocks:vault~a1")).toBe(JSON.stringify(pinnedTable("n1")));
+});
+
+// ---- a copy closing while assign reads the catalogue
+
+async function raced(setUp: (store: MemoryStore) => Promise<void>) {
+  const { store, join, make } = await world();
+  await join("n1", "n2");
+  await new MapCatalogue(store).publish([extentOf("vault~a1", 8192, 4096)]);
+  await setUp(store);
+  const heard: unknown[] = [];
+  const listener = new ClusterBus(store, "n2", TEST_BUS_KEY);
+  listener.on("blocks-changed", (data) => { heard.push(data); });
+  await listener.start();
+  const alarms = { errors: 0, warns: 0 };
+  const errors = spyOn(log, "error").mockImplementation(() => {});
+  const warns = spyOn(log, "warn").mockImplementation(() => {});
+  try {
+    const coordinator = make("coord");
+    await coordinator.tick();
+    await coordinator.tick();
+    await settle();
+  } finally {
+    await listener.stop();
+    alarms.errors = errors.mock.calls.length;
+    alarms.warns = warns.mock.calls.length;
+    errors.mockRestore();
+    warns.mockRestore();
+  }
+  return { store, heard, alarms };
+}
+
+test("assign leaves a closed copy alone when its table and epoch are both gone", async () => {
+  const { store, heard, alarms } = await raced(async () => {});
+  expect(await store.get("cells:blocks:vault~a1")).toBeNull();
+  expect(await store.get("cells:blocksepoch:vault~a1")).toBeNull();
+  expect(heard.filter((m: any) => m?.map === "vault~a1")).toEqual([]);
+  expect(alarms.errors).toBe(0);
+});
+
+test("assign raises no alarm for a copy whose table is gone but whose epoch is set", async () => {
+  const { store, heard, alarms } = await raced(async (s) => { await new BlockTable(s).nextEpoch("vault~a1", 0); });
+  expect(await store.get("cells:blocks:vault~a1")).toBeNull();
+  expect(heard.filter((m: any) => m?.map === "vault~a1")).toEqual([]);
+  expect(alarms.errors).toBe(0);
+});
+
+test("assign raises no alarm for a copy whose table cannot be read", async () => {
+  const { store, heard, alarms } = await raced(async (s) => {
+    await new BlockTable(s).nextEpoch("vault~a1", 0);
+    await s.set("cells:blocks:vault~a1", "not a table");
+  });
+  expect(await store.get("cells:blocks:vault~a1")).toBe("not a table");
+  expect(heard.filter((m: any) => m?.map === "vault~a1")).toEqual([]);
+  expect(alarms.errors).toBe(0);
+  expect(alarms.warns).toBe(0);
+});

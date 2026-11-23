@@ -19,7 +19,7 @@ const caseOf = (name: string) => cut(receiver, `case "${name}": {`, /\n {8}break
 const withNames = (names: string[], code: string): ((given: Record<string, any>) => any) =>
   new Function(`"use strict";\n${transpiler.transformSync(`function make({ ${names.join(", ")} }: any) { ${code} }`)}\nreturn make;`)();
 
-const KINDS = ["creature", "item", "mount", "cutscene", "spell", "weather", "class", "quest"];
+const KINDS = ["creature", "item", "mount", "cutscene", "spell", "weather", "class", "dungeon", "quest"];
 
 function world() {
   const sent: Record<string, any[]> = { saver: [], builder: [], viewer: [], player: [], closed: [] };

@@ -138,6 +138,8 @@ export interface CreatureInstance {
   id: number;
   templateId: number;
   spawnId: number;
+  /** A dungeon copy's creature: the template map's spawn it was made from. It holds no slot there (spawnId 0), but wanders or patrols as that spawn says. */
+  copySpawnId?: number;
   poolId: number | null;
   map: string;
   /** Layer this copy lives on; null for shared (visible from every layer). */
@@ -177,6 +179,8 @@ export interface CreatureInstance {
   mirrorLooters?: string[];
   /** A handoff of this creature to another node is in progress (cluster/creaturehandoff.ts): no second one starts. */
   handoff?: boolean;
+  /** A dungeon copy's scaling of this creature's spell damage; 1 when absent. */
+  damageMult?: number;
 }
 
 export interface CreatureCast {

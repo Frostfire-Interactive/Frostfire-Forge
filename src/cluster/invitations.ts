@@ -1,4 +1,5 @@
 import playerCache from "../services/playermanager";
+import type { SummonInvite } from "../socket/summonstones";
 import type { ClusterStore } from "./store";
 
 export interface Invitation {
@@ -9,6 +10,10 @@ export interface Invitation {
   authorization: string;
   /** Who it was sent to. */
   target?: string;
+  /** The party it is about (a RAID_CONVERT offer). */
+  partyId?: number;
+  /** Where a summoning stone takes the target (a SUMMON_STONE offer). */
+  summon?: SummonInvite;
 }
 
 /** Who sends word of players leaving this node's cache. */

@@ -170,9 +170,6 @@ const createItemsTable = async () => {
         equipment_slot VARCHAR(255) DEFAULT NULL,
         equipable INT NOT NULL DEFAULT 0,
         bag_slots INT NULL DEFAULT 0,
-        damage_min INT DEFAULT NULL,
-        damage_max INT DEFAULT NULL,
-        attack_speed_ms INT DEFAULT NULL,
         sell_price INT NOT NULL DEFAULT 1,
         buy_price INT NOT NULL DEFAULT 0,
         restore_health INT NOT NULL DEFAULT 0,
@@ -459,6 +456,9 @@ const createPermissionTypesTable = async () => {
   await query(`INSERT IGNORE INTO permission_types (name) VALUES ('admin.cooldowns')`);
   // The class editor (character classes).
   await query(`INSERT IGNORE INTO permission_types (name) VALUES ('tools.class_editor')`);
+  // The dungeon editor (dungeons and raids).
+  await query(`INSERT IGNORE INTO permission_types (name) VALUES ('tools.dungeon_editor')`);
+  await query(`INSERT IGNORE INTO permission_types (name) VALUES ('tools.portal_editor')`);
   // Choosing what a player who has not subscribed may not do.
   await query(`INSERT IGNORE INTO permission_types (name) VALUES ('admin.subscription')`);
   // /speed
@@ -1143,24 +1143,6 @@ const insertHomeItem = async () => {
   );
 };
 
-/** Weapon damage columns added to items after their first release. */
-const addItemWeaponColumns = async () => {
-  const columns = [
-    { name: "damage_min", type: "INT DEFAULT NULL" },
-    { name: "damage_max", type: "INT DEFAULT NULL" },
-    { name: "attack_speed_ms", type: "INT DEFAULT NULL" },
-  ];
-  for (const col of columns) {
-    const exists = (await query(
-      `SELECT COUNT(*) as count FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'items' AND COLUMN_NAME = ?`,
-      [database, col.name]
-    )) as any[];
-    if (!exists[0] || Number(exists[0].count) === 0) {
-      await query(`ALTER TABLE items ADD COLUMN ${col.name} ${col.type}`);
-    }
-  }
-};
-
 /** Columns added to creature_templates after its first release. */
 const addCreatureTemplateColumns = async () => {
   const columns = [
@@ -1604,6 +1586,34 @@ const addIndexIfMissing = async (table: string, name: string, sql: string) => {
   if (!(await indexExists(table, name))) await query(sql);
 };
 
+/** Dungeons and raids: what the editor defines, and each character's entry window and the portal it came through. Needs characters, so addCharacterKeys runs it. */
+const createDungeonTables = async () => {
+  log.info("Creating dungeons and dungeon_characters tables...");
+  await query(`CREATE TABLE IF NOT EXISTS dungeons (
+    id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(48) NOT NULL UNIQUE,
+    map VARCHAR(255) NOT NULL UNIQUE,
+    type VARCHAR(8) NOT NULL,
+    sizes VARCHAR(16) NOT NULL,
+    multipliers TEXT NOT NULL,
+    entrance_x INT NOT NULL,
+    entrance_y INT NOT NULL,
+    enabled TINYINT NOT NULL DEFAULT 1,
+    portal_color VARCHAR(7) NULL
+  )`);
+  await query(`CREATE TABLE IF NOT EXISTS dungeon_characters (
+    character_id BIGINT NOT NULL PRIMARY KEY,
+    window_start BIGINT NOT NULL DEFAULT 0,
+    used INT NOT NULL DEFAULT 0,
+    portal_map VARCHAR(255) NULL,
+    portal_x INT NULL,
+    portal_y INT NULL,
+    CONSTRAINT fk_dungeon_characters_character FOREIGN KEY (character_id) REFERENCES characters(id) ON DELETE CASCADE
+  )`);
+  await addColumnIfMissing("dungeons", "portal_color", "VARCHAR(7) NULL");
+  await addColumnIfMissing("parties", "raid", "TINYINT NOT NULL DEFAULT 0");
+};
+
 const addCharacterKeys = async () => {
   log.info("Adding characters table and character_id keys...");
   // accounts.id is INT here, and a foreign key must match its column's type.
@@ -1673,6 +1683,7 @@ const addCharacterKeys = async () => {
   await addIndexIfMissing("guilds", "idx_guilds_leader_id", "CREATE INDEX idx_guilds_leader_id ON guilds (leader_id)");
   await addIndexIfMissing("mail", "idx_mail_recipient_id", "CREATE INDEX idx_mail_recipient_id ON mail (recipient_id)");
   await addIndexIfMissing("parties", "idx_parties_leader_id", "CREATE INDEX idx_parties_leader_id ON parties (leader_id)");
+  await createDungeonTables();
 };
 
 const setupDatabase = async () => {
@@ -1728,7 +1739,6 @@ const setupDatabase = async () => {
   await createCreatureTables();
   await addCreatureTemplateColumns();
   await addPatrolPathColumns();
-  await addItemWeaponColumns();
   await addVendorColumns();
   await addConsumableColumns();
   await addBuyPriceColumn();

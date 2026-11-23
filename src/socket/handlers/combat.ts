@@ -1,7 +1,6 @@
 import { ghosts } from "../../cluster/ghosts";
 import { readHeldList } from "../../systems/npcStreaming";
 import cooldownManager from "../../services/cooldownmanager";
-import creatures from "../../systems/creatures";
 import layerManager from "../../services/layermanager";
 import log from "../../modules/logger";
 import player, { hasLineOfSight } from "../../systems/player.ts";
@@ -24,34 +23,11 @@ import type { PacketContext } from "./context";
 
 // Packet handlers moved from receiver.ts's packetReceiver switch (phase 6, Task 1). The case bodies are unchanged.
 
-export const handles: ReadonlySet<string> = new Set(["CREATURE_ATTACK", "HOTBAR", "CANCEL_SPELL", "CANCEL_EFFECT"]);
+export const handles: ReadonlySet<string> = new Set(["HOTBAR", "CANCEL_SPELL", "CANCEL_EFFECT"]);
 
 export async function handle(ctx: PacketContext): Promise<unknown> {
   const { currentPlayer, data, type, wt } = ctx;
   switch (type) {
-
-      case "CREATURE_ATTACK": {
-        if (!currentPlayer) return;
-        const creatureId = (data as any)?.id;
-        if (creatureId === null || creatureId === undefined) {
-          creatures.stopAutoAttack(currentPlayer);
-          break;
-        }
-        if (currentPlayer.isDead || currentPlayer.isGhost || currentPlayer.isGuest) return;
-        if (subscriptionLocked(wt, currentPlayer, "combat")) {
-          creatures.stopAutoAttack(currentPlayer);
-          return;
-        }
-        const creature = creatures.getCreature(Number(creatureId));
-        if (!creature || !creatures.isTargetableBy(currentPlayer, creature)) {
-          sendPacket(wt, packetManager.creatureAttackStopped(Number(creatureId)));
-          break;
-        }
-        if (creatures.startAutoAttack(currentPlayer, creature.id)) {
-          sendPacket(wt, packetManager.creatureAttackStopped(creature.id));
-        }
-        break;
-      }
 
       case "HOTBAR": {
         if (!currentPlayer) return;

@@ -91,16 +91,19 @@ test("CLUSTER unset means not cluster mode", () => {
   }
 });
 
-test("party-cleared keeps the old write unless cluster mode is on", () => {
-  expect(receiver).toContain("if (clusterEnabled()) clearParty(p); else p.party = []; playerCache.set(p.id, p);");
+test("party-cleared clears the party and its id on every node", () => {
+  expect(receiver).toContain("await partyViewChanged(p, () => { clearParty(p); playerCache.set(p.id, p); });");
 });
 
-test("party-update reads the party id only in cluster mode, and writes the player back only if still cached", () => {
+test("party-update sets the party id on every node, and in cluster mode writes the player back only if still cached", () => {
   expect(receiver).toContain(
-    "if (clusterEnabled()) { await trackPacket(String(p.id), () => applyPartyMembers(p, Array.isArray(members) ? members : [], (username) => parties.getPartyId(username))); cacheIfHeld(playerCache, p); } else { p.party = members; playerCache.set(p.id, p); }",
+    "if (clusterEnabled()) { await trackPacket(String(p.id), () => applyPartyMembers(p, Array.isArray(members) ? members : [], (username) => parties.getPartyId(username))); cacheIfHeld(playerCache, p); } else {",
+  );
+  expect(receiver).toContain(
+    "await applyPartyMembers(p, Array.isArray(members) ? members : [], (username) => parties.getPartyId(username)); playerCache.set(p.id, p); }",
   );
 });
 
-test("LEAVE_PARTY keeps the old write unless cluster mode is on", () => {
-  expect(social).toContain("if (clusterEnabled()) clearParty(currentPlayer); else currentPlayer.party = []; playerCache.set(currentPlayer.id, currentPlayer);");
+test("LEAVE_PARTY clears the party and its id on every node", () => {
+  expect(social).toContain("clearParty(currentPlayer); playerCache.set(currentPlayer.id, currentPlayer);");
 });

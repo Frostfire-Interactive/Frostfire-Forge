@@ -8,7 +8,7 @@ const { default: loot } = await import("../systems/loot");
 const { default: lootChest } = await import("../systems/lootChest");
 const { default: skeletons } = await import("../systems/skeletons");
 const tornadoes = await import("../systems/tornadoes");
-const { objectMovesPart, OBJECTS_PART } = await import("../cluster/kinds/objectmoves");
+const { objectMovesPart, OBJECTS_PART, isMovedChest } = await import("../cluster/kinds/objectmoves");
 const { default: log } = await import("../modules/logger");
 const { default: assetCache } = await import("../services/assetCache");
 import type { LootItem } from "../systems/loot";
@@ -404,4 +404,23 @@ test("accept drops malformed objects and takes the rest", async () => {
   expect(warnings.some((w) => w.includes("1 malformed tornado"))).toBe(true);
   await part.accept(move, "junk" as unknown as MovedObjects, "f");
   expect(warnings.some((w) => w.includes("none were taken"))).toBe(true);
+});
+
+test("a placed chest keeps its reset fields through takeOwn and adoptOwn", () => {
+  const id = lootChest.spawn(`${MAP}.json`, 100, 100, 4, undefined, "map", { name: "A", resetMs: 1_800_000, resetAt: 5_000 });
+  made.chests.push(id);
+  const moved = roundTrip(lootChest.takeOwn(id)!);
+  expect(moved).toMatchObject({ resetMs: 1_800_000, resetAt: 5_000, placed: "A" });
+  expect(lootChest.adoptOwn(moved)).toBe("new");
+  expect(lootChest.getChest(id)).toMatchObject({ resetMs: 1_800_000, resetAt: 5_000, placed: "A" });
+});
+
+test("a chest record whose reset is not above zero is refused", () => {
+  const id = lootChest.spawn(`${MAP}.json`, 100, 100, 4, undefined, "map", { name: "A", resetMs: 1_800_000, resetAt: 5_000 });
+  made.chests.push(id);
+  const good = roundTrip(lootChest.takeOwn(id)!);
+  expect(isMovedChest(good)).toBe(true);
+  expect(isMovedChest({ ...good, resetMs: 0 })).toBe(false);
+  expect(isMovedChest({ ...good, resetMs: -1 })).toBe(false);
+  expect(isMovedChest({ ...good, resetMs: null, resetAt: null, placed: null })).toBe(true);
 });

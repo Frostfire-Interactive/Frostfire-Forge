@@ -54,6 +54,8 @@ function node() {
     refreshWorldMap: async (name: string) => { done.push(["refreshWorldMap", name]); },
     syncMapFromAssetServer: async (name: string) => { done.push(["sync", name]); return true; },
     reloadMap: async (name: string) => { done.push(["reloadMap", name]); },
+    mapPropertiesCache: [{ name: "w.json", chests: [{ name: "A" }] }, { name: "x.json" }],
+    respawnMapChests: (name: string, chests: any[]) => done.push(["respawnChests", name, chests.length]),
     editorEditHistory: new Map<string, any[]>([["w.json", [{ senderId: 1, mapName: "w.json", edits: [1] }]], ["x", [{ senderId: 2, mapName: "x", edits: [2] }]]]),
     activeEditorsByMap: new Map<string, Set<any>>([["w", new Set(["admin"])]]),
   };
@@ -78,6 +80,13 @@ describe("a world saved in the map editor", () => {
     expect(here.world.properties).toEqual({ graveyards: ["new"], warps: ["old"] });
     expect(here.done).toEqual([["clearMapCache", "w"], ["refreshWorldMap", "w"]]);
     expect(Object.values(here.sent).flat()).toEqual([]);
+  });
+
+  test("with chests, the world takes them and its placed chests are brought to them", async () => {
+    const here = node();
+    await make(here)({ world: "w", mapName: "w", changed: [], chests: [{ name: "A" }, { name: "B" }] });
+    expect(here.world.properties.chests).toEqual([{ name: "A" }, { name: "B" }]);
+    expect(here.done).toContainEqual(["respawnChests", "w.json", 2]);
   });
 
   test("this node does not hold is left alone", async () => {
@@ -117,11 +126,29 @@ describe("a plain map saved on another node", () => {
     const here = node();
     const chunks = [{ chunkX: 3, chunkY: 4 }];
     await make(here)("w.json", { shiftX: 0, shiftY: 0, width: 40, height: 30, chunks });
-    expect(here.done).toEqual([["sync", "w.json"], ["reloadMap", "w.json"], ["clearMapCache", "w.json"]]);
+    expect(here.done).toEqual([["sync", "w.json"], ["reloadMap", "w.json"], ["respawnChests", "w.json", 1], ["clearMapCache", "w.json"]]);
     expect([...here.editorEditHistory.keys()]).toEqual(["x"]);
     const bounds = { rebase: { shiftX: 0, shiftY: 0, width: 40, height: 30 } };
     expect(here.sent.saver).toEqual([bounds, { chunks }]);
     expect(here.sent.away).toEqual([]);
+  });
+});
+
+describe("a plain map saved on another node without chests", () => {
+  const make = withNames(NAMES, `${fn("function showMapSaveHere(")}
+${fn("async function mapSavedElsewhere(")}
+return mapSavedElsewhere;`);
+
+  test("still has its placed chests brought to an empty list", async () => {
+    const here = node();
+    await make(here)("x.json", { shiftX: 0, shiftY: 0, width: 40, height: 30, chunks: [] });
+    expect(here.done).toContainEqual(["respawnChests", "x.json", 0]);
+  });
+
+  test("leaves its placed chests alone when the map is not in the map properties after the reload", async () => {
+    const here = node();
+    await make(here)("z.json", { shiftX: 0, shiftY: 0, width: 40, height: 30, chunks: [] });
+    expect(here.done.filter((d: any[]) => d[0] === "respawnChests")).toEqual([]);
   });
 });
 
@@ -216,6 +243,17 @@ describe("news from another node", () => {
       ["map", "m.json", { shiftX: 32, shiftY: 0, width: 10, height: 9, chunks }],
       ["end", "n3", "m.json", true],
     ]);
+  });
+
+  test("of a world save carries its chests and dungeon portals here", async () => {
+    const { news, calls } = heard();
+    const chests = [{ name: "A" }];
+    const dungeonPortals = [{ name: "P", dungeonId: 3 }];
+    await news["world-saved"]({ world: "w", changed: [], chests, dungeonPortals }, "n2");
+    await news["world-saved"]({ world: "w", changed: [], chests: [], dungeonPortals: [] }, "n2");
+    await news["world-saved"]({ world: "w", changed: [], dungeonPortals: "bad" }, "n2");
+    const saves = calls.filter((call) => call[0] === "world").map((call) => [call[1].chests, call[1].dungeonPortals]);
+    expect(saves).toEqual([[chests, dungeonPortals], [[], []], [undefined, undefined]]);
   });
 
   test("of a save that cannot be carried out here ends the mark of it as not saved", async () => {

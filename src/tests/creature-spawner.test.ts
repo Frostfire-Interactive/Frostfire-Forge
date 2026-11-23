@@ -196,6 +196,25 @@ describe("creature spawner", () => {
   });
 });
 
+describe("copy creatures", () => {
+  test("a dead copy creature is despawned and never rescheduled", () => {
+    const { registry, spawner } = setup({ spawns: [] });
+    const instance: any = {
+      id: 900, templateId: 1, spawnId: 0, poolId: null, map: "crypt~a1", layerId: null, x: 1, y: 1, dir: "down", homeX: 1, homeY: 1,
+      level: 3, health: 10, maxHealth: 10, state: AIState.DEAD, spawnedAt: 0, move: null, waitUntil: 0, patrolIndex: 0, patrolForward: true,
+      sentX: 1, sentY: 1, sentDir: "down", sentMoving: false, combat: createCombatState(), auras: createAuras(), casting: null, abilityStates: new Map(),
+    };
+    registry.add(instance);
+    spawner.died(900, 2000);
+    spawner.despawn(900, 300_000);
+    expect(registry.size).toBe(0);
+    expect(spawner.getPendingAt(0)).toBeUndefined();
+    spawner.tick(10_000_000);
+    expect(registry.size).toBe(0);
+    expect(spawner.getLiveInstanceId(0)).toBeUndefined();
+  });
+});
+
 describe("respawn time runs from the death", () => {
   const kill = (registry: any, spawner: any, id: number, now: number) => {
     registry.get(id).state = AIState.DEAD;

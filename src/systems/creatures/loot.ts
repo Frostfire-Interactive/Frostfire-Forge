@@ -15,6 +15,14 @@ export interface CorpseLoot {
   owners: Set<string>;
   /** Usernames (lowercase) that receive a share of the money. */
   moneyShare: string[];
+  /** Personal loot (inside a dungeon copy): one record per member, keyed by lowercase username. `items`/`copper` are unused then. */
+  personal?: Map<string, PersonalRecord>;
+}
+
+export interface PersonalRecord {
+  items: CorpseItem[];
+  taken: Set<number>;
+  copper: number;
 }
 
 export interface LootTakeResult {
@@ -22,6 +30,12 @@ export interface LootTakeResult {
   /** username -> copper awarded */
   copper: Map<string, number>;
   empty: boolean;
+  /** Set when the take was from a personal record: whose. */
+  personalOf?: string;
+}
+
+function recordEmpty(r: PersonalRecord): boolean {
+  return r.copper <= 0 && r.items.every((i) => r.taken.has(i.index));
 }
 
 /** Split copper evenly; the looter receives any remainder. */
@@ -77,14 +91,64 @@ export class CorpseLootStore {
     return this.corpses.has(creatureId);
   }
 
-  canLoot(creatureId: number, username: string): boolean {
-    return this.corpses.get(creatureId)?.owners.has(username.toLowerCase()) ?? false;
+  /** A corpse where each member has their own loot. Null when every record is empty. */
+  createPersonal(creatureId: number, perUser: Map<string, { items: CorpseItem[]; copper: number }>): CorpseLoot | null {
+    const personal = new Map<string, PersonalRecord>();
+    for (const [name, rec] of perUser) {
+      personal.set(name.toLowerCase(), { items: rec.items, taken: new Set(), copper: Math.max(0, Math.floor(rec.copper)) });
+    }
+    if ([...personal.values()].every(recordEmpty)) return null;
+    const loot: CorpseLoot = { creatureId, items: [], taken: new Set(), copper: 0, owners: new Set(personal.keys()), moneyShare: [], personal };
+    this.corpses.set(creatureId, loot);
+    return loot;
   }
 
-  /** Items still on the corpse. */
-  remaining(creatureId: number): CorpseItem[] {
+  canLoot(creatureId: number, username: string): boolean {
     const loot = this.corpses.get(creatureId);
-    return loot ? loot.items.filter((i) => !loot.taken.has(i.index)) : [];
+    if (!loot) return false;
+    const who = username.toLowerCase();
+    if (loot.personal) {
+      const rec = loot.personal.get(who);
+      return !!rec && !recordEmpty(rec);
+    }
+    return loot.owners.has(who);
+  }
+
+  /** Items still on the corpse (the caller's own record when the corpse is personal). */
+  remaining(creatureId: number, username?: string): CorpseItem[] {
+    const loot = this.corpses.get(creatureId);
+    if (!loot) return [];
+    if (loot.personal) {
+      const rec = username ? loot.personal.get(username.toLowerCase()) : undefined;
+      return rec ? rec.items.filter((i) => !rec.taken.has(i.index)) : [];
+    }
+    return loot.items.filter((i) => !loot.taken.has(i.index));
+  }
+
+  /** Money on the corpse the caller can take (their own record when personal). */
+  copperOf(creatureId: number, username: string): number {
+    const loot = this.corpses.get(creatureId);
+    if (!loot) return 0;
+    if (loot.personal) return loot.personal.get(username.toLowerCase())?.copper ?? 0;
+    return loot.copper;
+  }
+
+  private takePersonal(loot: CorpseLoot, looter: string, indices: number[] | null): LootTakeResult | null {
+    const rec = loot.personal!.get(looter);
+    if (!rec || recordEmpty(rec)) return null;
+    const taken: CorpseItem[] = [];
+    for (const item of rec.items) {
+      if (rec.taken.has(item.index)) continue;
+      if (indices && !indices.includes(item.index)) continue;
+      rec.taken.add(item.index);
+      taken.push(item);
+    }
+    const copper = new Map<string, number>();
+    if (rec.copper > 0) copper.set(looter, rec.copper);
+    rec.copper = 0;
+    const empty = [...loot.personal!.values()].every(recordEmpty);
+    if (empty) this.corpses.delete(loot.creatureId);
+    return { taken, copper, empty, personalOf: looter };
   }
 
   /** Take specific item indices (or all when null) plus any money. */
@@ -92,6 +156,7 @@ export class CorpseLootStore {
     const loot = this.corpses.get(creatureId);
     const looter = username.toLowerCase();
     if (!loot || !loot.owners.has(looter)) return null;
+    if (loot.personal) return this.takePersonal(loot, looter, indices);
 
     const taken: CorpseItem[] = [];
     for (const item of loot.items) {
@@ -110,6 +175,15 @@ export class CorpseLootStore {
 
   /** Put back what a take took, on the corpse it was taken from: its writes were not kept. */
   restore(loot: CorpseLoot, result: LootTakeResult): void {
+    if (loot.personal && result.personalOf) {
+      const rec = loot.personal.get(result.personalOf);
+      if (rec) {
+        for (const item of result.taken) rec.taken.delete(item.index);
+        for (const share of result.copper.values()) rec.copper += share;
+      }
+      this.corpses.set(loot.creatureId, loot);
+      return;
+    }
     for (const item of result.taken) loot.taken.delete(item.index);
     for (const share of result.copper.values()) loot.copper += share;
     this.corpses.set(loot.creatureId, loot);

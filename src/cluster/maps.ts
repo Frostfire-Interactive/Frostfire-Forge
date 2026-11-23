@@ -43,6 +43,12 @@ export class MapCatalogue {
     }
   }
 
+  async remove(name: string): Promise<void> {
+    const bareName = bare(name);
+    await this.store.removeFromSet(LIST_KEY, bareName);
+    await this.store.del(mapKey(bareName));
+  }
+
   /** Every published map, by name. */
   async all(): Promise<MapExtent[]> {
     const extents: MapExtent[] = [];

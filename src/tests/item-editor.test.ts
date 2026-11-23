@@ -61,9 +61,6 @@ const weapon = (over: Partial<Item> = {}) => ({
   equipable: true,
   equipment_slot: "weapon",
   level_requirement: 1,
-  damage_min: 8,
-  damage_max: 14,
-  attack_speed_ms: 2600,
   ...over,
 });
 
@@ -105,13 +102,11 @@ describe("item validation", () => {
       .toContain("Only equipment can be equipable.");
   });
 
-  test("weapon damage must be a sane range on a weapon-slot item", () => {
-    expect(editor.validateItem(weapon({ damage_min: 20, damage_max: 5 }), names(), null))
-      .toContain("Maximum damage cannot be below minimum damage.");
-    expect(editor.validateItem(weapon({ attack_speed_ms: 100 }), names(), null))
-      .toContain("Attack speed must be at least 500ms.");
-    expect(editor.validateItem(weapon({ equipment_slot: "helmet" }), names(), null))
-      .toContain("Weapon damage and speed only apply to items in the weapon slot.");
+  test("an item has no weapon damage or swing speed of its own", () => {
+    const old = { damage_min: 8, damage_max: 14, attack_speed_ms: 2600 };
+    const item = editor.normalizeItem({ ...weapon(), ...old });
+    for (const field of Object.keys(old)) expect(field in item).toBe(false);
+    expect(editor.validateItem({ ...weapon({ equipment_slot: "helmet" }), ...old }, names(), null)).toEqual([]);
   });
 
   test("what a vendor pays for it is a whole number of copper a purse can hold, 0 or more", () => {
@@ -134,7 +129,7 @@ describe("item validation", () => {
     expect(editor.validateItem(weapon({ buy_price: -1 }), names(), null)).toContain("Buy price cannot be negative.");
     expect(editor.validateItem(weapon({ buy_price: editor.SELL_PRICE_MAX + 1 }), names(), null)).toContain("Buy price is too high.");
     // A quest item is never bought from a vendor.
-    expect(editor.validateItem(weapon({ type: "quest", equipable: false, equipment_slot: null, damage_min: null, damage_max: null, attack_speed_ms: null, sell_price: 10, buy_price: 0 }), names(), null)).not.toContain("Buy price cannot be below the sell price.");
+    expect(editor.validateItem(weapon({ type: "quest", equipable: false, equipment_slot: null, sell_price: 10, buy_price: 0 }), names(), null)).not.toContain("Buy price cannot be below the sell price.");
   });
 });
 
@@ -246,7 +241,8 @@ describe("saving", () => {
     expect(queries.some((q) => q.sql.startsWith("INSERT INTO items"))).toBe(true);
     const items = cache.get("items") as Item[];
     expect(items).toHaveLength(1);
-    expect(items[0]?.damage_max).toBe(14);
+    expect(items[0]?.name).toBe("wooden staff");
+    expect(queries.find((q) => q.sql.startsWith("INSERT INTO items"))?.sql).not.toContain("damage_min");
   });
 
   test("what a vendor pays is written with the rest of the item, new or changed", async () => {

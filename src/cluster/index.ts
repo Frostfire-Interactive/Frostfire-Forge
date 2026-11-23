@@ -23,12 +23,14 @@ import { storeHealth } from "./health";
 import { holdPlayerLock, playerHandoff } from "./handoff";
 import { IdAllocator } from "./ids";
 import { invitations } from "./invitations";
+import { summonClaims } from "./summonclaims";
 import { LayerNumbers } from "./layerseq";
 import { NodeLinks } from "./links";
 import { linkCalls } from "./linkcalls";
 import { runLinkHooks } from "./linkhooks";
 import type { LinkTransport } from "./linktransport";
 import { MapCatalogue, extentOf, takeInMap, type MapExtent } from "./maps";
+import { pinMapWithSnapshots, unpinMap } from "./pin";
 import { NodeDeath } from "./nodedeath";
 import type { ClusterDebugSource } from "./nodedebug";
 import { LoopLagMeter, NodeRegistry, type LoadReport, type NodeInfo } from "./nodes";
@@ -36,7 +38,7 @@ import { peerNews } from "./peernews";
 import { PlayerLocks, characterLockKeys } from "./playerlock";
 import { trackPresence } from "./presence";
 import { RedisStore } from "./redisstore";
-import { SNAPSHOT_EVERY_MS, SnapshotWriter, addSnapshotMap, useSnapshotMaps } from "./snapshots";
+import { SNAPSHOT_EVERY_MS, SnapshotWriter, addSnapshotMap, removeSnapshotMap, useSnapshotMaps } from "./snapshots";
 import type { ClusterStore } from "./store";
 import { sealStore } from "./storeseal";
 import { BorderBand, TargetCache, linkPartners } from "./strip";
@@ -444,6 +446,8 @@ export async function startCluster(
     teardown.rest.push({ what: "release the handoff lock", run: () => { playerHandoff.setLock(previousHandoffLock); } });
     invitations.attach(store);
     teardown.rest.push({ what: "detach invitations", run: () => invitations.attach(null) });
+    summonClaims.attach(store);
+    teardown.rest.push({ what: "detach summon claims", run: () => summonClaims.attach(null) });
     // Phase 7: a peer that died, or this node found dead (Task 13). Handlers before the bus starts.
     const death = new NodeDeath(store, {
       self,
@@ -463,6 +467,14 @@ export async function startCluster(
     const moverHere = mover;
     if (moverHere) bus.on("block-move", (data) => moverHere.onBusMessage(data));
     blocks.attach(bus);
+    bus.on("map-closed", (data: { map?: string }) => {
+      if (typeof data?.map !== "string") return;
+      blocks.forget(data.map);
+      removeSnapshotMap(data.map);
+      const open = running?.maps;
+      const at = open?.indexOf(data.map) ?? -1;
+      if (open && at !== -1) open.splice(at, 1);
+    });
     teardown.rest.push({ what: "stop the bus", run: () => bus.stop() });
     await bus.start();
     // Before the store closes: a sweep that ran beside the close could be left with a closed connection and the entries behind.
@@ -627,6 +639,22 @@ export async function clusterMapAdded(name: string, widthPx: number, heightPx: n
   const extent = extentOf(name, widthPx, heightPx);
   addSnapshotMap(extent);
   await takeInMap(node, extent);
+}
+
+/** Opens a copy map pinned whole to this node (Task 9); no-op outside cluster mode. */
+export async function clusterPinMap(name: string, widthPx: number, heightPx: number): Promise<void> {
+  const node = running;
+  if (!node) return;
+  const extent = extentOf(name, widthPx, heightPx);
+  await pinMapWithSnapshots({ store: node.store, blocks: node.blocks, nodeId: node.self, maps: node.maps }, extent, { add: addSnapshotMap, remove: removeSnapshotMap });
+}
+
+/** Removes a copy map from the cluster when it closes; no-op outside cluster mode. */
+export async function clusterUnpinMap(name: string): Promise<void> {
+  const node = running;
+  if (!node) return;
+  removeSnapshotMap(name);
+  await unpinMap({ store: node.store, blocks: node.blocks, nodeId: node.self, maps: node.maps, bus: node.bus }, name);
 }
 
 /** The node's links to its neighbours, or null (cluster off, or running without links). */

@@ -22,7 +22,8 @@ import playerSystem from "../player";
 import { credit } from "../quests/objectives";
 import { markersFor } from "../quests/markers";
 import { CORPSE_EMPTY_MS, CORPSE_WITH_LOOT_MS, CreatureFlags, randInt, yards } from "./constants";
-import { CorpseLootStore, type CorpseItem } from "./loot";
+import { CorpseLootStore, splitCopper, type CorpseItem } from "./loot";
+import { isCopyKey } from "../dungeons/copykey";
 import { baseKillXp, distributeKillXp, groupBonus, rankMultiplier, REWARD_RANGE_YD } from "./rewards";
 import { AIState, type CreatureInstance, type CreatureTemplate } from "./types";
 
@@ -182,16 +183,45 @@ async function creditQuests(members: any[], creature: CreatureInstance, template
   }
 }
 
-async function createCorpseLoot(creature: CreatureInstance, template: CreatureTemplate, members: any[]): Promise<void> {
+/** One roll of the creature's loot table, with the items' own icons. */
+async function rollItems(template: CreatureTemplate): Promise<CorpseItem[]> {
   const rolled: CorpseItem[] = template.loot_table_id ? ((await lootTable.roll(template.loot_table_id)) as CorpseItem[]) : [];
   // The roll names an icon after the item; the item's own icon is the one the bags show.
   const known = ((await assetCache.get("items")) as any[]) || [];
-  const items = rolled.map((item) => {
+  return rolled.map((item) => {
     const def = known.find((k) => lower(k?.name) === lower(item.itemName));
     return def?.icon ? { ...item, iconUrl: getIconUrl(def.icon) || item.iconUrl } : item;
   });
+}
+
+function tellLootable(name: string, lootable: boolean, creatureId: number): void {
+  const packet = packetManager.creatureLootable({ id: creatureId, lootable });
+  const here = findPlayerByUsername(name);
+  // The member may be a player of a neighbouring node, who sees this corpse as a mirror.
+  if (here) send(here.wt, packet);
+  else void deliverToPlayer(name, packet);
+}
+
+async function createCorpseLoot(creature: CreatureInstance, template: CreatureTemplate, members: any[]): Promise<void> {
   const copper = template.gold_max > 0 ? randInt(template.gold_min, template.gold_max) : 0;
   const names = members.map((m) => lower(m.username));
+  if (isCopyKey(creature.map)) {
+    // Inside a dungeon copy every member gets their own roll; the money is rolled once and split.
+    if (names.length === 0) return;
+    const shares = splitCopper(copper, names, names[0]);
+    const perUser = new Map<string, { items: CorpseItem[]; copper: number }>();
+    for (const name of names) perUser.set(name, { items: await rollItems(template), copper: shares.get(name) ?? 0 });
+    const personal = corpseLoot.createPersonal(creature.id, perUser);
+    if (!personal || creature.state !== AIState.DEAD) {
+      corpseLoot.remove(creature.id);
+      return;
+    }
+    creature.combat.corpseUntil = Math.max(creature.combat.corpseUntil, Date.now() + CORPSE_WITH_LOOT_MS);
+    // A member whose own roll is empty has nothing to loot here.
+    for (const name of names) tellLootable(name, corpseLoot.canLoot(creature.id, name), creature.id);
+    return;
+  }
+  const items = await rollItems(template);
   const tapper = tapperPlayer(creature);
   const groupKey = names.length > 1 && tapper?.party_id ? `party:${tapper.party_id}` : null;
   const owner = corpseLoot.pickOwner(groupKey, names);
@@ -203,11 +233,7 @@ async function createCorpseLoot(creature: CreatureInstance, template: CreatureTe
     return;
   }
   creature.combat.corpseUntil = Math.max(creature.combat.corpseUntil, Date.now() + CORPSE_WITH_LOOT_MS);
-  const lootable = packetManager.creatureLootable({ id: creature.id, lootable: true });
-  const ownerHere = findPlayerByUsername(owner);
-  // The loot owner may be a player of a neighbouring node, who sees this corpse as a mirror.
-  if (ownerHere) send(ownerHere.wt, lootable);
-  else void deliverToPlayer(owner, lootable);
+  tellLootable(owner, true, creature.id);
 }
 
 /** Rewards for a creature that just died. Untapped kills give nothing. */
@@ -346,8 +372,7 @@ function checkLootAccess(player: any, creature: CreatureInstance | undefined): L
 export function openCorpse(player: any, creature: CreatureInstance | undefined): { items: CorpseItem[]; copper: number } | LootError {
   const error = checkLootAccess(player, creature);
   if (error) return error;
-  const loot = corpseLoot.get(creature!.id)!;
-  return { items: corpseLoot.remaining(creature!.id), copper: loot.copper };
+  return { items: corpseLoot.remaining(creature!.id, player.username), copper: corpseLoot.copperOf(creature!.id, player.username) };
 }
 
 export async function takeCorpseLoot(
@@ -360,13 +385,13 @@ export async function takeCorpseLoot(
   if (error) return error;
   const handOver = !!player.remote;
   // Only what fits in the looter's bags is taken: the rest stays on the corpse.
-  const wanted = corpseLoot.remaining(creature!.id).filter((item) => !indices || indices.includes(item.index));
+  const wanted = corpseLoot.remaining(creature!.id, player.username).filter((item) => !indices || indices.includes(item.index));
   const fits = handOver ? fitsInRoom(room ?? { free: 0, held: [] }, wanted) : await fitsInBags(player.username, wanted);
   const full = fits.length < wanted.length;
   // Looked at again: the corpse may have been looted or gone while the bags were counted.
   const loot = corpseLoot.get(creature!.id);
   if (!loot || creature!.state !== AIState.DEAD) return "empty";
-  if (full && fits.length === 0 && loot.copper <= 0) return "full";
+  if (full && fits.length === 0 && corpseLoot.copperOf(creature!.id, player.username) <= 0) return "full";
   // Off the corpse before anything else is awaited: a second take meanwhile finds it gone.
   const result = corpseLoot.take(creature!.id, player.username, fits.map((item) => item.index));
   if (!result) return "not_allowed";
@@ -423,16 +448,18 @@ export async function takeCorpseLoot(
     send(player.wt, packetManager.lootReceived({ itemName: item.itemName, quantity: item.quantity, quality: item.quality || "common" }));
     listener.emit(Events.PLAYER_LOOT_RETRIEVED, { player, itemName: item.itemName, quantity: item.quantity, mapName: creature!.map, x: creature!.x, y: creature!.y } as any);
   }
-  if (result.empty) {
-    // A mirror has no connection here: send() skips it, and the looter's node tells its player.
+  // The looter has nothing left here: the corpse is empty, or (personal) their own record is. Every other member of a
+  // personal corpse was told when their own record emptied, or at the kill when it rolled empty.
+  // A mirror has no connection here: send() skips it, and the looter's node tells its player.
+  if (result.empty || (loot.personal && !corpseLoot.canLoot(creature!.id, player.username))) {
     send(player.wt, packetManager.creatureLootable({ id: creature!.id, lootable: false }));
-    creature!.combat.corpseUntil = Math.min(creature!.combat.corpseUntil, Date.now() + CORPSE_EMPTY_MS);
   }
+  if (result.empty) creature!.combat.corpseUntil = Math.min(creature!.combat.corpseUntil, Date.now() + CORPSE_EMPTY_MS);
   return {
     taken: result.taken,
     empty: result.empty,
     full,
-    remaining: corpseLoot.remaining(creature!.id),
+    remaining: corpseLoot.remaining(creature!.id, player.username),
     copper: handOver ? result.copper.get(looterKey) ?? 0 : 0,
   };
 }

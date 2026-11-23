@@ -1,6 +1,8 @@
 
 
-class MapIndex {
+import { templateOf } from "../systems/dungeons/copykey";
+
+export class MapIndex {
 
   private mapToPlayers: Map<string, Set<string>>;
 
@@ -72,6 +74,17 @@ class MapIndex {
   getPlayersOnMap(mapName: string): Set<string> {
     const normalizedMap = this.normalizeMapName(mapName);
     return this.mapToPlayers.get(normalizedMap) || new Set();
+  }
+
+  /** The maps of a world with players on them: its own map and each dungeon copy of it (template~id). */
+  mapsInWorld(world: string): string[] {
+    const name = this.normalizeMapName(world);
+    return [...this.mapToPlayers.keys()].filter((map) => templateOf(map) === name);
+  }
+
+  /** The players of a world: on its own map or in a dungeon copy of it, which shows its weather. */
+  playersInWorld(world: string): string[] {
+    return this.mapsInWorld(world).flatMap((map) => [...(this.mapToPlayers.get(map) ?? [])]);
   }
 
   getPlayerMap(playerId: string): string | undefined {

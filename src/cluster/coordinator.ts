@@ -2,7 +2,9 @@ import log from "../modules/logger";
 import { BlockTable, blockEpochKey, blockKey, blockTableKey, type BlockOwner, type MapBlocks, type StoredBlocks } from "./blocks";
 import type { ClusterBus } from "./bus";
 import { PlayerDirectory } from "./directory";
+import { isCopyKey } from "../systems/dungeons/copykey";
 import { MapCatalogue, type MapExtent } from "./maps";
+import { dropMapKeys } from "./pin";
 // Types only: blockmove.ts loads the block parts, which this standalone process must not load.
 import { BlockMoveOrders, type EndedOrder } from "./blockmove";
 import { MOVES_KEY, isOpen, moveKey } from "./moveorders";
@@ -258,6 +260,15 @@ export class Coordinator {
     const absent = new Map<string, number>(); // owner not live: blocks it holds
     for (const extent of await this.catalogue.all()) {
       if (!this.leader) return;
+      if (isCopyKey(extent.name)) {
+        const copy = await this.blocks.readStored(extent.name);
+        if (copy.state === "ok") {
+          for (const owner of Object.values(copy.table.owners)) {
+            if (owner?.nodeId && !live.includes(owner.nodeId)) absent.set(owner.nodeId, (absent.get(owner.nodeId) ?? 0) + 1);
+          }
+        }
+        continue;
+      }
       const stored = await this.readTable(extent.name);
       if (stored.state === "corrupt") {
         if (!this.unreadable.has(extent.name)) {
@@ -321,6 +332,24 @@ export class Coordinator {
       log.error(`The block table of map ${map} is missing, but the map was split before (${why}): it is left alone, so no block is given a second time. Put the table back from a backup; to split the map afresh, stop the cluster and delete ${key} and ${blockEpochKey(map)}`);
     }
     return { state: "corrupt" };
+  }
+
+  /**
+   * Whether a pinned copy goes with the dead node `nodeId`: its table names that node, or the table is gone or cannot be read
+   * and no live node reports load on the copy. A copy with no readable table can be run by no other node.
+   */
+  private copyOf(nodeId: string, stored: StoredBlocks, map: string, live: string[], loads: LoadReport[]): boolean {
+    if (stored.state === "ok") return Object.values(stored.table.owners).some((owner) => owner?.nodeId === nodeId);
+    const prefix = `${map.replace(/\.json$/, "")}|`;
+    return !loads.some((load) => live.includes(load.nodeId) && Object.keys(load.blocks ?? {}).some((key) => key.startsWith(prefix)));
+  }
+
+  /** A map removed from the catalogue: nothing this coordinator remembers of its table is kept. */
+  private forgetMap(map: string): void {
+    const key = blockTableKey(map);
+    this.tablesSeen.delete(key);
+    this.missingLogged.delete(key);
+    this.unreadable.delete(map);
   }
 
   // The settle rule (see CoordinatorOptions): whether empty tables may be split now, with `live` nodes live.
@@ -509,6 +538,7 @@ export class Coordinator {
     // A table that cannot be read may hold blocks of the node: forgetting it would strand them there for good.
     const extents = await this.catalogue.all();
     for (const extent of extents) {
+      if (isCopyKey(extent.name)) continue;
       if ((await this.readTable(extent.name)).state !== "corrupt") continue;
       if (!this.heldBack.has(nodeId)) {
         this.heldBack.add(nodeId);
@@ -533,6 +563,14 @@ export class Coordinator {
     if (!(await this.settleOrdersOf(nodeId, live))) return "cut";
     let moved = 0;
     for (const extent of extents) {
+      if (isCopyKey(extent.name)) {
+        if (!this.copyOf(nodeId, await this.blocks.readStored(extent.name), extent.name, live, loads)) continue;
+        if (!(await this.confirm())) return "cut";
+        await dropMapKeys(this.store, extent.name);
+        await this.bus.toWorld("map-closed", { map: extent.name });
+        this.forgetMap(extent.name);
+        continue;
+      }
       const stored = await this.readTable(extent.name);
       if (stored.state === "corrupt") return "kept";
       if (stored.state !== "ok") continue;
@@ -616,6 +654,7 @@ export class Coordinator {
     // Whether every table was read: only then is a node that owns no block in them known to own none.
     let complete = true;
     for (const extent of await this.catalogue.all()) {
+      if (isCopyKey(extent.name)) continue;
       const stored = await this.readTable(extent.name);
       if (stored.state === "ok") tables.push({ map: extent.name, table: this.withoutTooBig(extent.name, stored.table, tooBig, now) });
       if (stored.state === "corrupt") complete = false;

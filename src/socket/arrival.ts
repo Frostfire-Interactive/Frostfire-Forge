@@ -8,6 +8,7 @@ import { CONSUMABLE_COOLDOWN_MS, setReadyIn as setConsumableReadyIn } from "../s
 import type { CarriedChain, CarriedScene } from "../systems/cutsceneplayer";
 import { SICKNESS_DURATION_MS, saveOnDisconnect as saveSickness } from "../systems/resurrection";
 import { STAT_INT_MAX } from "../systems/creatures/remotereward";
+import { WARP_COOLDOWN_MS, setWarpReadyIn } from "../systems/warpcooldown";
 
 export interface HandoffState {
   dots: any[];
@@ -25,6 +26,8 @@ export interface HandoffState {
   mount_type: string | null;
   /** The shared consumable cooldown left (ms, 0 when ready), at most a full cooldown. */
   consumableReadyIn: number;
+  /** The warp cooldown left (ms, 0 when ready), at most a full cooldown. */
+  warpReadyIn: number;
   /** The direction the player was walking when handed off (one of the eight), or null: the arrival goes on walking. */
   walk: string | null;
   /** How long the walk had stood still on the old node when the final snapshot was taken (ms, 0 when not walking). */
@@ -453,6 +456,19 @@ export function handoffStateOf(raw: unknown, limits: ArrivalLimits, who = "an ar
     }
   }
 
+  let warpReadyIn = 0;
+  if (r.warpReadyIn != null) {
+    const left = r.warpReadyIn;
+    if (!finite(left) || left < 0) {
+      log.warn(`The warp cooldown ${who} brought by handoff was dropped: ${left}`);
+    } else if (left > WARP_COOLDOWN_MS) {
+      log.warn(`The warp cooldown ${who} brought by handoff was ${left} ms: cut to ${WARP_COOLDOWN_MS}`);
+      warpReadyIn = WARP_COOLDOWN_MS;
+    } else {
+      warpReadyIn = left;
+    }
+  }
+
   return {
     dots,
     barriers,
@@ -468,6 +484,7 @@ export function handoffStateOf(raw: unknown, limits: ArrivalLimits, who = "an ar
     mounted: r.mounted === true,
     mount_type: typeof r.mount_type === "string" ? r.mount_type : null,
     consumableReadyIn,
+    warpReadyIn,
     // A dead player does not walk; anything but one of the eight directions is no walk.
     walk: deadState === 0 && typeof r.walk === "string" && WALK_DIRECTIONS.has(r.walk) ? r.walk : null,
     walkIdleMs: Math.min(MAX_RESUME_CATCH_UP_MS, positive(r.walkIdleMs)),
@@ -487,6 +504,7 @@ export function seedArrival(username: string, state: HandoffState, now = perform
   if (state.lockoutMs > 0) cooldownManager.setLockout(username, now + state.lockoutMs);
   saveSickness({ username, resurrectionSickUntil: state.sickUntil });
   if (state.consumableReadyIn > 0) setConsumableReadyIn(username, state.consumableReadyIn);
+  if (state.warpReadyIn > 0) setWarpReadyIn(username, state.warpReadyIn);
 }
 
 /** The playerCache fields an arrival brings instead of the login's defaults. */

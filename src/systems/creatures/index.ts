@@ -15,7 +15,6 @@ import log from "../../modules/logger";
 import assetCache from "../../services/assetCache";
 import { getWorldMap } from "../../modules/worldmaps";
 import { readHeldList, streamSource } from "../npcStreaming";
-import { weaponProfile, type WeaponProfile } from "./combat";
 import layerManager, { blockOf } from "../../services/layermanager";
 import mapIndex from "../../services/mapindex";
 import playerCache from "../../services/playermanager";
@@ -48,6 +47,10 @@ import { NavGridCache } from "./navgrid";
 import registry from "./registry";
 import repository, { CACHE_KEYS } from "./repository";
 import { CreatureSpawner, isOutOfCombat, type SpawnerData } from "./spawner";
+import { bossCount, copyInstances, scaleSpellDamage } from "./copyspawn";
+import { nextEntityId } from "../../cluster/entityids";
+import { isCopyKey } from "../dungeons/copykey";
+import type { ModeMultiplier } from "../dungeons/types";
 import { CreatureSync, type SyncPlayer } from "./sync";
 import { AIState, type CreatureAbility, type CreatureInstance, type CreatureMoveState, type CreaturePatrolPath, type CreatureSpawn, type CreatureSpawnPool, type CreatureTemplate } from "./types";
 import { auraStatePayload, aurasPayload, aurasState, createAuras, type AuraState, type CreatureAuras } from "./auras";
@@ -127,25 +130,7 @@ function toPlayerUnit(id: string, p: any): PlayerUnit | null {
     critDamagePct: Number(stats.stat_critical_damage) || 0,
     statDamage: Number(stats.stat_damage) || 0,
     armorPct: Number(stats.stat_armor) || 0,
-    weapon: equippedWeapon(p),
   };
-}
-
-/** The item in the player's weapon slot, as a swing profile. */
-function equippedWeapon(p: any): WeaponProfile | null {
-  const name = p?.equipment?.weapon;
-  if (!name || name === "null") return null;
-  const item = itemsByName.get(String(name).toLowerCase());
-  return weaponProfile(item);
-}
-
-/** item name (lowercase) -> item, for weapon lookups on every swing */
-let itemsByName = new Map<string, Item>();
-
-/** Items are editable at runtime; refresh the weapon lookup with the spell cache. */
-async function refreshItems(): Promise<void> {
-  const list = ((await assetCache.get("items")) || []) as Item[];
-  itemsByName = new Map(list.filter((i) => i?.name).map((i) => [i.name.toLowerCase(), i]));
 }
 
 export const sync = new CreatureSync({
@@ -303,25 +288,16 @@ export const combat = new CreatureCombatSystem(registry, {
     });
     if (template) handleKill(creature, template).catch((error) => log.error(`Creature kill rewards failed: ${error}`));
   },
-  onAutoAttackStopped: (playerId, creatureId) => {
-    const player = playerCache.get(playerId);
-    if (player?.wt) send(player.wt, packetManager.creatureAttackStopped(creatureId));
-  },
   onTapChanged: (creature) => sendTapStates(creature),
   forwardHit: (creature, hit) => {
     const owner = ghosts.ownerOf("creature", creature.id);
     if (!owner) return;
-    void sendEffect(owner, { op: "creature_hit", target: creature.id, body: hit })
-      .then((result) => {
-        if (hit.spell || combat.autoAttackTarget(hit.attackerId) !== creature.id) return;
-        const gone = !result || result.outcome === "missing" || (result.outcome === "refused" && ["layer", "attacker", "dead"].includes(String(result.reason)));
-        if (gone) combat.stopAutoAttack(hit.attackerId, true);
-      })
-      .catch(() => {});
+    void sendEffect(owner, { op: "creature_hit", target: creature.id, body: hit }).catch(() => {});
   },
   spell: (id) => spellsById.get(id),
   abilities: (templateId) => abilitiesByTemplate.get(templateId) ?? NO_ABILITIES,
-  applySpellEffectsToPlayer: (creature, playerId, spell) => {
+  applySpellEffectsToPlayer: (creature, playerId, rawSpell) => {
+    const spell = scaleSpellDamage(rawSpell, creature.damageMult ?? 1);
     if (!playerCache.get(playerId)) {
       onMirroredPlayer(playerId, { kind: "spell", creatureId: creature.id, creatureName: templates.get(creature.templateId)?.name ?? "Creature", spell }, creature);
       return;
@@ -517,7 +493,6 @@ async function buildSpawnerData(): Promise<SpawnerData> {
   patrolPaths = new Map(ppList.map((p) => [p.id, p]));
   await refreshAbilities();
   await refreshSpells();
-  await refreshItems();
   linkGroups = new Map();
   for (const s of sList) {
     if (s.link_group_id == null) continue;
@@ -576,6 +551,31 @@ function currentLayers(): Map<string, string[]> {
 
 let spawnCache: CreatureSpawn[] = [];
 
+/** The creatures of a copy of a template map, scaled by the mode, and how many of them are bosses. Not yet in the world. */
+export async function copyCreatures(template: string, key: string, mult: ModeMultiplier): Promise<{ instances: CreatureInstance[]; bosses: number }> {
+  const list = ((await assetCache.get(CACHE_KEYS.pools)) || []) as CreatureSpawnPool[];
+  const pools = new Map<number, CreatureSpawnPool>(list.map((p) => [p.id, p]));
+  const instances = copyInstances(spawnCache, templates, template, key, mult, nextEntityId, { pools });
+  return { instances, bosses: bossCount(instances, templates) };
+}
+
+/** Puts a dungeon copy's creatures in the world. They are not spawn slots: nothing respawns them. */
+export function spawnCopyCreatures(key: string, instances: CreatureInstance[]): void {
+  for (const instance of instances) {
+    if (instance.map !== key) continue;
+    registry.add(instance);
+    sync.onSpawn(instance);
+  }
+}
+
+/** Removes every creature of a copy, corpses included, without scheduling anything. */
+export function despawnCopyCreatures(key: string): number {
+  const now = Date.now();
+  const ids = [...registry.onMap(key)].map((c) => c.id);
+  for (const id of ids) spawner.despawn(id, now, { respawn: false });
+  return ids.length;
+}
+
 /** Re-read creature tables from the database and respawn everything. */
 export async function reload(): Promise<void> {
   await repository.loadIntoCache();
@@ -606,7 +606,8 @@ export async function applyDataChange(change: CreatureDataChange): Promise<void>
   const pathIds = new Set(change.patrolPathIds ?? []);
   let refreshed = 0;
   for (const creature of [...registry.all()]) {
-    if (creature.remote) continue;
+    // A dungeon copy's creature has no spawn slot to bring it back.
+    if (creature.remote || isCopyKey(creature.map)) continue;
     const spawn = spawner.getSpawn(creature.spawnId);
     const affected =
       templateIds.has(creature.templateId) ||
@@ -761,7 +762,6 @@ export function tickCreatures(now: number): void {
     for (const mirror of movedMirrors) ticked.push(mirror);
     movedMirrors.clear();
   }
-  combat.tickPlayerAttacks(now);
   sync.flushMoves(ticked);
   flushHealth();
 }
@@ -798,17 +798,6 @@ function sweepUnobservedCorpses(now: number): void {
 }
 
 // ------------------------------------------------------------ player API
-
-/** Validate and start auto-attacking a creature. Returns an error reason or null. */
-export function startAutoAttack(player: any, creatureId: number): string | null {
-  if (!player?.id) return "invalid_player";
-  // A mirror may be auto-attacked: each swing is rolled here and sent to its owner.
-  return combat.startAutoAttack(player.id, creatureId, Date.now());
-}
-
-export function stopAutoAttack(player: any): void {
-  if (player?.id) combat.stopAutoAttack(player.id, false);
-}
 
 export function getCreature(id: number): CreatureInstance | undefined {
   return registry.get(id);
@@ -949,7 +938,6 @@ onApplyEffect("creature_hit", (target, hit: ForwardedHit, from): EffectResult =>
     threatMultiplier: clampedTo(hit.threatMultiplier, MAX_THREAT_MULTIPLIER),
     textKind: hit.textKind,
   };
-  if (hit.avoided) clean.avoided = true;
   if (spell) {
     clean.spell = spell;
     clean.casterStat = clampedTo(hit.casterStat, STAT_CEILING);
@@ -1361,6 +1349,9 @@ export { registry };
 export default {
   init,
   reload,
+  copyCreatures,
+  spawnCopyCreatures,
+  despawnCopyCreatures,
   applyDataChange,
   registry,
   spawner,
@@ -1368,8 +1359,6 @@ export default {
   combat,
   navGrids,
   wantNavGrids,
-  startAutoAttack,
-  stopAutoAttack,
   getCreature,
   getTemplate,
   isTargetableBy,
@@ -1422,7 +1411,7 @@ function creatureShown(c: CreatureInstance) {
     // Absolute expiries: the field changes when the auras do, not on every scan.
     auras: aurasState(c.auras, Date.now()),
     // Who may loot the corpse (sorted: the field changes only when they do). A viewer on another node is shown it from this.
-    looters: c.state === AIState.DEAD ? [...(corpseLoot.get(c.id)?.owners ?? [])].sort() : [],
+    looters: c.state === AIState.DEAD ? [...(corpseLoot.get(c.id)?.owners ?? [])].filter((name) => corpseLoot.canLoot(c.id, name)).sort() : [],
   };
 }
 

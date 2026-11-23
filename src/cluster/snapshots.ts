@@ -50,6 +50,11 @@ export function addSnapshotMap(map: SnapshotMap): void {
   knownMaps.set(name, { ...map, name });
 }
 
+/** A map that closed (a dungeon copy): a snapshot on it is no longer placed. */
+export function removeSnapshotMap(name: string): void {
+  knownMaps?.delete(name.replace(/.json$/, ""));
+}
+
 /** Whether `x`,`y` is a point inside `map` as this node knows it. */
 function inside(map: SnapshotMap | undefined, x: number, y: number): boolean {
   return !!map && finite(map.widthPx) && finite(map.heightPx) && x >= 0 && y >= 0 && x <= map.widthPx && y <= map.heightPx;
