@@ -1,5 +1,5 @@
 /** How long after a warp from one map to another (a map warp or a dungeon portal, in or out) a player waits before the next. */
-export const WARP_COOLDOWN_MS = 3000;
+export const WARP_COOLDOWN_MS = 1000;
 /** How often a player walking into a warp during the wait is told how long is left. */
 export const WARP_NOTICE_MS = 1000;
 

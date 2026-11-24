@@ -258,7 +258,7 @@ const positionOf = (admin: any): { x: number; y: number } | null => {
   return Number.isFinite(Number(at?.x)) && Number.isFinite(Number(at?.y)) ? { x: Number(at.x), y: Number(at.y) } : null;
 };
 
-/** Dispatch for every PORTAL_EDITOR_* packet, on the editor's own map. Permission is checked here, on each one. */
+/** Dispatch for every PORTAL_EDITOR_* packet, on the editor's own map (a save may name the portal's map). Permission is checked here, on each one. */
 export async function handlePortalEditorPacket(admin: any, type: string, data: any): Promise<PortalEditorReply> {
   if (!(await canUseEditor(admin))) return { kind: "result", ok: false, errors: [DENIED], notes: [], denied: true, data: null };
   const map = bareName(String(admin?.location?.map ?? ""));
@@ -269,13 +269,16 @@ export async function handlePortalEditorPacket(admin: any, type: string, data: a
     try {
       // A portal and its return are planned from the lists as they are now and written in this one change.
       const all = await allMapPortals();
-      const list = all.find((m) => m.map === map)?.portals ?? [];
       const original = typeof data?.original === "string" && data.original ? data.original : null;
       if (type === "PORTAL_EDITOR_SAVE") {
         const maps = await mapOptions();
-        const saved = portalSave(list, data, { map, maps, at: here });
+        // the map the portal stands on: an editor may have walked away from it, to its destination
+        const on = typeof data?.map === "string" && data.map ? bareName(data.map) : map;
+        const list = all.find((m) => m.map === on)?.portals ?? [];
+        const saved = !maps.some((m) => m.name === on) ? { errors: [`There is no map ${on} to save the portal on.`] }
+          : portalSave(list, data, { map: on, maps, at: on === map ? here : null });
         const was = original === null ? undefined : list.find((p) => p.name === original);
-        const teleports = "errors" in saved ? saved : returnPlan(all, { map, original, portals: saved.portals, source: saved.portal }, maps);
+        const teleports = "errors" in saved ? saved : returnPlan(all, { map: on, original, portals: saved.portals, source: saved.portal }, maps);
         const paired = "errors" in saved || "errors" in teleports ? teleports
           : await withDungeonExits(all, teleports.plan, [was?.dungeonId, saved.portal.dungeonId], maps, "destination");
         if ("errors" in paired) out = paired;
@@ -283,10 +286,11 @@ export async function handlePortalEditorPacket(admin: any, type: string, data: a
         else if ("errors" in saved) out = saved;
         else {
           await writePortals(paired.plan, String(admin.username));
-          log.info(`[PORTAL EDITOR] ${admin.username} saved portal ${saved.name} on ${map}${paired.plan.length > 1 ? ` (and ${paired.plan.slice(1).map((m) => m.map).join(", ")})` : ""}`);
+          log.info(`[PORTAL EDITOR] ${admin.username} saved portal ${saved.name} on ${on}${paired.plan.length > 1 ? ` (and ${paired.plan.slice(1).map((m) => m.map).join(", ")})` : ""}`);
           out = { errors: [], name: saved.name, notes: [...saved.notes, ...teleports.notes, ...paired.notes] };
         }
       } else if (type === "PORTAL_EDITOR_DELETE") {
+        const list = all.find((m) => m.map === map)?.portals ?? [];
         const left = portalDelete(list, data?.name);
         if ("error" in left) out = { errors: [left.error] };
         else {

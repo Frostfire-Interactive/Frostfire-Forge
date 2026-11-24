@@ -266,3 +266,26 @@ describe("NPC streaming with CACHE=memory", () => {
     expect(sentNpcIds()).toEqual([1, 1, 2]);
   });
 });
+
+describe("NPC streaming across a map change", () => {
+  test("a sync for the map left, still running when the next map's NPCs are sent, leaves the next map's stream as it is", async () => {
+    const maps = [...MAPS, { name: "cave", data: { tilewidth: 32, width: 128, height: 128 } }];
+    const data: Record<string, any> = { maps, npcs: [npc(1, 100, 100), npc(2, 100, 100, { map: "cave" })], particles: [] };
+    let slow = true;
+    useStreamSource({
+      get: async (key: string) => {
+        if (key === "npcs" && slow) { slow = false; await Bun.sleep(30); }
+        return structuredClone(data[key] ?? null);
+      },
+    } as any, () => false);
+    const live = player("mover", 1100);
+    const stale = syncNpcChunks(live); // the last step on town, reading the lists
+    live.location.map = "cave"; // a portal moves them on
+    const arrival = await syncNpcChunks({ id: "mover", location: { map: "cave", position: { x: 1100, y: 100 } } }, true);
+    expect(arrival.length).toBe(1);
+    expect(await stale).toEqual([]);
+    // the next step on the cave, in the same chunk: its NPCs were sent already
+    expect(await syncNpcChunks(live)).toEqual([]);
+    forgetNpcStream("mover");
+  });
+});

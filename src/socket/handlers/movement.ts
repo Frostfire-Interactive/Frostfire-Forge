@@ -20,6 +20,7 @@ import { PROFILE, VALID_DIRECTIONS, WARP_SCAN_MS, applyLateGap, bumpStateRevisio
 import { gapUpdateOf, newerGap, recoverResumedWalk, resumeCatchUpSteps } from "../arrival";
 import { dungeonPortalStep, dungeonPortalWalk, portalsOn, stonesOn } from "../dungeons";
 import { archBlocksStep, archesOf } from "../../systems/portalarch";
+import { arrivalChunks, chunkSizeFor, teleportsNear } from "../../systems/portalpreload";
 import { stoneBlocksStep, stonesAt } from "../../systems/stoneblock";
 import lootChest from "../../systems/lootChest";
 import { chestBlocksStep } from "../../systems/chestblock";
@@ -596,6 +597,40 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
                 }
               }
             }
+          }
+
+          // Nearing a teleport portal, the map round where it leads is sent ahead, as a warp's is (dungeon portals are not):
+          // once each time the player comes near it.
+          if (shouldScanWarps) {
+            const hereMap = String(currentPlayer.location.map).replace(".json", "");
+            const near = teleportsNear(portalsOn(hereMap), hereMap, currentPlayer.location.position);
+            const wasNear: Set<string> = currentPlayer._portalPreloads ?? new Set();
+            const nowNear = new Set<string>();
+            for (const spot of near) {
+              const key = `${hereMap}>${spot.map}:${spot.x}:${spot.y}`;
+              nowNear.add(key);
+              if (wasNear.has(key)) continue;
+              try {
+                const destMap = maps.find((m: MapData) => m.name === `${spot.map}.json` || m.name === spot.map);
+                if (!destMap?.data) continue;
+                if (spot.map !== hereMap) {
+                  const npcPreload = await preloadNpcsAt(currentPlayer, spot.map, spot.x, spot.y);
+                  if (npcPreload.length) sendPacket(wt, npcPreload);
+                }
+                const chunks = arrivalChunks(destMap.data, spot.x, spot.y);
+                if (chunks.length) {
+                  const tilewidth = destMap.data.tilewidth || 32;
+                  sendPacket(wt, packetManager.preloadMapChunks({
+                    mapName: spot.map, chunks, tilewidth, tileheight: destMap.data.tileheight || 32,
+                    chunkSize: chunkSizeFor(tilewidth), width: destMap.data.width || 0, height: destMap.data.height || 0,
+                    tilesets: destMap.data.tilesets || [],
+                  }));
+                }
+              } catch (err) {
+                log.warn(`Failed to preload teleport portal chunks: ${err}`);
+              }
+            }
+            currentPlayer._portalPreloads = nowNear;
           }
 
           // NPCs follow the map chunks round the player (npcStreaming); only does work when the player's chunk changed

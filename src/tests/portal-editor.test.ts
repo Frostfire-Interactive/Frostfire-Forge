@@ -380,3 +380,33 @@ describe("a map that grows left or up in the map editor", () => {
         expect(written).toEqual([]);
     });
 });
+
+describe("saving a portal of another map", () => {
+    // an editor who walked to a teleport's destination saves the portal on the map it stands on, not the one they are on
+    test("the save names the portal's map; the editor's own map is left alone", async () => {
+        cache.set("mapProperties", [
+            { name: "town.json", width: 100, height: 100, tileWidth: 10, tileHeight: 8, dungeonPortals: [] },
+            { name: "fields.json", width: 100, height: 100, tileWidth: 20, tileHeight: 20, dungeonPortals: [] },
+        ]);
+        const written: string[] = [];
+        setPortalWriter(async (map, portals) => {
+            written.push(`${map}:${portals.map((p) => p.name).join(",")}`);
+            const props = (cache.get("mapProperties") as any[]).find((m) => m.name === `${map}.json`);
+            props.dungeonPortals = portals;
+        });
+        try {
+            const admin = { username: "a", isAdmin: true, location: { map: "fields.json", position: { x: 300, y: 400 } } };
+            const reply: any = await handlePortalEditorPacket(admin, "PORTAL_EDITOR_SAVE",
+                form({ map: "town", destination: "teleport", target: { map: "fields", x: 300, y: 400 } }));
+            expect(reply.ok).toBe(true);
+            expect(written).toEqual(["town:Gate", "fields:Gate (return)"]);
+            // the list sent back is still of the map the editor is on
+            expect(reply.data.map).toBe("fields");
+            const gone: any = await handlePortalEditorPacket(admin, "PORTAL_EDITOR_SAVE", form({ map: "nowhere", name: "Other" }));
+            expect(gone.ok).toBe(false);
+            expect(written.length).toBe(2);
+        } finally {
+            setPortalWriter(null);
+        }
+    });
+});

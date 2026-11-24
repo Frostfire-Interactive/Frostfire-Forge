@@ -199,7 +199,7 @@ test("an arrival brings at most MAX_ARRIVAL_EFFECTS of one kind, and a consumabl
 
 test("an arrival brings its warp cooldown, at most a full one, and none for a bad one", () => {
   const logged = quietLog();
-  expect(state({ warpReadyIn: 2000 }).warpReadyIn).toBe(2000);
+  expect(state({ warpReadyIn: 800 }).warpReadyIn).toBe(800);
   expect(state({}).warpReadyIn).toBe(0);
   expect(logged.warned).toEqual([]);
   expect(state({ warpReadyIn: 9e9 }).warpReadyIn).toBe(warpCooldown.WARP_COOLDOWN_MS);
@@ -210,9 +210,9 @@ test("an arrival brings its warp cooldown, at most a full one, and none for a ba
 
 test("seedArrival sets the warp cooldown the arrival brought, and leaves it when none", () => {
   try {
-    seedArrival("Hop", state({ warpReadyIn: 2000 }));
-    expect(warpCooldown.warpReadyIn("Hop")).toBeGreaterThan(1500);
-    expect(warpCooldown.warpReadyIn("Hop")).toBeLessThanOrEqual(2000);
+    seedArrival("Hop", state({ warpReadyIn: 800 }));
+    expect(warpCooldown.warpReadyIn("Hop")).toBeGreaterThan(500);
+    expect(warpCooldown.warpReadyIn("Hop")).toBeLessThanOrEqual(800);
     warpCooldown.setWarpReadyIn("Hop", 0);
     seedArrival("Hop", state({ warpReadyIn: 0 }));
     expect(warpCooldown.warpReadyIn("Hop")).toBe(0);

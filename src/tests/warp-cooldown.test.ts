@@ -4,16 +4,16 @@ import { join } from "node:path";
 import { WARP_COOLDOWN_MS, WARP_NOTICE_MS, setWarpReadyIn, warpCooldownNotice, warpReadyIn, warpWait } from "../systems/warpcooldown";
 
 describe("the warp cooldown", () => {
-    test("is 3 seconds", () => {
-        expect(WARP_COOLDOWN_MS).toBe(3000);
+    test("is 1 second", () => {
+        expect(WARP_COOLDOWN_MS).toBe(1000);
     });
 
     test("counts down from when it was set, by any case of the name, and ends at 0", () => {
         try {
             setWarpReadyIn("Wanda", WARP_COOLDOWN_MS, 1000);
-            expect(warpReadyIn("wanda", 1000)).toBe(3000);
-            expect(warpReadyIn("WANDA", 2500)).toBe(1500);
-            expect(warpReadyIn("wanda", 4000)).toBe(0);
+            expect(warpReadyIn("wanda", 1000)).toBe(1000);
+            expect(warpReadyIn("WANDA", 1500)).toBe(500);
+            expect(warpReadyIn("wanda", 2000)).toBe(0);
         } finally {
             setWarpReadyIn("wanda", 0);
         }
@@ -24,7 +24,7 @@ describe("the warp cooldown", () => {
         expect(warpReadyIn("wanda", 1000)).toBe(WARP_COOLDOWN_MS);
         setWarpReadyIn("wanda", 0, 1000);
         expect(warpReadyIn("wanda", 1000)).toBe(0);
-        setWarpReadyIn("wanda", 2000, 1000);
+        setWarpReadyIn("wanda", 500, 1000);
         setWarpReadyIn("wanda", -5, 1000);
         expect(warpReadyIn("wanda", 1000)).toBe(0);
     });
@@ -39,9 +39,8 @@ describe("the warp cooldown", () => {
         try {
             expect(warpWait(p, 1000)).toEqual({ wait: false });
             setWarpReadyIn("wanda", WARP_COOLDOWN_MS, 1000);
-            expect(warpWait(p, 1000)).toEqual({ wait: true, notice: "You can warp again in 3 seconds." });
+            expect(warpWait(p, 1000)).toEqual({ wait: true, notice: "You can warp again in 1 second." });
             expect(warpWait(p, 1000 + WARP_NOTICE_MS - 1)).toEqual({ wait: true, notice: null });
-            expect(warpWait(p, 1000 + WARP_NOTICE_MS)).toEqual({ wait: true, notice: "You can warp again in 2 seconds." });
             expect(warpWait(p, 1000 + WARP_COOLDOWN_MS)).toEqual({ wait: false });
         } finally {
             setWarpReadyIn("wanda", 0);

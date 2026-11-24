@@ -38,7 +38,7 @@ import player, { clearMapCache } from "../systems/player";
 import skeletons from "../systems/skeletons";
 import { nextEntityId } from "../cluster/entityids";
 import { packetManager } from "./packet_manager";
-import { bumpStateRevision, defaultMap, despawnBatchQueue, editorEditHistory, forceStopPlayerMovement, mapPropertiesCache, maps, placePlayer, sendPacket, spawnBatchQueue, stateRevision, transitionPlayerToMap } from "./receiver";
+import { bumpStateRevision, defaultMap, despawnBatchQueue, editorEditHistory, forceStopPlayerMovement, mapPropertiesCache, maps, placePlayer, resyncNpcChunks, sendPacket, spawnBatchQueue, stateRevision, transitionPlayerToMap } from "./receiver";
 
 const NESTED = ["collision", "nopvp"] as const;
 
@@ -222,6 +222,8 @@ async function teleportPlayer(p: any, spot: PortalSpot): Promise<boolean> {
     broadcastToAOI(p, packetManager.moveXY({
         i: p.id, d: { x: Number(p.location.position.x), y: Number(p.location.position.y), dr: direction }, r: stateRevision(), s: p.isStealth ? 1 : 0,
     }), true);
+    // the NPCs round the place on this map it put them (as placePlayer does): not only after their next step
+    await resyncNpcChunks(p, p.wt);
     return true;
 }
 

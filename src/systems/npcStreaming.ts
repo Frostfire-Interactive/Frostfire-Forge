@@ -366,8 +366,9 @@ async function syncNow(player: StreamPlayer, reset: boolean, wait: boolean, run:
     if (list === DEFER) return [];
     particles = list;
   }
-  // Nothing is awaited from here: the player's state is read and written in one go.
-  if (run.gone) return [];
+  // Nothing is awaited from here: the player's state is read and written in one go. A player moved to another map
+  // meanwhile (a warp or a portal) has had that map's NPCs sent: this map's are not, and its stream is not put back.
+  if (run.gone || norm(player.location.map) !== map) return [];
   let st = streams.get(player.id);
   if (reset || !st || st.map !== map) { st = { map, chunk: "", sent: new Set() }; streams.set(player.id, st); }
   if (st.chunk === chunk) return [];

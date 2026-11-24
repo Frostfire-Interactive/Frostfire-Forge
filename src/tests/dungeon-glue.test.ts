@@ -190,11 +190,11 @@ describe("portalStep", () => {
         const { deps, calls, tick } = portalSetup([{ kind: "enter", copy: record(), paid: true }]);
         expect(await portalStep(deps, { username: "ann" }, "town", [portal], outside, inside)).toBe(true);
         calls.length = 0;
-        tick(WARP_COOLDOWN_MS - 1500);
+        tick(WARP_COOLDOWN_MS - 500);
         expect(await portalStep(deps, { username: "ann" }, "crypt~a", [portal], outside, inside)).toBe(false);
-        expect(calls).toEqual(["notify You can warp again in 2 seconds."]);
+        expect(calls).toEqual(["notify You can warp again in 1 second."]);
         calls.length = 0;
-        tick(1500);
+        tick(500);
         expect(await portalStep(deps, { username: "ann" }, "crypt~a", [portal], outside, inside)).toBe(true);
         expect(calls).toEqual(["stop", "cooldown ann", "out ann"]);
     });
@@ -204,7 +204,7 @@ describe("portalStep", () => {
         expect(await portalStep(deps, { username: "ann" }, "crypt~a", [portal], outside, inside)).toBe(true);
         calls.length = 0;
         expect(await portalStep(deps, { username: "ann" }, "town", [portal], outside, inside)).toBe(false);
-        expect(calls).toEqual(["notify You can warp again in 3 seconds."]);
+        expect(calls).toEqual(["notify You can warp again in 1 second."]);
         expect(requests).toEqual([]);
     });
 
@@ -234,7 +234,7 @@ describe("portalStep", () => {
         deps.startWarpCooldown("ann");
         calls.length = 0;
         expect(await pickSize(deps, p, { authorization: "tok", size: 10 })).toBe(false);
-        expect(calls).toEqual(["notify You can warp again in 3 seconds."]);
+        expect(calls).toEqual(["notify You can warp again in 1 second."]);
         expect(requests.length).toBe(1);
     });
 
