@@ -38,7 +38,7 @@ import player, { clearMapCache } from "../systems/player";
 import skeletons from "../systems/skeletons";
 import { nextEntityId } from "../cluster/entityids";
 import { packetManager } from "./packet_manager";
-import { bumpStateRevision, defaultMap, despawnBatchQueue, editorEditHistory, forceStopPlayerMovement, mapPropertiesCache, maps, placePlayer, resyncNpcChunks, sendPacket, spawnBatchQueue, stateRevision, transitionPlayerToMap } from "./receiver";
+import { bumpStateRevision, defaultMap, despawnBatchQueue, editorEditHistory, forceStopPlayerMovement, mapPropertiesCache, maps, placePlayer, ownedByAnotherNode, resyncNpcChunks, sendPacket, spawnBatchQueue, stateRevision, transitionPlayerToMap } from "./receiver";
 
 const NESTED = ["collision", "nopvp"] as const;
 
@@ -212,7 +212,7 @@ async function teleportPlayer(p: any, spot: PortalSpot): Promise<boolean> {
     if (!(await player.arriveAt(p.id, spot.map, { x: spot.x, y: spot.y, direction } as any))) return false;
     const at = { x: spot.x, y: spot.y, direction };
     markPortalArrival(p, Date.now());
-    if (bare(String(p.location?.map ?? "")) !== bare(spot.map)) {
+    if (bare(String(p.location?.map ?? "")) !== bare(spot.map) || ownedByAnotherNode(spot.map, spot.x, spot.y)) {
         await transitionPlayerToMap(p, spot.map, at, p.wt, spawnBatchQueue, despawnBatchQueue);
         return true;
     }

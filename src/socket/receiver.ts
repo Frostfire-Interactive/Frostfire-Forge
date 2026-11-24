@@ -2790,6 +2790,11 @@ export function isInteriorMap(mapName: string): boolean {
   return Array.isArray(properties) && properties.some((p: any) => p?.name === "interior" && p.value === true);
 }
 
+/** True when another cluster node owns this place: a move there is a handoff (transitionPlayerToMap), even on the same map. */
+export function ownedByAnotherNode(map: string, x: number, y: number): boolean {
+  return warpTarget(handoffCtx, map, x, y) !== null;
+}
+
 export async function transitionPlayerToMap(
   player: any,
   newMapName: string,
