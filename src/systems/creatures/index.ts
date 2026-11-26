@@ -104,7 +104,7 @@ function resolvePlayer(id: string): SyncPlayer | null {
     layerId: layerManager.getPlayerLayer(id),
     x: pos.x,
     y: pos.y,
-    radius: p.aoi?.aoiRadius || (AOI_CONFIG as any).DEFAULT_RADIUS || 1000,
+    radius: p.wt.data?.creatureRadius || p.aoi?.aoiRadius || (AOI_CONFIG as any).DEFAULT_RADIUS || 1000,
   };
 }
 

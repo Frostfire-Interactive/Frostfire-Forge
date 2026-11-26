@@ -25,7 +25,7 @@ test("every handler module names the labels it handles, and no label is handled 
       seen.set(label, file);
     }
   }
-  expect(seen.size).toBe(204);
+  expect(seen.size).toBe(205);
 });
 
 test("every label a module names is a case of its own switch", () => {

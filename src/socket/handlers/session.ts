@@ -9,10 +9,12 @@ import { ticketAllows } from "../ticket";
 import { gapInputOf, newerGap } from "../arrival";
 import { authWorker, authentication_queue, authentication_session_queue, loginPrefetch, pendingAuthentications, releaseDraggedBy, sendPacket } from "../receiver";
 import type { PacketContext } from "./context";
+import { creatureRadiusFor } from "../../systems/creatures/viewradius";
+import AOI_CONFIG from "../../config/aoi.json";
 
 // Packet handlers moved from receiver.ts's packetReceiver switch (phase 6, Task 1). The case bodies are unchanged.
 
-export const handles: ReadonlySet<string> = new Set(["BENCHMARK", "PING", "PONG", "LOGIN", "AUTH", "LOGOUT", "DISCONNECT", "CLIENTCONFIG"]);
+export const handles: ReadonlySet<string> = new Set(["BENCHMARK", "PING", "PONG", "LOGIN", "AUTH", "LOGOUT", "DISCONNECT", "CLIENTCONFIG", "VIEW_SIZE"]);
 
 export async function handle(ctx: PacketContext): Promise<unknown> {
   const { currentPlayer, data, parsedMessage, type, wt } = ctx;
@@ -141,6 +143,14 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
       case "CLIENTCONFIG": {
         if (!currentPlayer) return;
         await player.setConfig(wt.data.id, data);
+        break;
+      }
+
+      // The client's view, in world pixels: creatures are sent far enough out to cover it. Kept on the connection, as
+      // each connection (a handoff's too) sends it after its login.
+      case "VIEW_SIZE": {
+        if (!wt?.data) return;
+        wt.data.creatureRadius = creatureRadiusFor(data, AOI_CONFIG.DEFAULT_RADIUS) ?? undefined;
         break;
       }
   }
