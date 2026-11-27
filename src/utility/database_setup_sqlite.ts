@@ -1449,6 +1449,19 @@ const addCharacterKeys = async () => {
   await query("CREATE INDEX IF NOT EXISTS idx_mail_recipient_id ON mail (recipient_id)");
   await query("CREATE INDEX IF NOT EXISTS idx_parties_leader_id ON parties (leader_id)");
   await createDungeonTables();
+  await createGameSettingsTable();
+};
+
+const createGameSettingsTable = async () => {
+  log.info("Creating game_settings table...");
+  await query(`
+    CREATE TABLE IF NOT EXISTS game_settings (
+      setting_key TEXT NOT NULL PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_by TEXT NULL,
+      updated_at INTEGER NOT NULL
+    )
+  `);
 };
 
 export const setupDatabase = async () => {

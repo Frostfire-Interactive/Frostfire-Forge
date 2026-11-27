@@ -10,7 +10,9 @@ import { packetTypes } from "./types.ts";
 import packetReceiver, { despawnBatchQueue, clearBatchQueuesForPlayer, clearPlayerTarget, sendAnimationTo, spriteDataCacheReady, teleportPlayerWrapper, removePlayerFromCleanupMaps, removeFromAuthenticationQueues, releaseDraggedBy, startArea, forceStopPlayerMovement, handoffRecheck, sendPacket, loginPrefetch } from "./receiver.ts";
 import eventEmitter from "node:events";
 import { listener } from "../modules/event_bus.ts";
-import { Events, setPlayerPvp } from "../systems/events";
+import { Events, setPlayerCombat } from "../systems/events";
+import { pvpFlagExpired, regenTo } from "../systems/regen";
+import { setting } from "../systems/gamesettings/store";
 const event = new eventEmitter();
 import log from "../modules/logger.ts";
 import player, { ensureAmbienceColumn, ensureLoginColumns, SESSION_HEARTBEAT_MS } from "../systems/player.ts";
@@ -23,6 +25,7 @@ import { ensureFootprintsSchema } from "../systems/footprints";
 import { changedOf, clearChanged, ensureAchievementSchema, forgetRows, markChanged } from "../systems/achievements/store.ts";
 import { ensureBuyPriceColumn, ensureHomeItemIcon, ensureSoulboundColumn, ensureSpriteSheetColumn } from "../systems/items.ts";
 import { ensureMountEditorPermission } from "../systems/mounteditor.ts";
+import { ensureGameSettingsPermission } from "../systems/gamesettingseditor.ts";
 import { ensureCutsceneEditorPermission, ensureCutsceneSchema } from "../systems/cutscenes.ts";
 import * as cutscenePlayer from "../systems/cutsceneplayer.ts";
 import worlds from "../systems/worlds.ts";
@@ -76,7 +79,7 @@ import * as settings from "../config/settings.json";
 import assetCache from "../services/assetCache.ts";
 import dots, { setRemoteDotCaster } from "../systems/dots.ts";
 import spellEffects, { getStunsForPlayer, getSlowsForPlayer } from "../systems/spelleffects.ts";
-import { forgetSickness } from "../systems/resurrection.ts";
+import { forgetSickness, sicknessGivenOf } from "../systems/resurrection.ts";
 import { saveLeavingEffects, saveLeavingState } from "./leavesave.ts";
 import effectManager from "../services/effectmanager";
 import { GatewayClient, resolveUseSSL } from "../modules/gateway-client.ts";
@@ -210,6 +213,7 @@ await ensureBuyPriceColumn();
 await ensureSpriteSheetColumn();
 // The mount editor's permission, so it can be granted from the list of permissions.
 await ensureMountEditorPermission();
+await ensureGameSettingsPermission();
 await ensureCutsceneSchema();
 await ensureCutsceneEditorPermission();
 // The home item's icon, when it has none: before the items are read.
@@ -694,9 +698,11 @@ function handoffState(p: any): {
   cooldowns: Record<string, number>;
   lockoutMs: number;
   sickUntil: number;
+  /** What the sickness was given with, so the new node does not apply the settings as they are now. */
+  sickGiven?: { durationMs: number; healthMult: number; statMult: number };
   deadState: 0 | 1 | 2;
   corpse: any | null;
-  pvp: boolean;
+  combat: boolean;
   lastAttackAgoMs: number | null;
   mounted: boolean;
   mount_type: string | null;
@@ -731,9 +737,10 @@ function handoffState(p: any): {
     cooldowns,
     lockoutMs: lockout > now ? Math.round(lockout - now) : 0,
     sickUntil: Number(p.resurrectionSickUntil) || 0,
+    sickGiven: Number(p.resurrectionSickUntil) > Date.now() ? sicknessGivenOf(p) : undefined,
     deadState: p.isGhost ? 2 : p.isDead ? 1 : 0,
     corpse: p.corpse ?? null,
-    pvp: !!p.pvp,
+    combat: !!p.combat,
     lastAttackAgoMs: typeof p.last_attack === "number" ? Math.max(0, Math.round(now - p.last_attack)) : null,
     mounted: !!p.mounted,
     mount_type: p.mount_type ?? null,
@@ -1347,8 +1354,8 @@ listener.on(Events.SERVER_TICK, async () => {
       rawLA > 0 ? (PROCESS_STARTED_AT + rawLA) :
       0;
 
-    if (lastAttackEpoch && (nowEpoch - lastAttackEpoch) > 5000 && !playerData.isVanished) {
-      setPlayerPvp(playerData, false);
+    if (lastAttackEpoch && pvpFlagExpired(nowEpoch - lastAttackEpoch) && !playerData.isVanished) {
+      setPlayerCombat(playerData, false);
     }
 
     const { stats } = playerData;
@@ -1362,16 +1369,18 @@ listener.on(Events.SERVER_TICK, async () => {
 
     let updated = false;
 
-    if (stats.stamina < stats.total_max_stamina) {
-      stats.stamina += Math.max(1, Math.floor(stats.total_max_stamina * 0.05));
-      if (stats.stamina > stats.total_max_stamina) stats.stamina = stats.total_max_stamina;
+    const stamina = regenTo(stats.stamina, stats.total_max_stamina, setting("staminaRegenPercent"));
+    if (stamina !== stats.stamina) {
+      stats.stamina = stamina;
       updated = true;
     }
 
-    if (!playerData.pvp && stats.health < stats.total_max_health) {
-      stats.health += Math.max(1, Math.floor(stats.total_max_health * 0.01));
-      if (stats.health > stats.total_max_health) stats.health = stats.total_max_health;
-      updated = true;
+    if (!playerData.combat) {
+      const health = regenTo(stats.health, stats.total_max_health, setting("healthRegenPercent"));
+      if (health !== stats.health) {
+        stats.health = health;
+        updated = true;
+      }
     }
 
     if (!updated) continue;

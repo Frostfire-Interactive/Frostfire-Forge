@@ -19,7 +19,7 @@ const caseOf = (name: string) => cut(receiver, `case "${name}": {`, /\n {8}break
 const withNames = (names: string[], code: string): ((given: Record<string, any>) => any) =>
   new Function(`"use strict";\n${transpiler.transformSync(`function make({ ${names.join(", ")} }: any) { ${code} }`)}\nreturn make;`)();
 
-const KINDS = ["creature", "item", "mount", "cutscene", "spell", "weather", "class", "dungeon", "quest"];
+const KINDS = ["creature", "item", "mount", "gamesettings", "cutscene", "spell", "weather", "class", "dungeon", "quest"];
 
 function world() {
   const sent: Record<string, any[]> = { saver: [], builder: [], viewer: [], player: [], closed: [] };
@@ -35,6 +35,7 @@ function world() {
   const editor = { canUseEditor: may, mayHaveEditorOpen: may };
   const packetManager: Record<string, (data: any) => any> = {};
   for (const kind of [...KINDS, "mailbox"]) packetManager[`${kind}EditorUpdated`] = (data: any) => ({ [kind]: data.by });
+  packetManager.gameSettingsEditorUpdated = (data: any) => ({ gamesettings: data.by });
   return {
     sent,
     playerCache: { list: () => players, get: (id: string) => players[id] },
@@ -42,7 +43,7 @@ function world() {
     sendMailboxes: async (wt: any, map: string) => { sent[wt.id].push({ mailboxes: map }); },
     packetManager,
     creatures: { editorViewerIds: () => ["saver", "viewer", "nobody"] },
-    itemEditor: editor, mountEditor: editor, cutsceneEditor: editor, spellEditor: editor,
+    itemEditor: editor, mountEditor: editor, gameSettingsEditor: editor, cutsceneEditor: editor, spellEditor: editor,
     weatherEditor: editor, classEditor: editor, questEditor: editor, mailboxEditor: editor,
   };
 }
@@ -56,7 +57,7 @@ describe("the other open editors here", () => {
   });
 
   test("are told, but not the saver's, those who may not use it, nor one whose connection closed", () => {
-    for (const kind of ["item", "mount", "cutscene", "spell", "weather", "class", "quest"]) {
+    for (const kind of ["item", "mount", "gamesettings", "cutscene", "spell", "weather", "class", "quest"]) {
       const here = world();
       make(here).editorsUpdatedHere(kind, "boss", "saver");
       expect(here.sent).toEqual({ saver: [], builder: [{ [kind]: "boss" }], viewer: [{ [kind]: "boss" }], player: [], closed: kind === "quest" ? [] : [{ [kind]: "boss" }] });
@@ -101,6 +102,7 @@ describe("news from another node", () => {
       editorNudges: Object.fromEntries(KINDS.map((kind) => [kind, {}])),
       editorsUpdatedHere: (...args: any[]) => done.push(["editors", ...args]),
       mailboxesChangedHere: async (...args: any[]) => { done.push(["mailboxes", ...args]); },
+      readAgain: async () => { done.push(["read again"]); await Bun.sleep(1); done.push(["read"]); },
     };
     withNames(Object.keys(given), cut(receiver, `onPeerNews("editor-updated",`, /\n}\);\r?\n/) + "\n});")(given);
     withNames(Object.keys(given), cut(receiver, `onPeerNews("mailboxes",`, /\n}\);\r?\n/) + "\n});")(given);
@@ -114,6 +116,12 @@ describe("news from another node", () => {
     await news.mailboxes({ map: "m", by: "boss" });
     await news.mailboxes({ map: "n" });
     expect(done).toEqual([["editors", "item", "boss"], ["editors", "quest", ""], ["mailboxes", "m", "boss"], ["mailboxes", "n", ""]]);
+  });
+
+  test("of the game settings editor reads the settings again here before the open editors are told", async () => {
+    const { news, done } = heard();
+    await news["editor-updated"]({ kind: "gamesettings", by: "boss" });
+    expect(done).toEqual([["read again"], ["read"], ["editors", "gamesettings", "boss"]]);
   });
 
   test("of an editor there is not, or of no map, is not", async () => {

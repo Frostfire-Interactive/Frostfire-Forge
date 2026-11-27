@@ -3,7 +3,7 @@ import { registerSpellEffect, registerEffectsPayloadProvider, consumeBarrier, br
 import { packetManager } from "../socket/packet_manager";
 import { getSpriteUrl } from "../modules/spriteSheetManager";
 import { listener } from "../modules/event_bus";
-import { Events, setPlayerPvp } from "./events";
+import { Events, setPlayerCombat } from "./events";
 import log from "../modules/logger";
 import { withPeriodicBonus } from "./spellmath";
 import { broadcastToAOIBestEffort } from "../socket/aoi";
@@ -204,14 +204,14 @@ async function tickPlayerDot(targetKey: string, dot: DotInstance): Promise<boole
   listener.emit(Events.PLAYER_DAMAGED, { attacker: caster || null, target, damage, isCrit: false });
 
   if (caster && caster.id !== target.id) {
-    setPlayerPvp(target, true);
+    setPlayerCombat(target, true);
     target.last_attack = performance.now();
-    setPlayerPvp(caster, true);
+    setPlayerCombat(caster, true);
     caster.last_attack = performance.now();
   }
   const remote = !caster && dot.casterId && dot.casterId !== String(target.id) ? remoteCaster : null;
   if (remote) {
-    setPlayerPvp(target, true);
+    setPlayerCombat(target, true);
     target.last_attack = performance.now();
     remote.credit(dot, target, target.stats.health <= 0);
   }

@@ -57,7 +57,7 @@ mock.module("../services/assetCache", () => ({
 const { TradeSettle, tradeSettle, settleKey, settleForAdmin, settleStoreAttached, settlingNotice, loginMarkRead, UNCHECKED_SETTLE, STALE_AFTER_SETTLE } = await import("../cluster/tradesettle");
 const { refreshPlayer, setLoginGate, clearCaches } = await import("../services/datacache");
 const { atomically } = await import("../services/batch");
-const { default: trades, ACCEPT_DELAY_MS, swapStart } = await import("../systems/trades");
+const { default: trades, acceptDelayMs, swapStart } = await import("../systems/trades");
 const editor = await import("../systems/playereditor");
 const { default: permissions } = await import("../systems/permissions");
 const { default: player } = await import("../systems/player");
@@ -612,7 +612,7 @@ test("a swap sends its transaction as before between two players here, and with 
   inventoryRows.tradehero = [{ id: 1, username: "tradehero", item: "Iron Ore", quantity: 5, equipped: 0, slot: 0, bag_slot: 0 }];
   const online = new Map<string, any>();
   const person = (username: string, over: Record<string, unknown> = {}) => {
-    const made = { id: `id-${username}`, username, isGuest: false, isDead: false, isGhost: false, pvp: false, location: { map: "overworld", position: { x: 100, y: 100 } }, ...over };
+    const made = { id: `id-${username}`, username, isGuest: false, isDead: false, isGhost: false, combat: false, location: { map: "overworld", position: { x: 100, y: 100 } }, ...over };
     online.set(username, made);
     return made;
   };
@@ -624,7 +624,7 @@ test("a swap sends its transaction as before between two players here, and with 
     if (typeof trade === "string") throw new Error(trade);
     const offered = await trades.offer("tradehero", { items: [{ name: "Iron Ore", quantity: 1 }], coins: { gold: 0, silver: 0, copper: 0 } });
     expect(offered.ok).toBe(true);
-    const at = Date.now() + ACCEPT_DELAY_MS;
+    const at = Date.now() + acceptDelayMs();
     await trades.accept("tradehero", find, at);
     transactionCalls.length = 0;
     const before = Date.now();

@@ -16,7 +16,7 @@ import "../systems/mapcreate";
 import { getAuthPool } from "./authentication_pool.ts";
 import { LoginPrefetch } from "./loginprefetch.ts";
 import { listener } from "../modules/event_bus";
-import { Events, setPlayerPvp } from "../systems/events";
+import { Events, setPlayerCombat } from "../systems/events";
 import { afterTickFlush, batchVolume, collectGroupReceivers, collectReceiverEntries, encodeBatch, farUpdateEvery, indexMovers, MovementVolume, NEAR_TIER_DISTANCE, type EntryTally, MoverSnapshot, ReceiverDiff, ReceiverInfo } from "./movement_batch.ts";
 import * as aoiReverse from "../services/aoiReverseIndex";
 import { queueLayerWorkerFlush, postToAllWorkers, setOnWorkerRetired } from "./movement_worker_pool.ts";
@@ -881,7 +881,7 @@ export async function vendorFor(wt: any, shopper: any, npcId: unknown): Promise<
 }
 
 export async function chatLinksOf(text: string): Promise<{ message: string; links: ChatLink[] }> {
-  if (typeof text !== "string" || text.length > MAX_CHAT_LENGTH || !text.includes("[")) return { message: text, links: [] };
+  if (typeof text !== "string" || text.length > maxChatLength() || !text.includes("[")) return { message: text, links: [] };
   const items = ((await assetCache.get("items")) || []) as Item[];
   const links = await findChatLinks(text, items, achievementDefinitions, MAX_ITEM_LINKS, getIconUrl);
   return { message: canonicalLinks(text, links), links };
@@ -1206,7 +1206,7 @@ export async function castFish(caster: any, data: unknown): Promise<void> {
   if ((live.casting || caster.casting) && !castingFish(live)) return;
   if (live.isDead || live.isGhost) return;
   if (spellEffects.isStunned(live)) return refuse("You can't fish while stunned.");
-  if (live.pvp || creatures.combat.isInCombatWith(live.id)) return refuse("You can't fish while in combat.");
+  if (live.combat || creatures.combat.isInCombatWith(live.id)) return refuse("You can't fish while in combat.");
   const pos = live.location?.position;
   const map = String(live.location?.map ?? "");
   if (!pos || !map) return;
@@ -1433,7 +1433,7 @@ export async function mayUseMail(wt: any, who: any): Promise<boolean> {
 
 /** Sends a player their mail: this opens their mail window, or brings it up to date. */
 export async function sendMailbox(wt: any, who: any): Promise<void> {
-  sendPacket(wt, packetManager.mailInbox({ mail: await mail.inbox(who.username), postage: POSTAGE_COPPER, itemsMax: MAIL_ITEMS_MAX, subjectMax: SUBJECT_MAX, bodyMax: BODY_MAX }));
+  sendPacket(wt, packetManager.mailInbox({ mail: await mail.inbox(who.username), postage: postageCopper(), itemsMax: mailItemsMax(), subjectMax: subjectMax(), bodyMax: bodyMax() }));
   await sendMailNotice(who);
 }
 
@@ -1515,16 +1515,13 @@ function questDefsForEntries(active: QuestLogEntry[], completed: number[]): Ques
   return defs;
 }
 
-export const MAX_CHAT_LENGTH = 500;
-/** The longest command line read: a command is a name and a few arguments, or a chat line sent through /party, /guild or /whisper. */
-export const MAX_COMMAND_LENGTH = MAX_CHAT_LENGTH + 100;
 /** One RSA-4096 block is 512 bytes; this leaves room and no more. */
 const MAX_CIPHERTEXT_BYTES = 1024;
 
 export function chatRateOk(wt: any): boolean {
   const now = Date.now();
-  const recent = (chatRateLimit.get(wt.data.id) || []).filter((t: number) => now - t < CHAT_RATE_WINDOW);
-  if (recent.length >= CHAT_RATE_MAX) {
+  const recent = (chatRateLimit.get(wt.data.id) || []).filter((t: number) => now - t < chatRateWindow());
+  if (recent.length >= chatRateMax()) {
     chatRateLimit.set(wt.data.id, recent);
     sendPacket(wt, packetManager.notify({ message: "You are sending messages too fast." }));
     return false;
@@ -1537,8 +1534,8 @@ export function chatRateOk(wt: any): boolean {
 /** A party, guild or whisper line: within the chat cap and the rate limit. When not, the player is told. */
 export function channelLineOk(wt: any, message: unknown): message is string {
   if (typeof message !== "string" || !message) return false;
-  if (message.length > MAX_CHAT_LENGTH) {
-    sendPacket(wt, packetManager.notify({ message: `Message too long (max ${MAX_CHAT_LENGTH} characters).` }));
+  if (chatTooLong(message)) {
+    sendPacket(wt, packetManager.notify({ message: `Message too long (max ${maxChatLength()} characters).` }));
     return false;
   }
   return chatRateOk(wt);
@@ -1550,8 +1547,6 @@ export function isCiphertext(value: unknown): boolean {
   const bytes = Object.values(value as Record<string, unknown>);
   return bytes.length > 0 && bytes.length <= MAX_CIPHERTEXT_BYTES && bytes.every((b) => Number.isInteger(b) && (b as number) >= 0 && (b as number) <= 255);
 }
-export const CHAT_RATE_MAX = 5;
-export const CHAT_RATE_WINDOW = 3000;
 export const activeEditorsByMap = new Map<string, Set<number>>();
 
 // Track unsaved tile edits per map for syncing to new editors
@@ -1594,7 +1589,9 @@ import consumables, { CONSUMABLE_COOLDOWN_MS } from "../systems/consumables";
 // Keeps the startup load order: the handler modules, which import these, load at the first packet.
 import "../systems/cooldowns";
 import { mapMarkers } from "../systems/mapmarkers";
-import mail, { atMailbox, mailboxesOn, BODY_MAX, MAIL_ITEMS_MAX, POSTAGE_COPPER, SUBJECT_MAX, type Mailbox } from "../systems/mail";
+import mail, { atMailbox, mailboxesOn, bodyMax, mailItemsMax, postageCopper, subjectMax, type Mailbox } from "../systems/mail";
+import { chatRateMax, chatRateWindow, chatTooLong, maxChatLength, maxCommandLength } from "../systems/chatlimits";
+export { chatRateMax, chatRateWindow, maxChatLength, maxCommandLength };
 import homes, { HOME_CAST_MS, HOME_COOLDOWN_MS } from "../systems/homes";
 import { audience as chatAudience } from "../systems/chatgate";
 import { canonicalLinks, findChatLinks, MAX_ITEM_LINKS, type ChatLink } from "../systems/itemlinks";
@@ -1715,6 +1712,7 @@ import type { EffectResult } from "../cluster/effects";
 // Keeps the startup load order: the handler modules, which import these, load at the first packet.
 import "../cluster/aoievent";
 import { playerGhostKind } from "../cluster/kinds/players";
+import { withShownStats } from "../systems/xpshown";
 export const defaultMap = (settings as any).default_map?.replace(".json", "") || "main";
 /** The largest frame the server takes (webtransport.maxPayloadMB), and whether it is a benchmark server, which takes it from anyone. */
 const MAX_FRAME_BYTES = 1024 * 1024 * ((settings as any)?.webtransport?.maxPayloadMB || 1);
@@ -2594,7 +2592,7 @@ async function flushOneSpawnBatch(
     const playerJsonParts = playersWithSprites.map((spawnData) => {
       let json = spawnJsonCache.get(spawnData.id);
       if (json === undefined) {
-        json = JSON.stringify(spawnData);
+        json = JSON.stringify(withShownStats(spawnData));
         spawnJsonCache.set(spawnData.id, json);
       }
       return json;
@@ -3549,7 +3547,7 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
     if (arrivalState) seedArrival(playerData.username, arrivalState);
     const fields = arrivalState
       ? arrivalFields(arrivalState)
-      : { pvp: false, last_attack: null as number | null, mounted: false, mount_type: null as string | null };
+      : { combat: false, last_attack: null as number | null, mounted: false, mount_type: null as string | null };
     // The mount is checked here as the MOUNT packet checks it: owned, alive, not inside a building.
     const mount = arrivalState
       ? arrivalMount(fields, limitedCollectables, loginDeadState, isInteriorMap(spawnLocation.map))
@@ -3582,7 +3580,7 @@ async function completeLogin(result: any, arriving: ArrivingLogin): Promise<void
       attackDelay: 0,
       lastMovementPacket: null,
       permissions: typeof playerData.permissions === "string" ? (playerData.permissions as string).split(",") : playerData.permissions || [],
-      pvp: fields.pvp,
+      combat: fields.combat,
       last_attack: fields.last_attack,
       invitations: [],
       party_id: playerData.party_id ? Number(playerData.party_id) : null,
@@ -4648,8 +4646,8 @@ function restoreWalkingFacing(caster: any): boolean {
   return true;
 }
 
-export async function blockEquipmentChangeWhilePvp(wt: any, currentPlayer: any, slot: unknown): Promise<boolean> {
-  if (!currentPlayer?.pvp || !slot) return false;
+export async function blockEquipmentChangeWhileInCombat(wt: any, currentPlayer: any, slot: unknown): Promise<boolean> {
+  if (!currentPlayer?.combat || !slot) return false;
   sendPacket(wt, packetManager.notify({ message: "You can't change equipment while in combat." }));
   sendPacket(wt, packetManager.equipment(currentPlayer.equipment));
   sendPacket(wt, packetManager.inventory(currentPlayer.inventory, await getInventorySlots(currentPlayer)));
@@ -5340,7 +5338,7 @@ export function remoteHit(caster: any, spell: any, damage: number, isCrit: boole
 export async function hitRemotePlayer(caster: any, target: any, hit: PlayerHit): Promise<boolean> {
   const result = await sendPlayerHit(target, hit);
   if (!result || (result.outcome !== "applied" && result.outcome !== "killed")) return false;
-  if (hit.harmful && !hit.casterParty.includes(target.username)) setPlayerPvp(caster, true);
+  if (hit.harmful && !hit.casterParty.includes(target.username)) setPlayerCombat(caster, true);
   caster.last_attack = performance.now();
   if (hit.showsDamage && result.stats) {
     const packets = packetManager.updateStats({ id: caster.id, target: target.id, stats: result.stats, isCrit: hit.isCrit, damage: hit.damage, absorb: result.absorb || 0 });
@@ -5400,7 +5398,7 @@ async function applyRemotePlayerHit(targetId: string, hit: PlayerHit, caster: an
     broadcastStatsUpdateToAOI(target, caster, packetManager.updateStats({ id: caster.id, target: target.id, stats: target.stats, isCrit: hit.isCrit, damage, absorb: effectResult.absorb || 0 }));
   }
   sendStatsToPartyMembers(target.username, target.id, target.stats);
-  if (hit.harmful && !hit.casterParty.includes(target.username)) setPlayerPvp(target, true);
+  if (hit.harmful && !hit.casterParty.includes(target.username)) setPlayerCombat(target, true);
   target.last_attack = performance.now();
   if (damage > 0 && target.isVanished) {
     const vanishId = spellEffects.getVanishedEffectId(target);

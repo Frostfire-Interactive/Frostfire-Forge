@@ -3,9 +3,10 @@ import { listener } from "../modules/event_bus";
 import { Events } from "./events";
 import { nextEntityId } from "../cluster/entityids";
 import { bareMap, RemoteObjects } from "../cluster/mirrors";
+import { setting } from "./gamesettings/store";
 
-const PICKUP_RADIUS = 100;
-const DESPAWN_MINUTES = 30;
+const pickupRadius = (): number => setting("lootPickupRadius");
+const despawnMs = (): number => setting("groundLootDespawnMinutes") * 60 * 1000;
 
 export interface LootItem {
   id: string;
@@ -65,13 +66,13 @@ const loot = {
       y: player.location.position.y,
       ownerId: owner ?? "",
       ownerName: owner === null ? "" : owner || "Unknown",
-      expiresAt: Date.now() + DESPAWN_MINUTES * 60 * 1000,
+      expiresAt: Date.now() + despawnMs(),
     };
     lootItems.set(id, lootItem);
 
     const timer = setTimeout(() => {
       loot.despawn(id);
-    }, DESPAWN_MINUTES * 60 * 1000);
+    }, despawnMs());
     despawnTimers.set(id, timer);
 
     log.debug(`Loot spawned: ${itemName} x${quantity} for player ${player.id}`);
@@ -125,7 +126,7 @@ const loot = {
     const known = remoteLoot.delete(item.id) !== undefined;
     const record: LootItem = { ...item };
     lootItems.set(record.id, record);
-    const left = Math.min(DESPAWN_MINUTES * 60 * 1000, Math.max(0, record.expiresAt - now));
+    const left = Math.min(despawnMs(), Math.max(0, record.expiresAt - now));
     despawnTimers.set(record.id, setTimeout(() => { loot.despawn(record.id); }, left));
     return known ? "mirror" : "new";
   },
@@ -140,7 +141,7 @@ const loot = {
     const dx = player.location.position.x - lootItem.x;
     const dy = player.location.position.y - lootItem.y;
     const dist = Math.sqrt(dx * dx + dy * dy);
-    if (dist > PICKUP_RADIUS) return { success: false, message: "You are too far away." };
+    if (dist > pickupRadius()) return { success: false, message: "You are too far away." };
 
     const timer = despawnTimers.get(lootId);
     if (timer) clearTimeout(timer);
@@ -160,7 +161,7 @@ const loot = {
       if (lootItem.map !== player.location.map) continue;
       const dx = player.location.position.x - lootItem.x;
       const dy = player.location.position.y - lootItem.y;
-      if (Math.sqrt(dx * dx + dy * dy) > PICKUP_RADIUS) continue;
+      if (Math.sqrt(dx * dx + dy * dy) > pickupRadius()) continue;
 
       const timer = despawnTimers.get(id);
       if (timer) clearTimeout(timer);
@@ -217,7 +218,9 @@ const loot = {
     return result;
   },
 
-  PICKUP_RADIUS,
+  get PICKUP_RADIUS(): number {
+    return pickupRadius();
+  },
 };
 
 export default loot;

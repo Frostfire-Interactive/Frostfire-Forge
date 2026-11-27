@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { castTimeCoefficient, levelRoll, periodicBonusPerTick, rollHeal, spellManaCost, withPeriodicBonus, HEAL_CRIT_MULTIPLIER } from "../systems/spellmath";
+import { castTimeCoefficient, levelRoll, periodicBonusPerTick, rollHeal, spellManaCost, withPeriodicBonus, healCritMultiplier } from "../systems/spellmath";
 
 /** An rng that returns the given values in order, then repeats the last. */
 const seq = (...values: number[]) => {
@@ -43,7 +43,7 @@ describe("heals", () => {
 
   test("crits restore 150%", () => {
     const heal = rollHeal(-20, { level: 1, stat_damage: 0, stat_critical_chance: 50 }, 2, seq(0, 0.1));
-    expect(heal).toEqual({ amount: Math.floor(20 * HEAL_CRIT_MULTIPLIER), isCrit: true });
+    expect(heal).toEqual({ amount: Math.floor(20 * healCritMultiplier()), isCrit: true });
   });
 
   test("never negative, even with a negative stat", () => {

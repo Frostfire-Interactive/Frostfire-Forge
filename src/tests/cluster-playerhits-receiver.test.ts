@@ -23,7 +23,7 @@ const { broadcastStatsUpdateToAOI, broadcastToAOIBestEffort, findPlayersWithTarg
 const { mirrorPlayers, mirrorsNearPoint, playerLayer } = await import("../cluster/mirrors");
 const { refusalOf } = await import("../cluster/playerhits");
 const { recordAttack, isRecentAttacker, resetAttacks } = await import("../cluster/attackers");
-const { Events, setPlayerPvp } = await import("../systems/events");
+const { Events, setPlayerCombat } = await import("../systems/events");
 
 type Row = Record<string, any>;
 const source = receiverSource();
@@ -39,7 +39,7 @@ function helperCode(): string {
 
 const NAMES = [
   "filterPlayersByDistance", "playerCache", "layerManager", "mirrorPlayers", "mirrorsNearPoint", "playerLayer", "parsePos",
-  "sendPlayerHit", "setPlayerPvp", "broadcastStatsUpdateToAOI", "findPlayersWithTargetInAOI", "sendPacketBestEffort",
+  "sendPlayerHit", "setPlayerCombat", "broadcastStatsUpdateToAOI", "findPlayersWithTargetInAOI", "sendPacketBestEffort",
   "packetManager", "listener", "Events", "player", "PVP_BODY", "areaSpellHarms", "refusalOf", "spellEffects",
   "handlePlayerDeath", "recordAttack", "sendStatsToPartyMembers", "cancelEffect",
 ];
@@ -96,7 +96,7 @@ const helpers = () => compiled({
     ownerSees?.(hit);
     return ownerAnswer;
   },
-  setPlayerPvp,
+  setPlayerCombat,
   broadcastStatsUpdateToAOI,
   findPlayersWithTargetInAOI,
   sendPacketBestEffort,
@@ -171,7 +171,7 @@ test("the owner applies damage through the barrier, flags and records the attack
   expect(answer.outcome).toBe("applied");
   expect(target.stats.health).toBe(43);
   expect(answer.stats.health).toBe(43);
-  expect(target.pvp).toBe(true);
+  expect(target.combat).toBe(true);
   expect(typeof target.last_attack).toBe("number");
   expect(isRecentAttacker("t1", "c1")).toBe(true);
   expect(eventsOf(Events.PLAYER_DAMAGED)).toHaveLength(1);
@@ -185,7 +185,7 @@ test("the owner applies a heal up to the maximum and records no attack", async (
   expect(answer.outcome).toBe("applied");
   expect(target.stats.health).toBe(100);
   expect(eventsOf(Events.PLAYER_HEALED)).toHaveLength(1);
-  expect(target.pvp).toBeUndefined();
+  expect(target.combat).toBeUndefined();
   expect(isRecentAttacker("t1", "c1")).toBe(false);
 });
 
@@ -229,7 +229,7 @@ test("a refused hit changes nothing and emits nothing: dead, in a no-PvP area, o
   expect(answer).toEqual({ outcome: "missing", reason: "missing" });
 
   expect(target.stats.health).toBe(50);
-  expect(target.pvp).toBeUndefined();
+  expect(target.combat).toBeUndefined();
   expect(emitted).toEqual([]);
   expect(deaths).toHaveLength(0);
   expect(isRecentAttacker("t1", "c1")).toBe(false);
@@ -257,10 +257,10 @@ test("a hit that landed flags the caster, stamps its last attack and never write
   const before = JSON.stringify(mirror);
   ownerAnswer = { outcome: "applied", stats: { health: 38 }, absorb: 0 };
   expect(await helpers().hitRemotePlayer(caster, mirror, hitOf())).toBe(true);
-  expect(caster.pvp).toBe(true);
+  expect(caster.combat).toBe(true);
   expect(typeof caster.last_attack).toBe("number");
   expect(JSON.stringify(mirror)).toBe(before);
-  expect(mirror.pvp).toBeUndefined();
+  expect(mirror.combat).toBeUndefined();
   expect(mirror.last_attack).toBeUndefined();
 });
 
@@ -281,7 +281,7 @@ test("a hit that did not land (refused, missing, no answer) leaves the caster un
     ownerAnswer = answer;
     expect(await helpers().hitRemotePlayer(caster, mirror, hitOf())).toBe(false);
   }
-  expect(caster.pvp).toBeUndefined();
+  expect(caster.combat).toBeUndefined();
   expect(caster.last_attack).toBeUndefined();
   expect(emitted).toEqual([]);
   expect(caster.wt.sent).toEqual([]);
@@ -292,7 +292,7 @@ test("a hit on a party member does not flag the caster", async () => {
   mirror.username = "Friend";
   ownerAnswer = { outcome: "applied", stats: { health: 38 } };
   await helpers().hitRemotePlayer(caster, mirror, hitOf({ casterParty: ["Friend"] }));
-  expect(caster.pvp).toBeUndefined();
+  expect(caster.combat).toBeUndefined();
 });
 
 test("remoteHit takes the caster's place, party and layer", () => {
@@ -398,10 +398,10 @@ test("a dodged damage spell is still a harmful hit on a mirrored target", () => 
   expect(main).toContain("harmful: spell_damage > 0 || spellIsHostileEffect");
 });
 
-test("a single-target cast whose hit did not land ends before the PvP flag, the cast event and the splash", () => {
+test("a single-target cast whose hit did not land ends before the combat flag, the cast event and the splash", () => {
   const at = source.indexOf("if (!remoteLanded) break;");
   expect(at).toBeGreaterThan(0);
   const after = source.slice(at, at + 400);
-  expect(after).toContain("// Is not in the targets party and is not self, then set PvP flag on both");
+  expect(after).toContain("// Is not in the targets party and is not self, then set combat flag on both");
   expect(source.indexOf("remoteLanded = await hitRemotePlayer(")).toBeGreaterThan(0);
 });

@@ -17,7 +17,7 @@ const NAMES = [
   "spawnBatchQueue", "requeueSpawnBatch", "SPAWN_BACKPRESSURE_THRESHOLD",
   "spawnsPerFlush", "spriteDataCache", "animationDataCache", "SPRITE_CACHE_MAX", "setBounded", "entityById", "getAnimationNameForDirection",
   "getPlayerSpriteSheetData", "getMountSpriteUrl", "getAnimationData", "sendPacket", "sendPacketQueued", "packetManager", "globalStateRevision",
-  "forgetLook", "noteLook", "lookSignature",
+  "forgetLook", "noteLook", "lookSignature", "withShownStats",
 ];
 const make = new Function(`"use strict";
 ${transpiler.transformSync(
@@ -89,6 +89,8 @@ function world(queue: Record<string, string[]>, opts: {
     },
     // The real record of sheets (socket/looks.ts): what the flush records is asserted below.
     forgetLook, noteLook, lookSignature,
+    // The XP bar shown at the level cap (systems/xpshown.ts); no player here is at one.
+    withShownStats: (data: any) => data,
     getAnimationData: async (_name: string, id: string) => {
       const body = opts.bodyOf && id in opts.bodyOf ? opts.bodyOf[id] : "body";
       return body === null ? null : { id, bodySprite: sheetOf(body), headSprite: sheetOf("head"), animationState: "walk_down" };

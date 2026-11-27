@@ -1,6 +1,6 @@
 import { expect, mock, test } from "bun:test";
 import { deedsOf } from "../systems/achievements/criteria";
-import { Events, listener, setPlayerPvp } from "../systems/events";
+import { Events, listener, setPlayerCombat } from "../systems/events";
 import { databaseModule, mockQuery } from "./setup";
 
 mock.module("../controllers/sqldatabase", () => databaseModule({ default: mockQuery }));
@@ -22,21 +22,21 @@ test("a death across a border is counted once on each node: the victim's node th
   expect(deedsOf(Events.PLAYER_DEATH, { player: alice, killer: bob })).toHaveLength(2);
 });
 
-test("setPlayerPvp leaves a mirror alone: no flag, no event", () => {
+test("setPlayerCombat leaves a mirror alone: no flag, no event", () => {
   const heard: any[] = [];
   const onEnter = (event: any) => heard.push(event);
-  listener.on(Events.PLAYER_ENTERED_PVP, onEnter);
+  listener.on(Events.PLAYER_ENTERED_COMBAT, onEnter);
   try {
     const mirror: any = { id: "m1", username: "Mirror", remote: true };
-    setPlayerPvp(mirror, true);
-    expect(mirror.pvp).toBeUndefined();
+    setPlayerCombat(mirror, true);
+    expect(mirror.combat).toBeUndefined();
     expect(heard).toEqual([]);
     const local: any = { id: "l1", username: "Local" };
-    setPlayerPvp(local, true);
-    expect(local.pvp).toBe(true);
+    setPlayerCombat(local, true);
+    expect(local.combat).toBe(true);
     expect(heard).toHaveLength(1);
   } finally {
-    listener.off(Events.PLAYER_ENTERED_PVP, onEnter);
+    listener.off(Events.PLAYER_ENTERED_COMBAT, onEnter);
   }
 });
 

@@ -6,7 +6,8 @@ import cooldownManager from "../services/cooldownmanager";
 import effectManager from "../services/effectmanager";
 import { CONSUMABLE_COOLDOWN_MS, setReadyIn as setConsumableReadyIn } from "../systems/consumables";
 import type { CarriedChain, CarriedScene } from "../systems/cutsceneplayer";
-import { SICKNESS_DURATION_MS, saveOnDisconnect as saveSickness } from "../systems/resurrection";
+import { rememberSicknessGiven, sicknessDurationMs, saveOnDisconnect as saveSickness, type SicknessGiven } from "../systems/resurrection";
+import { defOf } from "../systems/gamesettings/registry";
 import { STAT_INT_MAX } from "../systems/creatures/remotereward";
 import { WARP_COOLDOWN_MS, setWarpReadyIn } from "../systems/warpcooldown";
 
@@ -18,9 +19,11 @@ export interface HandoffState {
   cooldowns: Record<string, number>;
   lockoutMs: number;
   sickUntil: number;
+  /** What the sickness was given with on the node it came from; absent when it came without. */
+  sickGiven?: SicknessGiven;
   deadState: 0 | 1 | 2;
   corpse: { map: string; x: number; y: number } | null;
-  pvp: boolean;
+  combat: boolean;
   lastAttackAgoMs: number | null;
   mounted: boolean;
   mount_type: string | null;
@@ -373,6 +376,21 @@ function arrivalScene(raw: any, deadState: number, now: number, who: string): Ca
   };
 }
 
+/** What a sickness came with, kept to what the settings allow; null when it came without or what came is no such record. */
+function sickGivenOf(raw: any): SicknessGiven | null {
+  if (!raw || typeof raw !== "object") return null;
+  const within = (key: string, value: unknown): number | null => {
+    const def = defOf(key);
+    const n = Number(value);
+    return Number.isFinite(n) && def ? Math.min(def.max ?? n, Math.max(def.min ?? n, n)) : null;
+  };
+  const minutes = within("resSicknessMinutes", Number(raw.durationMs) / 60_000);
+  const healthMult = within("resSicknessHealthMultiplier", raw.healthMult);
+  const statMult = within("resSicknessStatMultiplier", raw.statMult);
+  if (minutes === null || healthMult === null || statMult === null) return null;
+  return { durationMs: minutes * 60_000, healthMult, statMult };
+}
+
 /** The chain of an arrival, or null when it has none or when what came could not be one. */
 function arrivalChain(raw: any, deadState: number, who: string): CarriedChain | null {
   if (raw === undefined || raw === null) return null;
@@ -420,10 +438,13 @@ export function handoffStateOf(raw: unknown, limits: ArrivalLimits, who = "an ar
   const dots = checkedDots.map((d) => clampedDot(d, limits.now, who, known));
 
   let sickUntil = positive(r.sickUntil);
-  const sickLatest = limits.now + SICKNESS_DURATION_MS + ARRIVAL_CLOCK_SLACK_MS;
+  // A sickness is as long as it was given: the length it came with (within what the setting allows), else the live one.
+  const sickGiven = sickGivenOf(r.sickGiven);
+  const sickLength = sickGiven?.durationMs ?? sicknessDurationMs();
+  const sickLatest = limits.now + sickLength + ARRIVAL_CLOCK_SLACK_MS;
   if (sickUntil > sickLatest) {
     log.warn(`The resurrection sickness ${who} brought by handoff ended ${Math.round((sickUntil - limits.now) / 1000)} s from now: cut to the full sickness`);
-    sickUntil = limits.now + SICKNESS_DURATION_MS;
+    sickUntil = limits.now + sickLength;
   }
 
   const dead = Number(r.deadState);
@@ -477,9 +498,10 @@ export function handoffStateOf(raw: unknown, limits: ArrivalLimits, who = "an ar
     cooldowns,
     lockoutMs: positive(r.lockoutMs),
     sickUntil,
+    ...(sickGiven && sickUntil > 0 ? { sickGiven } : {}),
     deadState,
     corpse,
-    pvp: r.pvp === true,
+    combat: r.combat === true,
     lastAttackAgoMs: r.lastAttackAgoMs == null ? null : positive(r.lastAttackAgoMs),
     mounted: r.mounted === true,
     mount_type: typeof r.mount_type === "string" ? r.mount_type : null,
@@ -503,6 +525,7 @@ export function seedArrival(username: string, state: HandoffState, now = perform
   for (const [spellId, left] of Object.entries(state.cooldowns)) cooldownManager.setCooldown(username, Number(spellId), now + left);
   if (state.lockoutMs > 0) cooldownManager.setLockout(username, now + state.lockoutMs);
   saveSickness({ username, resurrectionSickUntil: state.sickUntil });
+  rememberSicknessGiven(username, state.sickGiven);
   if (state.consumableReadyIn > 0) setConsumableReadyIn(username, state.consumableReadyIn);
   if (state.warpReadyIn > 0) setWarpReadyIn(username, state.warpReadyIn);
 }
@@ -510,7 +533,7 @@ export function seedArrival(username: string, state: HandoffState, now = perform
 /** The playerCache fields an arrival brings instead of the login's defaults. */
 export function arrivalFields(state: HandoffState, now = performance.now()) {
   return {
-    pvp: state.pvp,
+    combat: state.combat,
     last_attack: state.lastAttackAgoMs == null ? null : now - state.lastAttackAgoMs,
     mounted: state.mounted,
     mount_type: state.mounted ? state.mount_type : null,

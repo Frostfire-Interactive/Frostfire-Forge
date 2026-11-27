@@ -8,6 +8,7 @@ import * as gatheringEditor from "./gathering/editor";
 import * as itemEditor from "./itemeditor";
 import * as mailboxEditor from "./mailboxeditor";
 import * as mountEditor from "./mounteditor";
+import * as gameSettingsEditor from "./gamesettingseditor";
 import * as playerEditor from "./playereditor";
 import * as questEditor from "./quests/editor";
 import * as spellEditor from "./spelleditor";
@@ -38,6 +39,7 @@ const TOOLS: Array<[string, (player: any) => boolean | Promise<boolean>]> = [
   ["spell_editor", (p) => spellEditor.canUseEditor(p)],
   ["class_editor", (p) => classEditor.canUseEditor(p)],
   ["mount_editor", (p) => mountEditor.canUseEditor(p)],
+  ["game_settings", (p) => gameSettingsEditor.canUseEditor(p)],
   ["quest_editor", (p) => questEditor.canUseEditor(p)],
   ["achievement_editor", (p) => achievementEditor.canUseEditor(p)],
   ["particle_editor", (p) => holds(p, "tools.particle_editor", "tools.*")],

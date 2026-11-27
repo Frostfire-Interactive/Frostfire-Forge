@@ -466,12 +466,12 @@ let bob: any;
 let fakeLinks: ReturnType<typeof linkPair>;
 
 const person = (id: string, username: string, x: number, over: Record<string, any> = {}) => ({
-  id, username, invitations: [], isGuest: false, isDead: false, isGhost: false, pvp: false,
+  id, username, invitations: [], isGuest: false, isDead: false, isGhost: false, combat: false,
   location: { map: "forest.json", position: { x, y: 100 } }, wt: { sent: [] as any[] }, ...over,
 });
 /** A player as a neighbouring node's mirror of them: bare map, no socket. */
 const mirrorOf = (player: any, from: string) => ({
-  id: player.id, username: player.username, isGuest: false, isDead: false, isGhost: false, pvp: false,
+  id: player.id, username: player.username, isGuest: false, isDead: false, isGhost: false, combat: false,
   remote: true, mirrorFrom: from, location: { map: "forest", position: { ...player.location.position } },
 });
 const sentTo = (player: any, type: string) => player.wt.sent.filter((packet: any) => packet.type === type).map((packet: any) => packet.data);

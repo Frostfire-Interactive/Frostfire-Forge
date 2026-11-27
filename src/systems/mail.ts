@@ -12,20 +12,27 @@ import inventory from "./inventory";
 import { innDoors } from "./mapmarkers";
 import player from "./player";
 import { inUse } from "./spare";
+import { setting } from "./gamesettings/store";
 import { readGift } from "./trades";
 
 /** How far (px) from a mailbox a player may stand and still use it. The reach of talking to an NPC. */
-export const MAIL_RANGE = 120;
+export const mailRange = (): number => setting("mailRange");
 /** How many different items one mail holds. */
-export const MAIL_ITEMS_MAX = 12;
+export const mailItemsMax = (): number => setting("mailItemsMax");
+/**
+ * What MAIL_TAKE may ask for: everything, the coins, or one item by its place. The limit above applies to sending only;
+ * an item's place is held to the mail's own items when it is taken, so mail sent before a lower limit can still be emptied.
+ */
+export const isTakePart = (part: unknown): part is "all" | "coins" | number =>
+    part === "all" || part === "coins" || (Number.isSafeInteger(part) && (part as number) >= 0);
 /** How many mails a mailbox holds. Mail sent back to its sender is let in past this. */
-export const INBOX_MAX = 100;
-export const SUBJECT_MAX = 64;
-export const BODY_MAX = 500;
+export const inboxMax = (): number => setting("inboxMax");
+export const subjectMax = (): number => setting("subjectMax");
+export const bodyMax = (): number => setting("bodyMax");
 /** Postage, in copper: for each item attached, and for a mail with none. */
-export const POSTAGE_COPPER = 30;
+export const postageCopper = (): number => setting("postageCopper");
 /** How long a mail waits before it goes back, or is deleted. */
-export const MAIL_DAYS = 30;
+export const mailDays = (): number => setting("mailDays");
 const DAY_MS = 86_400_000;
 
 export interface MailItem {
@@ -84,7 +91,7 @@ const MOST_COINS = coinsWorth(CURRENCY_LIMITS);
 const hasAttachments = (mail: Mail) => mail.items.length > 0 || coinsWorth(mail.coins) > 0;
 
 /** Postage for a mail with `items` different items attached, in copper. */
-export const postageFor = (items: number) => POSTAGE_COPPER * Math.max(1, items);
+export const postageFor = (items: number) => postageCopper() * Math.max(1, items);
 
 // ---------------------------------------------------------------- mailboxes
 
@@ -126,7 +133,7 @@ export function mailboxesOn(
 
 /** Whether a player standing at `x`, `y` is within reach of one of `boxes`. */
 export function atMailbox(boxes: Mailbox[], x: number, y: number): boolean {
-  return boxes.some((box) => Math.hypot(box.x - x, box.y - y) <= MAIL_RANGE);
+  return boxes.some((box) => Math.hypot(box.x - x, box.y - y) <= mailRange());
 }
 
 // -------------------------------------------------------------------- schema
@@ -291,7 +298,7 @@ const cleaned = (text: unknown, lines: boolean) =>
 async function sendBack(batch: Batch, owner: string, mail: Mail, now: number): Promise<void> {
   const from = await pendingIn(batch, owner);
   const to = await pendingIn(batch, lower(mail.sender));
-  const back: Mail = { ...mail, recipient: lower(mail.sender), sender: owner, sent_at: now, expires_at: now + MAIL_DAYS * DAY_MS, read: false, returned: true };
+  const back: Mail = { ...mail, recipient: lower(mail.sender), sender: owner, sent_at: now, expires_at: now + mailDays() * DAY_MS, read: false, returned: true };
   const ownerId = await needCharacterId(owner);
   const senderId = await needCharacterId(back.recipient);
   batch.add({
@@ -324,12 +331,12 @@ const mail = {
 
     const subject = cleaned(raw?.subject, false).trim();
     if (!subject) return { ok: false, message: "Enter a subject." };
-    if (subject.length > SUBJECT_MAX) return { ok: false, message: `A subject is ${SUBJECT_MAX} characters at most.` };
+    if (subject.length > subjectMax()) return { ok: false, message: `A subject is ${subjectMax()} characters at most.` };
     const body = cleaned(raw?.body, true).trimEnd();
-    if (body.length > BODY_MAX) return { ok: false, message: `A mail is ${BODY_MAX} characters at most.` };
+    if (body.length > bodyMax()) return { ok: false, message: `A mail is ${bodyMax()} characters at most.` };
     if (await ignores.blocks(recipient, sender)) return { ok: false, message: `${their} is not accepting your mail.` };
 
-    const gift = await readGift(sender, { items: raw?.items ?? [], coins: raw?.coins }, { most: MAIL_ITEMS_MAX, holder: "A mail", verb: "mailed" });
+    const gift = await readGift(sender, { items: raw?.items ?? [], coins: raw?.coins }, { most: mailItemsMax(), holder: "A mail", verb: "mailed" });
     if (typeof gift === "string") return { ok: false, message: gift };
     const postage = postageFor(gift.items.length);
     const cost = coinsWorth(gift.coins) + postage;
@@ -344,7 +351,7 @@ const mail = {
       }
       if (coinsWorth(await currency.heldIn(batch, sender)) < cost) throw new Refused(`You cannot afford the postage (${postage} copper).`);
       const box = await pendingIn(batch, recipient);
-      if (box.held.length >= INBOX_MAX) throw new Refused(`${their}'s mailbox is full.`);
+      if (box.held.length >= inboxMax()) throw new Refused(`${their}'s mailbox is full.`);
 
       for (const item of gift.items) {
         if (!(await inventory.remove(sender, item, batch))) throw new Refused(`You no longer have ${item.quantity} ${item.name}.`);
@@ -353,7 +360,7 @@ const mail = {
 
       const sent: Mail = {
         id: 0, recipient, sender: from.username, subject, body, items: gift.items, coins: { ...gift.coins },
-        sent_at: now, expires_at: now + MAIL_DAYS * DAY_MS, read: false, returned: false,
+        sent_at: now, expires_at: now + mailDays() * DAY_MS, read: false, returned: false,
       };
       batch.add({
         sql: "INSERT INTO mail (recipient, sender, character_id, recipient_id, sender_id, subject, body, items, copper, silver, gold, sent_at, expires_at, is_read, returned) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)",
@@ -376,9 +383,9 @@ const mail = {
     const toId = await needCharacterId(to);
     const box = await pendingIn(batch, to);
     const sent: Mail = {
-      id: 0, recipient: to, sender: letter.sender, subject: cleaned(letter.subject, false).slice(0, SUBJECT_MAX),
-      body: cleaned(letter.body, true).slice(0, BODY_MAX), items: letter.items.map((item) => ({ name: item.name, quantity: Number(item.quantity) })),
-      coins: noCoins(), sent_at: now, expires_at: now + MAIL_DAYS * DAY_MS, read: false, returned: true,
+      id: 0, recipient: to, sender: letter.sender, subject: cleaned(letter.subject, false).slice(0, subjectMax()),
+      body: cleaned(letter.body, true).slice(0, bodyMax()), items: letter.items.map((item) => ({ name: item.name, quantity: Number(item.quantity) })),
+      coins: noCoins(), sent_at: now, expires_at: now + mailDays() * DAY_MS, read: false, returned: true,
     };
     batch.add({
       sql: "INSERT INTO mail (recipient, sender, character_id, recipient_id, sender_id, subject, body, items, copper, silver, gold, sent_at, expires_at, is_read, returned) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1)",

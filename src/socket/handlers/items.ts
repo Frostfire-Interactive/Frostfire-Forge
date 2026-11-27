@@ -16,7 +16,7 @@ import { atomically } from "../../services/batch";
 import { broadcastToAOIBestEffort } from "../aoi";
 import { listener } from "../../modules/event_bus";
 import { packetManager } from "../packet_manager";
-import { ITEM_CALL_BUSY, blockEquipmentChangeWhilePvp, castHome, computeBagSlot, getAnimationNameForDirection, getBagBoundaries, getInventorySlots, isQuestRateLimited, isTrading, openChestOnOwner, openCorpseHere, patchInventoryBagSlots, pickupLootHere, sendBelongingsOf, sendPacket, sendSpriteSheetAnimation, sendStatsToPartyMembers, subscriptionLocked, takeChestItems, takeCorpseLootHere } from "../receiver";
+import { ITEM_CALL_BUSY, blockEquipmentChangeWhileInCombat, castHome, computeBagSlot, getAnimationNameForDirection, getBagBoundaries, getInventorySlots, isQuestRateLimited, isTrading, openChestOnOwner, openCorpseHere, patchInventoryBagSlots, pickupLootHere, sendBelongingsOf, sendPacket, sendSpriteSheetAnimation, sendStatsToPartyMembers, subscriptionLocked, takeChestItems, takeCorpseLootHere } from "../receiver";
 import type { PacketContext } from "./context";
 
 // Packet handlers moved from receiver.ts's packetReceiver switch (phase 6, Task 1). The case bodies are unchanged.
@@ -146,7 +146,7 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         const equipmentItems = currentPlayer.inventory.filter((invItem: any) => invItem.type === "equipment");
         const foundEquipment = equipmentItems.find((invItem: any) => invItem.name.toLowerCase() === item.toLowerCase());
         const slot = foundEquipment?.equipment_slot;
-        if (await blockEquipmentChangeWhilePvp(wt, currentPlayer, slot)) return;
+        if (await blockEquipmentChangeWhileInCombat(wt, currentPlayer, slot)) return;
 
         if (foundEquipment?.level_requirement) {
           const playerLevel = currentPlayer.stats.level || 1;
@@ -283,7 +283,7 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
 
         const equippedItemName = currentPlayer.equipment[slot];
         if (!equippedItemName) return;
-        if (await blockEquipmentChangeWhilePvp(wt, currentPlayer, slot)) return;
+        if (await blockEquipmentChangeWhileInCombat(wt, currentPlayer, slot)) return;
 
         const result = await equipment.unEquipItem(currentPlayer.username, slot, equippedItemName);
         if (result) {
@@ -564,7 +564,7 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         } else if (from === "equipment" && slot) {
           const equippedName = currentPlayer.equipment[slot];
           if (!equippedName || equippedName.toLowerCase() !== String(itemName).toLowerCase()) return;
-          if (await blockEquipmentChangeWhilePvp(wt, currentPlayer, slot)) return;
+          if (await blockEquipmentChangeWhileInCombat(wt, currentPlayer, slot)) return;
 
           await equipment.unEquipItem(currentPlayer.username, slot, equippedName);
           await inventory.delete(currentPlayer.username, { name: equippedName, quantity: 0 });

@@ -1248,8 +1248,8 @@ import { listener } from "@engine/systems/events";
 |-------|---------|------|
 | `onPlayerChat` | `{ player, message, mapName, language? }` | After chat message is decrypted and broadcast to map |
 | `onWhisper` | `{ fromUsername, toUsername, message }` | After private message sent |
-| `onPlayerEnteredPVP` | `{ player }` | After a player's PvP flag transitions from false to true (combat starts). |
-| `onPlayerLeftPVP` | `{ player }` | After a player's PvP flag transitions from true to false (combat ends). |
+| `onPlayerEnteredCombat` | `{ player }` | After a player's combat flag transitions from false to true (combat starts). |
+| `onPlayerLeftCombat` | `{ player }` | After a player's combat flag transitions from true to false (combat ends). |
 | `onPartyChat` | `{ player, message, partyMembers }` | After a party chat message is sent. `partyMembers` is the list of usernames in the party. |
 | `onGuildChat` | `{ player, message, guildMembers, guildId }` | After a guild chat message is sent. `guildMembers` is the list of usernames whose rank may hear guild chat. |
 | `onOfficerChat` | `{ player, message, officers, guildId }` | After an officer chat message is sent. `officers` is the list of usernames whose rank may listen. |

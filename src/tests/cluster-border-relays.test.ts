@@ -35,7 +35,7 @@ describe("a death", () => {
 
   // The owner's death flow now relays the number, so the caster's node sends it only to who that relay missed.
   const hitRemotePlayer = withNames(
-    ["sendPlayerHit", "setPlayerPvp", "packetManager", "broadcastStatsUpdateToAOI", "findPlayersWithTargetInAOI", "sendPacketBestEffort", "listener", "Events"],
+    ["sendPlayerHit", "setPlayerCombat", "packetManager", "broadcastStatsUpdateToAOI", "findPlayersWithTargetInAOI", "sendPacketBestEffort", "listener", "Events"],
     fn("export async function hitRemotePlayer(").replace("export ", "") + "\nreturn hitRemotePlayer;",
   );
   const run = async (outcome: string) => {
@@ -50,7 +50,7 @@ describe("a death", () => {
     };
     const ok = await hitRemotePlayer({
       sendPlayerHit: async () => ({ outcome, stats: { health: 0 }, absorb: 0 }),
-      setPlayerPvp: () => {},
+      setPlayerCombat: () => {},
       packetManager: { updateStats: (data: any) => [data] },
       broadcastStatsUpdateToAOI: (...args: any[]) => broadcasts.push(args),
       findPlayersWithTargetInAOI: (id: string) => viewers[id] ?? [],

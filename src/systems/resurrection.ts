@@ -2,17 +2,38 @@ import playerCache from "../services/playermanager";
 import log from "../modules/logger";
 import { registerEffectsPayloadProvider } from "./spelleffects";
 import { getIconUrl } from "../modules/spriteSheetManager";
+import { setting } from "./gamesettings/store";
 
-export const SICKNESS_DURATION_MS = 15 * 60 * 1000;
-export const SICKNESS_DURATION_SEC = 15 * 60;
-// 20% health reduction, 10% reduction on everything else.
-export const SICKNESS_HEALTH_MULT = 0.8;
-export const SICKNESS_STAT_MULT = 0.9;
+/** How long resurrection sickness lasts, read when it is given. */
+export const sicknessDurationMs = (): number => setting("resSicknessMinutes") * 60 * 1000;
+export const sicknessDurationSec = (): number => setting("resSicknessMinutes") * 60;
+/** The share of max health a sick character keeps (default: 20% reduction). */
+export const sicknessHealthMult = (): number => setting("resSicknessHealthMultiplier");
+/** The share of every other stat a sick character keeps (default: 10% reduction). */
+export const sicknessStatMult = (): number => setting("resSicknessStatMultiplier");
 
 const SICK_EFFECT_ID = "resurrection-sickness";
 
 const expiryTimers = new Map<string, NodeJS.Timeout>();
 const sickByUsername = new Map<string, number>();
+
+/** What a sickness was given with: later edits to the settings leave it as it was. */
+export type SicknessGiven = { durationMs: number; healthMult: number; statMult: number };
+const givenByUsername = new Map<string, SicknessGiven>();
+
+/** The settings as they are now, for a sickness nobody recorded (one restored from the database holds only its end). */
+const liveGiven = (): SicknessGiven => ({ durationMs: sicknessDurationMs(), healthMult: sicknessHealthMult(), statMult: sicknessStatMult() });
+
+/** What this player's sickness was given with; the live settings when none was recorded. */
+export function sicknessGivenOf(player: any): SicknessGiven {
+  return givenByUsername.get(usernameKey(player)) ?? liveGiven();
+}
+
+/** Remembers what a sickness arriving from another node was given with. */
+export function rememberSicknessGiven(username: string, given: SicknessGiven | null | undefined): void {
+  const key = String(username || "").toLowerCase();
+  if (key && given) givenByUsername.set(key, { ...given });
+}
 let onExpiry: ((player: any) => void) | null = null;
 
 export function setOnSicknessExpiry(fn: (player: any) => void): void {
@@ -29,15 +50,16 @@ export function sicknessRemainingSec(player: any): number {
   return Math.max(0, Math.ceil((until - Date.now()) / 1000));
 }
 
-export function applySicknessToStats(stats: any): any {
+export function applySicknessToStats(stats: any, player?: any): any {
   if (!stats) return stats;
+  const given = player ? sicknessGivenOf(player) : liveGiven();
   stats.total_max_health = Math.max(
     1,
-    Math.floor((stats.total_max_health || 0) * SICKNESS_HEALTH_MULT)
+    Math.floor((stats.total_max_health || 0) * given.healthMult)
   );
   stats.total_max_stamina = Math.max(
     1,
-    Math.floor((stats.total_max_stamina || 0) * SICKNESS_STAT_MULT)
+    Math.floor((stats.total_max_stamina || 0) * given.statMult)
   );
   for (const key of [
     "stat_damage",
@@ -46,7 +68,7 @@ export function applySicknessToStats(stats: any): any {
     "stat_critical_damage",
     "stat_avoidance",
   ]) {
-    stats[key] = Math.floor((stats[key] || 0) * SICKNESS_STAT_MULT);
+    stats[key] = Math.floor((stats[key] || 0) * given.statMult);
   }
   stats.health = Math.min(stats.health ?? 0, stats.total_max_health);
   stats.stamina = Math.min(stats.stamina ?? 0, stats.total_max_stamina);
@@ -72,6 +94,7 @@ function scheduleExpiry(player: any): void {
     const mapped = sickByUsername.get(usernameKey(player));
     if (mapped && mapped <= Date.now()) {
       sickByUsername.delete(usernameKey(player));
+      givenByUsername.delete(usernameKey(player));
     }
     const fresh = playerCache.get(player.id);
     if (!fresh || !fresh.resurrectionSickUntil) return;
@@ -90,7 +113,9 @@ function scheduleExpiry(player: any): void {
 }
 
 export function applySickness(player: any): number {
-  const until = Date.now() + SICKNESS_DURATION_MS;
+  const given = liveGiven();
+  const until = Date.now() + given.durationMs;
+  givenByUsername.set(usernameKey(player), given);
   player.resurrectionSickUntil = until;
   playerCache.set(player.id, player);
   sickByUsername.set(usernameKey(player), until);
@@ -105,6 +130,7 @@ export function clearSickness(player: any): void {
     expiryTimers.delete(String(player.id));
   }
   sickByUsername.delete(usernameKey(player));
+  givenByUsername.delete(usernameKey(player));
   player.resurrectionSickUntil = 0;
   playerCache.set(player.id, player);
 }
@@ -116,6 +142,7 @@ export function saveOnDisconnect(player: any): void {
     sickByUsername.set(key, Number(player.resurrectionSickUntil));
   } else {
     sickByUsername.delete(key);
+    givenByUsername.delete(key);
   }
 }
 
@@ -127,6 +154,7 @@ export function forgetSickness(player: any): void {
     expiryTimers.delete(key);
   }
   sickByUsername.delete(usernameKey(player));
+  givenByUsername.delete(usernameKey(player));
 }
 
 export function restoreOnLogin(cachedPlayer: any): boolean {
@@ -135,26 +163,28 @@ export function restoreOnLogin(cachedPlayer: any): boolean {
   const until = Number(sickByUsername.get(key)) || 0;
   if (until <= Date.now()) {
     sickByUsername.delete(key);
+    givenByUsername.delete(key);
     cachedPlayer.resurrectionSickUntil = 0;
     return false;
   }
   cachedPlayer.resurrectionSickUntil = until;
   playerCache.set(cachedPlayer.id, cachedPlayer);
   scheduleExpiry(cachedPlayer);
-  applySicknessToStats(cachedPlayer.stats);
+  applySicknessToStats(cachedPlayer.stats, cachedPlayer);
   return true;
 }
 
 registerEffectsPayloadProvider((player: any) => {
   if (!isSick(player)) return [];
+  const given = sicknessGivenOf(player);
   return [
     {
       id: SICK_EFFECT_ID,
       spell: "Resurrection Sickness",
       kind: "sickness",
-      duration: SICKNESS_DURATION_SEC,
+      duration: Math.round(given.durationMs / 1000),
       remaining: sicknessRemainingSec(player),
-      description: "-20% max health, -10% all other stats",
+      description: `-${Math.round((1 - given.healthMult) * 100)}% max health, -${Math.round((1 - given.statMult) * 100)}% all other stats`,
       icon: getIconUrl("skeleton"),
       isDebuff: true,
     },

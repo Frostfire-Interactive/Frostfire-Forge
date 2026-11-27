@@ -231,7 +231,7 @@ describe("the chat relays", () => {
   test("global, party, guild (command and packet) and whisper lines are linked", () => {
     expect(source.match(/chatLinksOf\(/g)?.length).toBeGreaterThanOrEqual(6);
     expect(source).toContain("protectLinks(sentMessage, sentLinks)");
-    expect(source).toContain("text.length > MAX_CHAT_LENGTH");
+    expect(source).toContain("text.length > maxChatLength()");
     expect(source).toContain("Chat translation to ${target} failed");
     // one translation per language, shared by listeners who are all sent to at once
     expect(source).toContain("const lineIn = language.perLanguage(");

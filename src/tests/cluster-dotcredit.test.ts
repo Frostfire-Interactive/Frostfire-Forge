@@ -99,11 +99,11 @@ test("the killer is a remote stand-in from the caster's mirror, or a stub", () =
 
 test("the caster's node gives PvP state, and on a kill emits the death", () => {
   const caster = { id: "11", username: "Caster", last_attack: null as number | null };
-  const pvp: any[] = [];
+  const combat: any[] = [];
   const deaths: any[] = [];
-  const deps = { setPvp: (p: any) => pvp.push(p), mirror: () => null, emitDeath: (victim: any, killer: any) => deaths.push({ victim, killer }) };
+  const deps = { setCombat: (p: any) => combat.push(p), mirror: () => null, emitDeath: (victim: any, killer: any) => deaths.push({ victim, killer }) };
   expect(applyDotCredit(caster, { victimId: "7", victimName: "Victim", killed: false }, deps)).toBe(true);
-  expect(pvp).toEqual([caster]);
+  expect(combat).toEqual([caster]);
   expect(caster.last_attack).not.toBeNull();
   expect(deaths).toEqual([]);
   expect(applyDotCredit(caster, { victimId: "7", victimName: "Victim", killed: true }, deps)).toBe(true);
@@ -115,13 +115,13 @@ test("a kill uses the victim's mirror when there is one", () => {
   const mirror = { id: "7", username: "Victim", remote: true, stats: { health: 0 } };
   const deaths: any[] = [];
   applyDotCredit(caster, { victimId: "7", victimName: "Forged", killed: true }, {
-    setPvp: () => {}, mirror: (id) => (id === "7" ? mirror : null), emitDeath: (victim, killer) => deaths.push({ victim, killer }),
+    setCombat: () => {}, mirror: (id) => (id === "7" ? mirror : null), emitDeath: (victim, killer) => deaths.push({ victim, killer }),
   });
   expect(deaths).toEqual([{ victim: mirror, killer: caster }]);
 });
 
 test("a credit for oneself, for a mirror, or malformed is refused", () => {
-  const deps = { setPvp: () => { throw new Error("no"); }, mirror: () => null, emitDeath: () => { throw new Error("no"); } };
+  const deps = { setCombat: () => { throw new Error("no"); }, mirror: () => null, emitDeath: () => { throw new Error("no"); } };
   // Guard: the self check.
   expect(applyDotCredit({ id: "7", username: "X" }, { victimId: "7", victimName: "X", killed: true }, deps)).toBe(false);
   // Guard: the remote check.
@@ -142,7 +142,7 @@ test("a credit for oneself, for a mirror, or malformed is refused", () => {
 test("a kill of a player on this node is refused: a peer cannot name a local player as the victim", () => {
   const caster = { id: "11", username: "Caster" };
   const deps = {
-    setPvp: () => { throw new Error("no"); }, mirror: () => null, emitDeath: () => { throw new Error("no"); },
+    setCombat: () => { throw new Error("no"); }, mirror: () => null, emitDeath: () => { throw new Error("no"); },
     local: (id: string) => id === "7",
   };
   // Guard: the local-victim check.
@@ -153,7 +153,7 @@ test("dots.ts gives a tick of a caster on another node PvP state and a killer", 
   const source = readFileSync(join(import.meta.dir, "..", "systems", "dots.ts"), "utf8");
   // Guard: the remote branch. A caster that is not in playerCache and is not the target is a remote caster.
   expect(source).toContain("const remote = !caster && dot.casterId && dot.casterId !== String(target.id) ? remoteCaster : null;");
-  expect(source).toMatch(/if \(remote\) \{\s*setPlayerPvp\(target, true\);\s*target\.last_attack = performance\.now\(\);/);
+  expect(source).toMatch(/if \(remote\) \{\s*setPlayerCombat\(target, true\);\s*target\.last_attack = performance\.now\(\);/);
   expect(source).toContain("remote.credit(dot, target, target.stats.health <= 0);");
   expect(source).toContain("await playerDeathHandler(target, caster || remote?.killer(dot) || null, { damage, isCrit: false });");
   expect(source).toContain("export function setRemoteDotCaster(");

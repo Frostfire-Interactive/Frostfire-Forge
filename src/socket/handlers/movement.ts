@@ -22,6 +22,7 @@ import { dungeonPortalStep, dungeonPortalWalk, portalsOn, stonesOn } from "../du
 import { archBlocksStep, archesOf } from "../../systems/portalarch";
 import { arrivalChunks, chunkSizeFor, teleportsNear } from "../../systems/portalpreload";
 import { stoneBlocksStep, stonesAt } from "../../systems/stoneblock";
+import { setting } from "../../systems/gamesettings/store";
 import lootChest from "../../systems/lootChest";
 import { chestBlocksStep } from "../../systems/chestblock";
 import type { PacketContext } from "./context";
@@ -33,18 +34,19 @@ const withoutJson = (map: unknown): string => String(map ?? "").replace(/\.json$
 
 export const handles: ReadonlySet<string> = new Set(["MOVEXY", "TELEPORTXY", "MOUNT", "HANDOFF_GAP"]);
 
-// px per 30 Hz tick (180 px a second); scaledStep keeps that speed at any TICK_RATE.
-const BASE_SPEED = 6;
-const MOUNT_SPEED_MULTIPLIER = 1.35;
 const PLAYER_WIDTH = 24;
 const PLAYER_HEIGHT = 40;
 
+/** px per 30 Hz tick, from the live walk speed setting (180 px a second is 6); scaledStep keeps that speed at any TICK_RATE. */
+const baseSpeed = (): number => setting("walkSpeed") / 30;
+
 /** The px a 30 Hz tick of walking takes the player: more mounted or as a ghost, less when slowed. */
 function walkSpeedOf(currentPlayer: any): number {
-  // An admin's /speed: their whole speed, in place of mount, ghost and slows
-  const override = overriddenSpeed(currentPlayer, BASE_SPEED);
+  // An admin's /speed: their whole speed, in place of mount, ghost and slows (overriddenSpeed holds it to 30 px a tick)
+  const override = overriddenSpeed(currentPlayer, baseSpeed());
   if (override !== null) return override;
-  return (currentPlayer.mounted || currentPlayer.isGhost ? BASE_SPEED * MOUNT_SPEED_MULTIPLIER : BASE_SPEED) * (currentPlayer.slowMultiplier || 1);
+  const multiplier = currentPlayer.mounted ? setting("mountSpeedMultiplier") : currentPlayer.isGhost ? setting("ghostSpeedMultiplier") : 1;
+  return baseSpeed() * multiplier * (currentPlayer.slowMultiplier || 1);
 }
 
 function takeStep(currentPlayer: any, direction: string, stepX: number, stepY: number) {
@@ -377,7 +379,7 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
                 return;
               }
               // Players in combat cannot use warps (admin summons bypass this path entirely)
-              if (currentPlayer.pvp) {
+              if (currentPlayer.combat) {
                 const nowTs = performance.now();
                 if (!currentPlayer.lastCombatWarpNotify || nowTs - currentPlayer.lastCombatWarpNotify > 2000) {
                   currentPlayer.lastCombatWarpNotify = nowTs;
@@ -770,11 +772,11 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           return;
         }
 
-        // Prevent mounting when PvP flag is enabled or vanished
-        if ((currentPlayer.pvp || currentPlayer.isVanished) && !dismounting) {
+        // Prevent mounting when combat flag is enabled or vanished
+        if ((currentPlayer.combat || currentPlayer.isVanished) && !dismounting) {
           sendPacket(
             wt,
-            packetManager.notify({ message: "Cannot mount while in PvP." })
+            packetManager.notify({ message: "Cannot mount while in combat." })
           );
           return;
         }

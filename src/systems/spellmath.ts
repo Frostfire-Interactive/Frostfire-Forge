@@ -1,11 +1,13 @@
+import { setting } from "./gamesettings/store";
+
 export type Rng = () => number;
 
 /** Cast time that earns the full bonus coefficient (classic WoW). */
 export const FULL_COEFFICIENT_CAST_S = 3.5;
-/** Instant spells are treated as a global-cooldown-length cast. */
-export const GCD_S = 1.5;
-/** Critical heals restore this multiple of the rolled amount. */
-export const HEAL_CRIT_MULTIPLIER = 1.5;
+/** Instant spells are treated as a global-cooldown-length cast (read when used). */
+export const gcdSeconds = (): number => setting("globalCooldownSeconds");
+/** Critical heals restore this multiple of the rolled amount (read when used). */
+export const healCritMultiplier = (): number => setting("critHealMultiplier");
 
 export function levelRoll(base: number, level: number, rng: Rng = Math.random): number {
   const magnitude = Math.abs(Number(base) || 0);
@@ -17,7 +19,7 @@ export function levelRoll(base: number, level: number, rng: Rng = Math.random): 
 
 /** Share of the caster's bonus stat a spell of this cast time receives. */
 export function castTimeCoefficient(castTimeSeconds: number): number {
-  const effective = Math.max(GCD_S, Number(castTimeSeconds) || 0);
+  const effective = Math.max(gcdSeconds(), Number(castTimeSeconds) || 0);
   return Math.min(1, effective / FULL_COEFFICIENT_CAST_S);
 }
 
@@ -36,7 +38,7 @@ export function rollHeal(
   const base = levelRoll(spellValue, caster?.level || 1, rng);
   const bonus = Math.max(0, Number(caster?.stat_damage) || 0) * castTimeCoefficient(castTimeSeconds);
   const isCrit = rng() * 100 < (Number(caster?.stat_critical_chance) || 0);
-  const amount = Math.floor((base + bonus) * (isCrit ? HEAL_CRIT_MULTIPLIER : 1));
+  const amount = Math.floor((base + bonus) * (isCrit ? healCritMultiplier() : 1));
   return { amount: Math.max(0, amount), isCrit };
 }
 

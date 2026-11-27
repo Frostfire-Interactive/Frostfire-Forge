@@ -151,7 +151,7 @@ delete process.env.DATABASE_ENGINE;
 const { clearCaches } = await import("../services/datacache");
 const { default: log } = await import("../modules/logger");
 const { coinsWorth } = await import("../systems/currency");
-const { default: mail, mailboxesOn, atMailbox, MAIL_RANGE, MAIL_DAYS, INBOX_MAX, POSTAGE_COPPER, postageFor } = await import("../systems/mail");
+const { default: mail, mailboxesOn, atMailbox, mailRange, mailDays, inboxMax, postageCopper, postageFor } = await import("../systems/mail");
 const mailboxEditor = await import("../systems/mailboxeditor");
 
 let logged: Array<ReturnType<typeof spyOn>>;
@@ -241,8 +241,8 @@ describe("mailboxes", () => {
 
   test("a player within reach of one may use it", () => {
     const boxes = [{ id: "b", x: 100, y: 100 }];
-    expect(atMailbox(boxes, 100 + MAIL_RANGE, 100)).toBe(true);
-    expect(atMailbox(boxes, 101 + MAIL_RANGE, 100)).toBe(false);
+    expect(atMailbox(boxes, 100 + mailRange(), 100)).toBe(true);
+    expect(atMailbox(boxes, 101 + mailRange(), 100)).toBe(false);
     expect(atMailbox([], 100, 100)).toBe(false);
   });
 });
@@ -392,18 +392,18 @@ describe("sending mail", () => {
     const answer = await mail.send(hero, letter({ items: [{ name: "Iron Ore", quantity: 4 }], coins: coins(0, 1, 0) }), NOW);
     expect(answer).toEqual({ ok: true, message: "Mail sent to Ally.", recipient: "ally" });
     expect(holds("hero")["Iron Ore"]).toBe(6);
-    expect(purse("hero")).toBe(coinsWorth(coins(1, 2, 50)) - 100 - POSTAGE_COPPER);
+    expect(purse("hero")).toBe(coinsWorth(coins(1, 2, 50)) - 100 - postageCopper());
     expect(mailOf("ally")).toHaveLength(1);
 
     const [view] = await mail.inbox("ally", NOW);
-    expect(view).toMatchObject({ sender: "Hero", subject: "Hello", body: "A gift.", coins: coins(0, 1, 0), read: false, returned: false, expiresAt: NOW + MAIL_DAYS * DAY });
+    expect(view).toMatchObject({ sender: "Hero", subject: "Hello", body: "A gift.", coins: coins(0, 1, 0), read: false, returned: false, expiresAt: NOW + mailDays() * DAY });
     expect(view.items).toEqual([{ ...item("Iron Ore"), quantity: 4 }]);
     expect(await mail.unread("ally", NOW)).toBe(1);
   });
 
   test("postage is paid for each item attached", async () => {
-    expect(postageFor(0)).toBe(POSTAGE_COPPER);
-    expect(postageFor(3)).toBe(3 * POSTAGE_COPPER);
+    expect(postageFor(0)).toBe(postageCopper());
+    expect(postageFor(3)).toBe(3 * postageCopper());
   });
 
   test("refusals write nothing", async () => {
@@ -422,7 +422,7 @@ describe("sending mail", () => {
     await refused({ items: [{ name: "Home Stone", quantity: 1 }] }, "Home Stone cannot be mailed.");
     await refused({ items: [{ name: "Bound Ring", quantity: 1 }] }, "Bound Ring is soulbound and cannot be mailed.");
     await refused({ items: [{ name: "Iron Ore", quantity: 11 }] }, "You do not have 11 Iron Ore.");
-    await refused({ coins: coins(1, 2, 50) }, `You cannot afford the postage (${POSTAGE_COPPER} copper).`);
+    await refused({ coins: coins(1, 2, 50) }, `You cannot afford the postage (${postageCopper()} copper).`);
     await refused({}, "Please create an account to use that feature.", { username: "hero", isGuest: true });
     tables.ignores.push({ username: "ally", ignored: "hero" });
     // Written behind the caches, which are emptied so it is read.
@@ -435,7 +435,7 @@ describe("sending mail", () => {
   });
 
   test("a full mailbox takes no more", async () => {
-    for (let index = 0; index < INBOX_MAX; index++) stored();
+    for (let index = 0; index < inboxMax(); index++) stored();
     expect(await mail.send(hero, letter(), NOW)).toEqual({ ok: false, message: "Ally's mailbox is full." });
     expect(purse("hero")).toBe(coinsWorth(coins(1, 2, 50)));
   });
@@ -485,6 +485,24 @@ describe("taking what is attached", () => {
     expect(mailOf("ally")).toHaveLength(1);
   });
 
+  test("M1: after the item limit is lowered, items past it in older mail can still be taken one at a time", async () => {
+    const { loadGameSettings } = await import("../systems/gamesettings/store");
+    const { isTakePart } = await import("../systems/mail");
+    const quiet = { read: async () => [], write: async () => {}, remove: async () => {}, cache: { onChange() {} } };
+    await loadGameSettings({ ...quiet, read: async () => [{ setting_key: "mailItemsMax", value: "4", updated_by: "t", updated_at: 1 }] });
+    try {
+      const sent = [...Array.from({ length: 5 }, () => ({ name: "Iron Ore", quantity: 1 })), { name: "Rat Tail", quantity: 2 }];
+      const row = stored({ items: JSON.stringify(sent) });
+      expect(isTakePart(5)).toBe(true);
+      expect(await mail.take("ally", row.id, 5)).toEqual({ ok: true, message: "Took 2 Rat Tail." });
+      expect(await mail.take("ally", row.id, 5)).toEqual({ ok: false, message: "Nothing is attached." });
+      expect(["all", "coins", 0].every(isTakePart)).toBe(true);
+      expect([-1, 1.5, "1", null, undefined, Number.MAX_SAFE_INTEGER + 1].some(isTakePart)).toBe(false);
+    } finally {
+      await loadGameSettings(quiet);
+    }
+  });
+
   test("someone else's mail is not there to take", async () => {
     const row = stored({ items: JSON.stringify([{ name: "Iron Ore", quantity: 3 }]) });
     expect(await mail.take("hero", row.id, "all")).toEqual({ ok: false, message: "That mail is gone." });
@@ -517,7 +535,7 @@ describe("reading, deleting and sending back", () => {
     expect(await mail.returnToSender("ally", row.id, NOW)).toEqual({ ok: true, message: "Mail sent back to Hero." });
     expect(mailOf("ally")).toEqual([]);
     const [back] = await mail.inbox("hero", NOW);
-    expect(back).toMatchObject({ sender: "Ally", returned: true, read: false, expiresAt: NOW + MAIL_DAYS * DAY });
+    expect(back).toMatchObject({ sender: "Ally", returned: true, read: false, expiresAt: NOW + mailDays() * DAY });
     expect(await mail.returnToSender("hero", back.id, NOW)).toEqual({ ok: false, message: "Mail that was sent back cannot be sent back again." });
   });
 });

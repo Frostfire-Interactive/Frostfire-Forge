@@ -7,6 +7,7 @@ import * as itemEditor from "../../systems/itemeditor";
 import * as mailboxEditor from "../../systems/mailboxeditor";
 import * as moderation from "../../systems/moderation";
 import * as mountEditor from "../../systems/mounteditor";
+import * as gameSettingsEditor from "../../systems/gamesettingseditor";
 import * as playerEditor from "../../systems/playereditor";
 import * as questEditor from "../../systems/quests/editor";
 import * as resurrection from "../../systems/resurrection";
@@ -58,7 +59,7 @@ import { resetCooldowns } from "../../systems/cooldowns";
 import { setLock as setSubscriptionLock, isLockId as isSubscriptionLock, subscriptionState } from "../../systems/subscriptions";
 import { forgetLook } from "../looks";
 import { summonMove } from "../summonmove";
-import { MAX_COMMAND_LENGTH, TORNADO, bumpStateRevision, busyNote, channelLineOk, chatHearing, chatLinksOf, chatRateOk, defaultMap, despawnBatchQueue, destinationLayerFor, draggedPlayersMap, filterPlayersByMap, getAnimationNameForDirection, guardedAction, guildDone, guildEditOk, handlePlayerDeath, isCiphertext, kickedFromGuild, mapPropertiesCache, maps, noticeRegion, offerInvitation, officerChat, panelCommands, panelHears, pushGuild, queueSpawnForReceivers, resolvedWeatherCache, reviveDeps, resyncNpcChunks, rowOf, sendAnimationTo, sendIgnoreAnswer, sendPacket, sendReport, sendToWholeMap, spawnBatchQueue, stateRevision, subscriptionLocked, takeInMapChange, transitionPlayerToMap, weatherShown, withSender, worldsCache } from "../receiver";
+import { maxCommandLength, TORNADO, bumpStateRevision, busyNote, channelLineOk, chatHearing, chatLinksOf, chatRateOk, defaultMap, despawnBatchQueue, destinationLayerFor, draggedPlayersMap, filterPlayersByMap, getAnimationNameForDirection, guardedAction, guildDone, guildEditOk, handlePlayerDeath, isCiphertext, kickedFromGuild, mapPropertiesCache, maps, noticeRegion, offerInvitation, officerChat, panelCommands, panelHears, pushGuild, queueSpawnForReceivers, resolvedWeatherCache, reviveDeps, resyncNpcChunks, rowOf, sendAnimationTo, sendIgnoreAnswer, sendPacket, sendReport, sendToWholeMap, spawnBatchQueue, stateRevision, subscriptionLocked, takeInMapChange, transitionPlayerToMap, weatherShown, withSender, worldsCache } from "../receiver";
 import { remoteAdminOf } from "../arrival";
 import { revivePlayer } from "../revive";
 import { trackPacket } from "../../cluster/inflight";
@@ -608,8 +609,8 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         const mode = _data?.mode;
 
         if (mode === "decrypt" ? !isCiphertext(command) : typeof command !== "string") return;
-        if (typeof command === "string" && command.length > MAX_COMMAND_LENGTH) {
-          sendPacket(wt, packetManager.notify({ message: `Command too long (max ${MAX_COMMAND_LENGTH} characters).` }));
+        if (typeof command === "string" && command.length > maxCommandLength()) {
+          sendPacket(wt, packetManager.notify({ message: `Command too long (max ${maxCommandLength()} characters).` }));
           return;
         }
         if (mode === "decrypt" && !chatRateOk(wt)) return;
@@ -628,7 +629,7 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           ).toString();
           decryptedMessage =
             decryptRsa(encryptedMessage, decryptedPrivateKey) || "";
-          if (typeof decryptedMessage !== "string" || decryptedMessage.length > MAX_COMMAND_LENGTH) return;
+          if (typeof decryptedMessage !== "string" || decryptedMessage.length > maxCommandLength()) return;
         } else {
           decryptedMessage = command;
         }
@@ -2102,6 +2103,16 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
               break;
             }
             sendPacket(wt, packetManager.toggleMountEditor());
+            break;
+          }
+
+          case "GS":
+          case "GAMESETTINGS": {
+            if (!gameSettingsEditor.canUseEditor(currentPlayer)) {
+              sendPacket(wt, packetManager.notify({ message: "You don't have permission to use this command" }));
+              break;
+            }
+            sendPacket(wt, packetManager.toggleGameSettingsEditor());
             break;
           }
 

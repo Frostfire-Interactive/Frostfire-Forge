@@ -34,7 +34,7 @@ function shown(player: any) {
     guild: player.guild ?? null, guild_name: player.guild_name ?? null,
     equipment: player.equipment ?? null, equipmentRevision: player.equipmentRevision ?? 0,
     // party_id picks the corpse-loot owner for a tapper seen as a mirror (creatures/kill.ts), who has no party row here.
-    casting: !!player.casting, party: [...(player.party ?? [])], party_id: player.party_id ?? null, pvp: !!player.pvp,
+    casting: !!player.casting, party: [...(player.party ?? [])], party_id: player.party_id ?? null, combat: !!player.combat,
     effects: getEffectsState(player),
     // The fishing line as it stands (receiver.ts broadcastFishing): a viewer who comes into view is sent it.
     fishLine: player.fishLine ?? null,

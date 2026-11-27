@@ -22,7 +22,7 @@ import spatialGrid from "../../services/spatialgrid";
 import { packetManager } from "../../socket/packet_manager";
 import { CREATURE_MOVE_MAX_ENTRIES } from "../../socket/creature_move_codec";
 import { isHeld } from "../cutsceneheld";
-import { Events, listener, setPlayerPvp } from "../events";
+import { Events, listener, setPlayerCombat } from "../events";
 import lootTable from "../lootTable";
 import { getCreatureEngineBridge } from "./bridge";
 import {
@@ -261,7 +261,7 @@ export const combat = new CreatureCombatSystem(registry, {
   markPlayerInCombat: (playerId) => {
     const player = playerCache.get(playerId);
     if (!player) return;
-    setPlayerPvp(player, true);
+    setPlayerCombat(player, true);
     player.last_attack = performance.now();
   },
   onHealthChanged: (creature) => healthDirty.add(creature.id),
@@ -967,7 +967,7 @@ onApplyEffect("creature_on_player", async (target, body: CreatureOnPlayer, from)
   if (player.isDead || player.isGhost || player.isStealth || isHeld(player)) return { outcome: "refused", reason: "immune" };
   // The creature's node holds no threat entry for it here, so the player is put in combat as a local creature would.
   if (body.kind !== "daze") {
-    setPlayerPvp(player, true);
+    setPlayerCombat(player, true);
     player.last_attack = performance.now();
   }
   if (body.kind === "damage") {

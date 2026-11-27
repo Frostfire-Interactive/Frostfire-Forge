@@ -20,7 +20,7 @@ export interface User {
   isDead?: boolean;
   isGhost?: boolean;
   /** In combat, with a player or a creature: the server raises it for both. */
-  pvp?: boolean;
+  combat?: boolean;
   /** Until when (ms, as Date.now counts) the player is stunned. */
   stunnedUntil?: number;
   stats?: { health: number; stamina: number; max_health?: number; max_stamina?: number; total_max_health?: number; total_max_stamina?: number; level?: number };
@@ -137,7 +137,7 @@ const consumables = {
     if (!home && gives.health === 0 && gives.stamina === 0) return refuse(`${item} cannot be used.`);
     const level = amount(definition.level_requirement);
     if (level > amount(stats.level)) return refuse(`You must be level ${level} to use ${item}.`);
-    if (definition.no_combat && player.pvp) return refuse(`${item} cannot be used in combat.`);
+    if (definition.no_combat && player.combat) return refuse(`${item} cannot be used in combat.`);
 
     if (home) {
       if ((await homes.cooldownLeft(name, now)) > 0) return refuse(`${item} is not ready yet.`);

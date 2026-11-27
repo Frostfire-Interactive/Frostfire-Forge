@@ -563,8 +563,8 @@ test("a creature's spell on a player is this node's copy of one of the creature'
     expect(await call({ kind: "spell", spell: forged })).toEqual({ ok: true, answer: { outcome: "applied" } });
     // The effects are the local ones, and the player is put in combat as for any hit.
     expect(calls).toEqual([["spell", "creature:60", "Frost Bolt", [{ type: "slow", value: 10 }]]]);
-    expect(player.pvp).toBe(true);
-    player.pvp = false;
+    expect(player.combat).toBe(true);
+    player.combat = false;
     // A spell this node has, but not one of Wolf's abilities.
     expect(await call({ kind: "spell", spell: { id: 2, name: "Doom", effects: [{ type: "stun" }] } })).toEqual({ ok: true, answer: { outcome: "refused", reason: "spell" } });
     // A spell this node does not have, and one with no id, and none at all.
@@ -573,7 +573,7 @@ test("a creature's spell on a player is this node's copy of one of the creature'
     expect(await call({ kind: "spell" })).toEqual({ ok: true, answer: { outcome: "refused", reason: "spell" } });
     expect(calls.length).toBe(1);
     // Nothing was refused after the player was flagged.
-    expect(player.pvp).toBe(false);
+    expect(player.combat).toBe(false);
   });
 });
 

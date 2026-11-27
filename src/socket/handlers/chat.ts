@@ -8,7 +8,8 @@ import { forwardFromPlayer } from "../../cluster/aoievent";
 import { listener } from "../../modules/event_bus";
 import { packetManager } from "../packet_manager";
 import { protectLinks, restoreLinks, type ChatLink } from "../../systems/itemlinks";
-import { CHAT_RATE_MAX, CHAT_RATE_WINDOW, MAX_CHAT_LENGTH, chatLinksOf, chatRateLimit, filterPlayersByMap, generateGhostSpeak, isCiphertext, sendPacket, sendPacketBestEffort, subscriptionLocked } from "../receiver";
+import { chatRateMax, chatRateWindow, chatTooLong, maxChatLength } from "../../systems/chatlimits";
+import { chatLinksOf, chatRateLimit, filterPlayersByMap, generateGhostSpeak, isCiphertext, sendPacket, sendPacketBestEffort, subscriptionLocked } from "../receiver";
 import type { PacketContext } from "./context";
 
 // Packet handlers moved from receiver.ts's packetReceiver switch (phase 6, Task 1). The case bodies are unchanged.
@@ -38,15 +39,15 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         const mode = messageData?.mode;
 
         if (message != null && (mode === "decrypt" ? !isCiphertext(message) : typeof message !== "string")) return;
-        if (typeof message === "string" && message.length > MAX_CHAT_LENGTH) {
-          sendPacket(wt, packetManager.notify({ message: `Message too long (max ${MAX_CHAT_LENGTH} characters).` }));
+        if (typeof message === "string" && chatTooLong(message)) {
+          sendPacket(wt, packetManager.notify({ message: `Message too long (max ${maxChatLength()} characters).` }));
           return;
         }
 
         const now = Date.now();
         const timestamps = chatRateLimit.get(wt.data.id) || [];
-        const recent = timestamps.filter((t) => now - t < CHAT_RATE_WINDOW);
-        if (recent.length >= CHAT_RATE_MAX) {
+        const recent = timestamps.filter((t) => now - t < chatRateWindow());
+        if (recent.length >= chatRateMax()) {
           sendPacket(wt, packetManager.notify({ message: "You are sending messages too fast." }));
           return;
         }
@@ -86,7 +87,7 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
           ).toString();
           decryptedMessage =
             decryptRsa(encryptedMessage, decryptedPrivateKey) || "";
-          if (typeof decryptedMessage !== "string" || decryptedMessage.length > MAX_CHAT_LENGTH) return;
+          if (typeof decryptedMessage !== "string" || decryptedMessage.length > maxChatLength()) return;
         } else {
           decryptedMessage = message;
         }

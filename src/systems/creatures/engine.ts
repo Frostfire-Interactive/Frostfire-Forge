@@ -16,7 +16,7 @@ import {
 import { tickCreature } from "./ai";
 import {
   CreatureFlags,
-  CORPSE_EMPTY_MS,
+  corpseEmptyMs,
   randInt,
   speedPxPerSec,
   TICK_MS,
@@ -737,7 +737,7 @@ export class CreatureCombatSystem {
     stop(creature);
     creature.health = 0;
     creature.state = AIState.DEAD;
-    creature.combat.corpseUntil = now + CORPSE_EMPTY_MS;
+    creature.combat.corpseUntil = now + corpseEmptyMs();
     this.active.delete(creature.id);
     this.world.onHealthChanged(creature);
     this.world.onStateChanged(creature);

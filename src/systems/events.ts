@@ -70,8 +70,8 @@ export const Events = {
     PARTY_CHAT: "onPartyChat",
     GUILD_CHAT: "onGuildChat",
     OFFICER_CHAT: "onOfficerChat",
-    PLAYER_ENTERED_PVP: "onPlayerEnteredPVP",
-    PLAYER_LEFT_PVP: "onPlayerLeftPVP",
+    PLAYER_ENTERED_COMBAT: "onPlayerEnteredCombat",
+    PLAYER_LEFT_COMBAT: "onPlayerLeftCombat",
     PLAYER_ENTER_AOE: "onPlayerEnterAOE",
     PLAYER_LEFT_AOE: "onPlayerLeftAOE",
     CREATURE_KILLED: "onCreatureKilled",
@@ -360,7 +360,7 @@ export interface GuildChatEvent {
     guildId: number;
 }
 
-export interface PlayerPvpEvent {
+export interface PlayerCombatEvent {
     player: any;
 }
 
@@ -370,16 +370,16 @@ export interface PlayerAoeEvent {
     spellName: string;
 }
 
-export function setPlayerPvp(player: any, value: boolean): void {
+export function setPlayerCombat(player: any, value: boolean): void {
     if (!player) return;
     // A mirror's flag belongs to its owner node, which sets it when the hit lands there.
     if (player.remote) return;
-    if (player.pvp === value) return;
-    player.pvp = value;
+    if (player.combat === value) return;
+    player.combat = value;
     if (value) {
-        listener.emit(Events.PLAYER_ENTERED_PVP, { player } as PlayerPvpEvent);
+        listener.emit(Events.PLAYER_ENTERED_COMBAT, { player } as PlayerCombatEvent);
     } else {
-        listener.emit(Events.PLAYER_LEFT_PVP, { player } as PlayerPvpEvent);
+        listener.emit(Events.PLAYER_LEFT_COMBAT, { player } as PlayerCombatEvent);
     }
 }
 

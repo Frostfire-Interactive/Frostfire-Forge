@@ -15,7 +15,7 @@ export interface PortalArea { position: { x: number; y: number }; size: { width:
 export interface PendingChoice { dungeonId: number; sizes: DungeonSize[]; authorization: string; portal: PortalSpot; area: PortalArea; until: number }
 
 export interface PortalPlayer {
-    username: string; isDead?: boolean; isGhost?: boolean; pvp?: boolean;
+    username: string; isDead?: boolean; isGhost?: boolean; combat?: boolean;
     _portalBusy?: boolean; _dungeonChoice?: PendingChoice;
     location?: { map?: string; position?: { x: number; y: number } };
 }
@@ -46,7 +46,7 @@ export const PORTAL_COMBAT_NOTICE = "You can't use a portal while in combat.";
 export const PORTAL_FAILED_NOTICE = "The dungeon portal failed. Try again.";
 
 /** The refusals warps have: corpses, ghosts and players in combat. */
-export const mayUsePortal = (p: PortalPlayer): boolean => !p.isDead && !p.isGhost && !p.pvp;
+export const mayUsePortal = (p: PortalPlayer): boolean => !p.isDead && !p.isGhost && !p.combat;
 
 export const portalCentre = (map: string, portal: DungeonPortalObject): PortalSpot => ({
     map: bare(map),
@@ -56,7 +56,7 @@ export const portalCentre = (map: string, portal: DungeonPortalObject): PortalSp
 
 /** A refused portal: a player in combat is told why; corpses and ghosts are not. */
 function refusePortal(deps: PortalDeps, p: PortalPlayer): false {
-    if (p.pvp && !p.isDead && !p.isGhost) deps.notify(p, PORTAL_COMBAT_NOTICE);
+    if (p.combat && !p.isDead && !p.isGhost) deps.notify(p, PORTAL_COMBAT_NOTICE);
     return false;
 }
 

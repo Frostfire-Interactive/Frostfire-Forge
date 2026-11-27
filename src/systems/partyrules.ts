@@ -1,7 +1,9 @@
-/** Most members of a party that is not a raid group. */
-export const NON_RAID_CAP = 5;
-/** Most members of any party. */
-export const PARTY_CAP = 20;
+import { setting } from "./gamesettings/store";
+
+/** Most members of a party that is not a raid group (read when used). */
+export const nonRaidCap = (): number => setting("partySize");
+/** Most members of any party (read when used). */
+export const partyCap = (): number => setting("raidSize");
 /** How long the leader has to answer the offer to turn a full party into a raid group. */
 export const RAID_CONVERT_MS = 60_000;
 
@@ -17,13 +19,13 @@ export function newLeaderNotice(leader: string): string {
 
 /** Whether a party with `count` members may invite anyone: a full party sends no invitations. */
 export function canInvite(count: number): boolean {
-    return count < PARTY_CAP;
+    return count < partyCap();
 }
 
 /** What a player who accepts an invitation does, given the party's size: join, ask its leader to convert it to a raid, or be told it is full. */
 export function joinOutcome(count: number, raid: boolean): "join" | "convert" | "full" {
-    if (count >= PARTY_CAP) return "full";
-    if (count >= NON_RAID_CAP && !raid) return "convert";
+    if (count >= partyCap()) return "full";
+    if (count >= nonRaidCap() && !raid) return "convert";
     return "join";
 }
 

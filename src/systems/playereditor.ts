@@ -6,6 +6,7 @@ import { ghosts } from "../cluster/ghosts";
 import { packetManager } from "../socket/packet_manager";
 import { Events, listener } from "./events";
 import player from "./player";
+import { setting } from "./gamesettings/store";
 import permissions, { canGrant, outranks } from "./permissions";
 import mutes from "./mutes";
 import inventory from "./inventory";
@@ -153,7 +154,8 @@ export async function resolveTarget(identifier: unknown): Promise<EditorTarget |
 function maxLevel(): number {
   let level = 1;
   while (player.getNewMaxXp(level + 1) <= INT_MAX) level++;
-  return level;
+  const cap = setting("maxLevel");
+  return cap > 0 ? Math.min(level, cap) : level;
 }
 
 export async function buildOptions(admin: any): Promise<PlayerEditorOptions> {

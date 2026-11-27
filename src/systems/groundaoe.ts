@@ -4,7 +4,7 @@ import layerManager from "../services/layermanager";
 import { consumeBarrier, broadcastEffectsUpdate, applySpellEffects, cancelEffect, getVanishedEffectId } from "./spelleffects";
 import { packetManager } from "../socket/packet_manager";
 import log from "../modules/logger";
-import { setPlayerPvp, listener, Events } from "./events";
+import { setPlayerCombat, listener, Events } from "./events";
 import { broadcastToAOIBestEffort, getPlayersNearPoint } from "../socket/aoi";
 import playerSystem from "./player";
 import { areaSpellHarms, PVP_BODY } from "./pvpzone";
@@ -497,10 +497,10 @@ export async function processZoneTicks(): Promise<void> {
           }
 
           if (!isHeal && tickDamage !== 0) {
-            setPlayerPvp(player, true);
+            setPlayerCombat(player, true);
             player.last_attack = performance.now();
             if (caster) {
-              setPlayerPvp(caster, true);
+              setPlayerCombat(caster, true);
               caster.last_attack = performance.now();
             }
           }

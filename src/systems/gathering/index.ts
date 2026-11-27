@@ -133,7 +133,7 @@ function gatherer(id: string): Gatherer | null {
     x: Number(pos.x), y: Number(pos.y), dead: !!(p.isDead || p.isGhost), stunned: spellEffects.isStunned(p),
     casting: !!p.casting, moving: !!p.moving,
     // in combat as the rest of the game counts it (warps, equipment), or held by a creature
-    inCombat: !!p.pvp || creatures.combat.isInCombatWith(id),
+    inCombat: !!p.combat || creatures.combat.isInCombatWith(id),
   };
 }
 

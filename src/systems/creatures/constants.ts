@@ -1,4 +1,5 @@
 import * as settings from "../../config/settings.json";
+import { setting } from "../gamesettings/store";
 
 const cfg: Record<string, any> = (settings as any)?.creatures || {};
 
@@ -36,15 +37,15 @@ export const SYNC_EXIT_HYSTERESIS = 1.25;
 /** Spatial bucket size for creature lookups. */
 export const CREATURE_CELL_PX = 512;
 
-/** Multiplier applied to every rolled respawn time. */
-export const RESPAWN_MULTIPLIER: number = Number(cfg.respawnMultiplier) || 1;
+/** Multiplier applied to every rolled respawn time, read when a respawn is scheduled. */
+export const respawnMultiplier = (): number => setting("respawnMultiplier");
 
 /** When a pool is full, retry the spawn after this long. */
 export const POOL_RETRY_MS = 30_000;
 
-/** Corpse lifetime with / without remaining loot (used from Phase 4). */
-export const CORPSE_WITH_LOOT_MS = 5 * 60_000;
-export const CORPSE_EMPTY_MS = 60_000;
+/** Corpse lifetime with / without remaining loot, read when a creature dies (settings are in seconds). */
+export const corpseWithLootMs = (): number => setting("corpseWithLootSeconds") * 1000;
+export const corpseEmptyMs = (): number => setting("corpseEmptySeconds") * 1000;
 
 /** Seedable RNG so tests can make rolls deterministic. */
 export type Rng = () => number;

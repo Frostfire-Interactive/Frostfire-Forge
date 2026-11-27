@@ -1,4 +1,4 @@
-import mail, { MAIL_ITEMS_MAX } from "../../systems/mail";
+import mail, { isTakePart } from "../../systems/mail";
 import { packetManager } from "../packet_manager";
 import { isQuestRateLimited, isTrading, mayUseMail, sendBelongingsOf, sendMailNotice, sendMailNoticeTo, sendMailbox, sendPacket, subscriptionLocked } from "../receiver";
 import type { PacketContext } from "./context";
@@ -43,7 +43,7 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         if (isQuestRateLimited(`mail:${wt.data.id}`)) return;
         if (!(await mayUseMail(wt, currentPlayer))) break;
         const part = (data as any)?.part;
-        if (part !== "all" && part !== "coins" && !(Number.isInteger(part) && part >= 0 && part < MAIL_ITEMS_MAX)) return;
+        if (!isTakePart(part)) return;
         const taken = await mail.take(currentPlayer.username, Number((data as any)?.mailId), part);
         // What was taken shows in the bags: only a refusal is said.
         if (!taken.ok) sendPacket(wt, packetManager.notify({ message: taken.message }));

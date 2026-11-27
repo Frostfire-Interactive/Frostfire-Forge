@@ -68,12 +68,12 @@ function portalSetup(results: EntryResult[]) {
 describe("portalStep", () => {
     test("dead, ghost and in-combat players are refused like warps; one in combat is told why", async () => {
         const { deps, calls } = portalSetup([]);
-        for (const p of [{ username: "ann", isDead: true }, { username: "ann", isGhost: true }, { username: "ann", pvp: true }]) {
+        for (const p of [{ username: "ann", isDead: true }, { username: "ann", isGhost: true }, { username: "ann", combat: true }]) {
             expect(await portalStep(deps, p, "town", [portal], outside, inside)).toBe(false);
         }
         expect(calls).toEqual([`notify ${PORTAL_COMBAT_NOTICE}`]);
         // Standing on in the portal tells nothing more.
-        expect(await portalStep(deps, { username: "ann", pvp: true }, "town", [portal], inside, { x: 106, y: 110 })).toBe(false);
+        expect(await portalStep(deps, { username: "ann", combat: true }, "town", [portal], inside, { x: 106, y: 110 })).toBe(false);
         expect(calls.length).toBe(1);
     });
 
@@ -81,7 +81,7 @@ describe("portalStep", () => {
         const { deps, calls, requests } = portalSetup([{ kind: "choose_size", sizes: [10, 20] }, { kind: "enter", copy: record({ size: 10 }), paid: true }]);
         const p: any = { username: "ann", location: { map: "town", position: inside } };
         await portalStep(deps, p, "town", [portal], outside, inside);
-        p.pvp = true;
+        p.combat = true;
         calls.length = 0;
         expect(await pickSize(deps, p, { authorization: "tok", size: 10 })).toBe(false);
         expect(calls).toEqual([`notify ${PORTAL_COMBAT_NOTICE}`]);
@@ -261,7 +261,7 @@ describe("portalStep through a teleport portal", () => {
         calls.length = 0;
         expect(await portalStep(deps, { username: "ann" }, "fields", [teleportPortal], outside, inside)).toBe(false);
         expect(calls[0]).toStartWith("notify");
-        expect(await portalStep(deps, { username: "bob", pvp: true }, "town", [teleportPortal], outside, inside)).toBe(false);
+        expect(await portalStep(deps, { username: "bob", combat: true }, "town", [teleportPortal], outside, inside)).toBe(false);
         expect(calls.at(-1)).toBe(`notify ${PORTAL_COMBAT_NOTICE}`);
     });
     test("a failed move ends the cooldown", async () => {

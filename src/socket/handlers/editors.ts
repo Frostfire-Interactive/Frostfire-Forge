@@ -13,6 +13,7 @@ import * as itemEditor from "../../systems/itemeditor";
 import * as lootEditor from "../../systems/looteditor";
 import * as mailboxEditor from "../../systems/mailboxeditor";
 import * as mountEditor from "../../systems/mounteditor";
+import * as gameSettingsEditor from "../../systems/gamesettingseditor";
 import * as playerEditor from "../../systems/playereditor";
 import * as questEditor from "../../systems/quests/editor";
 import * as spellEditor from "../../systems/spelleditor";
@@ -27,6 +28,7 @@ import fishing from "../../systems/fishing";
 import footprints from "../../systems/footprints";
 import gathering from "../../systems/gathering";
 import log from "../../modules/logger";
+import { clientSettings, onSettingsChanged, readAgain } from "../../systems/gamesettings/store";
 import lootTable from "../../systems/lootTable";
 import npcSystem from "../../systems/npcs";
 import particles, { renameInList } from "../../systems/particles";
@@ -137,6 +139,7 @@ const editorNudges = {
   },
   item: { packet: (by: string) => packetManager.itemEditorUpdated({ by }), mayHaveOpen: () => (other: any) => itemEditor.canUseEditor(other) },
   mount: { packet: (by: string) => packetManager.mountEditorUpdated({ by }), mayHaveOpen: () => (other: any) => mountEditor.canUseEditor(other) },
+  gamesettings: { packet: (by: string) => packetManager.gameSettingsEditorUpdated({ by }), mayHaveOpen: () => (other: any) => gameSettingsEditor.canUseEditor(other) },
   cutscene: { packet: (by: string) => packetManager.cutsceneEditorUpdated({ by }), mayHaveOpen: () => (other: any) => cutsceneEditor.canUseEditor(other) },
   spell: { packet: (by: string) => packetManager.spellEditorUpdated({ by }), mayHaveOpen: () => (other: any) => spellEditor.mayHaveEditorOpen(other) },
   weather: { packet: (by: string) => packetManager.weatherEditorUpdated({ by }), mayHaveOpen: () => (other: any) => weatherEditor.mayHaveEditorOpen(other) },
@@ -145,6 +148,14 @@ const editorNudges = {
   quest: { packet: (by: string) => packetManager.questEditorUpdated({ by }), mayHaveOpen: () => (other: any) => other.wt.readyState === 1 && questEditor.canUseEditor(other) },
 };
 export type EditorKind = keyof typeof editorNudges;
+
+/** A game setting loaded, saved here or saved on another node: every player here gets the live values the client mirrors. */
+onSettingsChanged(() => {
+  const settings = packetManager.gameSettings(clientSettings());
+  for (const other of Object.values(playerCache.list()) as any[]) {
+    if (other?.wt) sendPacket(other.wt, settings);
+  }
+});
 
 /** Tells this node's open editors of the kind, but the saver's (`exceptId`), that `by` saved. */
 function editorsUpdatedHere(kind: EditorKind, by: string, exceptId?: string): void {
@@ -164,9 +175,12 @@ function editorsUpdated(kind: EditorKind, admin: any): void {
 }
 
 /** Cluster mode: a save in an editor on another node of the region. */
-onPeerNews("editor-updated", (news) => {
+onPeerNews("editor-updated", async (news) => {
   const kind = news?.kind;
   if (typeof kind !== "string" || !Object.hasOwn(editorNudges, kind)) return;
+  // The open game settings editors ask for the list at once: read the saved settings first, so they get the new
+  // values even if the cache's change news has not arrived yet (the later reload it brings is harmless).
+  if (kind === "gamesettings") await readAgain();
   editorsUpdatedHere(kind as EditorKind, typeof news?.by === "string" ? news.by : "");
 });
 
@@ -570,7 +584,7 @@ onPeerNews("editor-layer-lock", (news) => {
   layerLockHere(map, { mapName: news.mapName ?? map, layerName: news.layerName, locked: news.locked });
 });
 
-export const handles: ReadonlySet<string> = new Set(["EDITOR_TILE_EDIT", "EDITOR_LAYER_LOCK", "EDITOR_OPEN", "EDITOR_CLOSE", "CREATURE_EDITOR_LIST", "CREATURE_EDITOR_CLOSE", "CREATURE_EDITOR_SAVE_TEMPLATE", "CREATURE_EDITOR_DELETE_TEMPLATE", "CREATURE_EDITOR_SAVE_ABILITY", "CREATURE_EDITOR_DELETE_ABILITY", "CREATURE_EDITOR_SAVE_ABILITIES", "CREATURE_EDITOR_SAVE_SPAWN", "CREATURE_EDITOR_DELETE_SPAWN", "CREATURE_EDITOR_SAVE_PATH", "CREATURE_EDITOR_DELETE_PATH", "CREATURE_EDITOR_SAVE_LINKGROUP", "CREATURE_EDITOR_DELETE_LINKGROUP", "CREATURE_EDITOR_SAVE_POOL", "CREATURE_EDITOR_DELETE_POOL", "CREATURE_EDITOR_ACTION", "ITEM_EDITOR_LIST", "ITEM_EDITOR_SEARCH", "ITEM_EDITOR_SAVE", "ITEM_EDITOR_DELETE", "MOUNT_EDITOR_LIST", "MOUNT_EDITOR_SAVE", "MOUNT_EDITOR_DELETE", "CUTSCENE_EDITOR_LIST", "CUTSCENE_EDITOR_SAVE", "CUTSCENE_EDITOR_DELETE", "CUTSCENE_EDITOR_RESOLVE", "CUTSCENE_EDITOR_PLAY", "CUTSCENE_EDITOR_GOTO", "SPELL_EDITOR_LIST", "SPELL_EDITOR_SEARCH", "SPELL_EDITOR_SAVE", "SPELL_EDITOR_DELETE", "SPELL_EDITOR_LEARN", "WEATHER_EDITOR_LIST", "WEATHER_EDITOR_SAVE", "WEATHER_EDITOR_DELETE", "CLASS_EDITOR_LIST", "CLASS_EDITOR_SAVE", "CLASS_EDITOR_DELETE", "DUNGEON_EDITOR_LIST", "DUNGEON_EDITOR_SAVE", "DUNGEON_EDITOR_DELETE", "PORTAL_EDITOR_LIST", "PORTAL_EDITOR_SAVE", "PORTAL_EDITOR_DELETE", "SUMMON_STONE_EDITOR_LIST", "SUMMON_STONE_EDITOR_SAVE", "SUMMON_STONE_EDITOR_DELETE", "LOOT_EDITOR_CREATE_TABLE", "LOOT_EDITOR_DELETE_TABLE", "LOOT_EDITOR_ADD_ITEM", "LOOT_EDITOR_REMOVE_ITEM", "LOOT_EDITOR_UPDATE_ITEM", "PLAYER_EDITOR_LOAD", "PLAYER_EDITOR_SEARCH", "PLAYER_EDITOR_ACTION", "CONTROL_PANEL_LOAD", "CONTROL_PANEL_QUERY", "CONTROL_PANEL_ACTION", "CREATURE_DEBUG_SUBSCRIBE", "CLUSTER_DEBUG", "TOGGLE_QUEST_EDITOR", "QUEST_EDITOR_DATA", "QUEST_EDITOR_SEARCH", "QUEST_EDITOR_SAVE", "QUEST_EDITOR_DELETE", "QUEST_EDITOR_CLOSE", "CREATE_MAP", "SAVE_TILE_SOUNDS", "SAVE_TILE_FOOTPRINTS", "SAVE_MAP", "SAVE_PARTICLE", "DELETE_PARTICLE", "RENAME_PARTICLE", "LIST_PARTICLES", "TEST_PARTICLE", "FISHING_EDITOR_LIST", "FISHING_EDITOR_SAVE", "MAILBOX_EDITOR_LIST", "MAILBOX_EDITOR_SAVE", "MAILBOX_EDITOR_DELETE", "ACHIEVEMENT_EDITOR_LIST", "ACHIEVEMENT_EDITOR_SAVE", "ACHIEVEMENT_EDITOR_DELETE", "GATHERING_EDITOR_LIST", "GATHERING_EDITOR_SAVE", "GATHERING_EDITOR_DELETE", "GATHERING_EDITOR_PREVIEW", "LIST_LOOT_TABLES", "MAP_OBJECT_OPTIONS"]);
+export const handles: ReadonlySet<string> = new Set(["EDITOR_TILE_EDIT", "EDITOR_LAYER_LOCK", "EDITOR_OPEN", "EDITOR_CLOSE", "CREATURE_EDITOR_LIST", "CREATURE_EDITOR_CLOSE", "CREATURE_EDITOR_SAVE_TEMPLATE", "CREATURE_EDITOR_DELETE_TEMPLATE", "CREATURE_EDITOR_SAVE_ABILITY", "CREATURE_EDITOR_DELETE_ABILITY", "CREATURE_EDITOR_SAVE_ABILITIES", "CREATURE_EDITOR_SAVE_SPAWN", "CREATURE_EDITOR_DELETE_SPAWN", "CREATURE_EDITOR_SAVE_PATH", "CREATURE_EDITOR_DELETE_PATH", "CREATURE_EDITOR_SAVE_LINKGROUP", "CREATURE_EDITOR_DELETE_LINKGROUP", "CREATURE_EDITOR_SAVE_POOL", "CREATURE_EDITOR_DELETE_POOL", "CREATURE_EDITOR_ACTION", "ITEM_EDITOR_LIST", "ITEM_EDITOR_SEARCH", "ITEM_EDITOR_SAVE", "ITEM_EDITOR_DELETE", "MOUNT_EDITOR_LIST", "MOUNT_EDITOR_SAVE", "MOUNT_EDITOR_DELETE", "GAME_SETTINGS_EDITOR_LIST", "GAME_SETTINGS_EDITOR_SAVE", "GAME_SETTINGS_EDITOR_RESET", "GAME_SETTINGS_EDITOR_PREVIEW", "CUTSCENE_EDITOR_LIST", "CUTSCENE_EDITOR_SAVE", "CUTSCENE_EDITOR_DELETE", "CUTSCENE_EDITOR_RESOLVE", "CUTSCENE_EDITOR_PLAY", "CUTSCENE_EDITOR_GOTO", "SPELL_EDITOR_LIST", "SPELL_EDITOR_SEARCH", "SPELL_EDITOR_SAVE", "SPELL_EDITOR_DELETE", "SPELL_EDITOR_LEARN", "WEATHER_EDITOR_LIST", "WEATHER_EDITOR_SAVE", "WEATHER_EDITOR_DELETE", "CLASS_EDITOR_LIST", "CLASS_EDITOR_SAVE", "CLASS_EDITOR_DELETE", "DUNGEON_EDITOR_LIST", "DUNGEON_EDITOR_SAVE", "DUNGEON_EDITOR_DELETE", "PORTAL_EDITOR_LIST", "PORTAL_EDITOR_SAVE", "PORTAL_EDITOR_DELETE", "SUMMON_STONE_EDITOR_LIST", "SUMMON_STONE_EDITOR_SAVE", "SUMMON_STONE_EDITOR_DELETE", "LOOT_EDITOR_CREATE_TABLE", "LOOT_EDITOR_DELETE_TABLE", "LOOT_EDITOR_ADD_ITEM", "LOOT_EDITOR_REMOVE_ITEM", "LOOT_EDITOR_UPDATE_ITEM", "PLAYER_EDITOR_LOAD", "PLAYER_EDITOR_SEARCH", "PLAYER_EDITOR_ACTION", "CONTROL_PANEL_LOAD", "CONTROL_PANEL_QUERY", "CONTROL_PANEL_ACTION", "CREATURE_DEBUG_SUBSCRIBE", "CLUSTER_DEBUG", "TOGGLE_QUEST_EDITOR", "QUEST_EDITOR_DATA", "QUEST_EDITOR_SEARCH", "QUEST_EDITOR_SAVE", "QUEST_EDITOR_DELETE", "QUEST_EDITOR_CLOSE", "CREATE_MAP", "SAVE_TILE_SOUNDS", "SAVE_TILE_FOOTPRINTS", "SAVE_MAP", "SAVE_PARTICLE", "DELETE_PARTICLE", "RENAME_PARTICLE", "LIST_PARTICLES", "TEST_PARTICLE", "FISHING_EDITOR_LIST", "FISHING_EDITOR_SAVE", "MAILBOX_EDITOR_LIST", "MAILBOX_EDITOR_SAVE", "MAILBOX_EDITOR_DELETE", "ACHIEVEMENT_EDITOR_LIST", "ACHIEVEMENT_EDITOR_SAVE", "ACHIEVEMENT_EDITOR_DELETE", "GATHERING_EDITOR_LIST", "GATHERING_EDITOR_SAVE", "GATHERING_EDITOR_DELETE", "GATHERING_EDITOR_PREVIEW", "LIST_LOOT_TABLES", "MAP_OBJECT_OPTIONS"]);
 
 export async function handle(ctx: PacketContext): Promise<unknown> {
   const { currentPlayer, data, type, wt } = ctx;
@@ -740,6 +754,26 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         if (result.changed) {
           // Tell every other open editor to reload.
           editorsUpdated("mount", currentPlayer);
+        }
+        break;
+      }
+
+      case "GAME_SETTINGS_EDITOR_LIST":
+      case "GAME_SETTINGS_EDITOR_SAVE":
+      case "GAME_SETTINGS_EDITOR_RESET":
+      case "GAME_SETTINGS_EDITOR_PREVIEW": {
+        if (!currentPlayer) return;
+        // The handler checks permission first, on every one of these, not just on /gamesettings.
+        const result = await gameSettingsEditor.handleEditorPacket(currentPlayer, type, data);
+        if (result.kind === "data") {
+          sendPacket(wt, packetManager.gameSettingsEditorData(result.data));
+          break;
+        }
+        if (result.denied) sendPacket(wt, packetManager.notify({ message: gameSettingsEditor.DENIED }));
+        sendPacket(wt, packetManager.gameSettingsEditorResult({ ok: result.ok, errors: result.errors, fields: result.fields, name: result.name, action: type, data: result.data }));
+        if (result.changed) {
+          // Tell every other open editor to reload.
+          editorsUpdated("gamesettings", currentPlayer);
         }
         break;
       }

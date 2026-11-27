@@ -6,14 +6,15 @@ import currency, { CURRENCY_LIMITS, coinsWorth } from "./currency";
 import inventory from "./inventory";
 import { inUse } from "./spare";
 import { SWAP_START_MS, unsettled } from "../cluster/tradesettle";
+import { setting } from "./gamesettings/store";
 import tradeLog, { type TradeGave, type TradeRecord } from "./tradelog";
 
 /** How far apart (px) two players may stand and still trade. The reach of talking to an NPC. */
-export const TRADE_RANGE = 120;
+export const tradeRange = (): number => setting("tradeRange");
 /** How many different items one side of a trade holds. */
-export const TRADE_ITEMS_MAX = 8;
+export const tradeItemsMax = (): number => setting("tradeItemsMax");
 /** How long after an offer changed before the trade can be accepted, so nobody accepts what was swapped under their hand. */
-export const ACCEPT_DELAY_MS = 2000;
+export const acceptDelayMs = (): number => setting("acceptDelayMs");
 
 /** What the trade rules read of a player. */
 export interface Trader {
@@ -22,7 +23,7 @@ export interface Trader {
   isDead?: boolean;
   isGhost?: boolean;
   /** In combat. */
-  pvp?: boolean;
+  combat?: boolean;
   location?: { map?: string; position?: unknown };
   /** A player of a neighbouring node, read from their mirror here (cells). */
   remote?: boolean;
@@ -101,12 +102,12 @@ export function cannotTrade(me: Trader, them: Trader | null | undefined): string
   if (them.isGuest) return `${their} is a guest and cannot trade.`;
   if (me.isDead || me.isGhost) return "You cannot trade while dead.";
   if (them.isDead || them.isGhost) return `${their} is dead.`;
-  if (me.pvp) return "You cannot trade while in combat.";
-  if (them.pvp) return `${their} is in combat.`;
+  if (me.combat) return "You cannot trade while in combat.";
+  if (them.combat) return `${their} is in combat.`;
   const here = placeOf(me);
   const there = placeOf(them);
   // Not within reach, which is also what a position that cannot be read comes to.
-  if (here.map !== there.map || !(Math.hypot(here.x - there.x, here.y - there.y) <= TRADE_RANGE)) return `${their} is too far away to trade.`;
+  if (here.map !== there.map || !(Math.hypot(here.x - there.x, here.y - there.y) <= tradeRange())) return `${their} is too far away to trade.`;
   return null;
 }
 
@@ -137,7 +138,7 @@ const wholeUpTo = (value: unknown, most: number) => Number.isInteger(value) && (
 
 /** An offer as a player sent it, checked against what they hold: the offer to keep, or why it is refused. */
 function readOffer(username: string, raw: any): Promise<TradeGave | string> {
-  return readGift(username, raw, { most: TRADE_ITEMS_MAX, holder: "A trade", verb: "traded" });
+  return readGift(username, raw, { most: tradeItemsMax(), holder: "A trade", verb: "traded" });
 }
 
 export async function readGift(username: string, raw: any, { most, holder, verb }: { most: number; holder: string; verb: string }): Promise<TradeGave | string> {
@@ -279,7 +280,7 @@ const trades = {
     const trade = open.get(name);
     if (!trade) return { state: "none" };
     if (trade.settling) return { state: "accepted", trade };
-    if (now - trade.changedAt < ACCEPT_DELAY_MS) return { state: "wait", message: "The offer just changed. Look it over, then accept." };
+    if (now - trade.changedAt < acceptDelayMs()) return { state: "wait", message: "The offer just changed. Look it over, then accept." };
     // A player marked unsettled after a lost trade: their rows may predate a swap on another node.
     if (trade.players.some((player) => unsettled(player))) return { state: "wait", message: SETTLING };
 
@@ -336,7 +337,7 @@ const trades = {
       mine: shown(trade.offers[me]),
       theirs: shown(trade.offers[them]),
       accepted: { mine: trade.accepted[me], theirs: trade.accepted[them] },
-      acceptIn: Math.max(0, trade.changedAt + ACCEPT_DELAY_MS - now),
+      acceptIn: Math.max(0, trade.changedAt + acceptDelayMs() - now),
     };
   },
   /** Forgets every trade under way. For tests. */

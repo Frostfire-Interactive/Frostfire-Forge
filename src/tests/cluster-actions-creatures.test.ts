@@ -340,7 +340,7 @@ test("creature_on_player damages the player, and flags them in combat", async ()
     try {
       expect(await call({ kind: "damage", amount: 12 })).toEqual({ ok: true, answer: { outcome: "applied" } });
       expect(calls).toEqual([["damage", 12]]);
-      expect(player.pvp).toBe(true);
+      expect(player.combat).toBe(true);
       expect(typeof player.last_attack).toBe("number");
     } finally {
       owner.mockRestore();
@@ -354,13 +354,13 @@ test("creature_on_player runs a creature's spell on the player, and a daze", asy
     try {
       expect(await call({ kind: "spell", spell: { id: 1, name: "Frost Bolt", effects: [] } })).toEqual({ ok: true, answer: { outcome: "applied" } });
       expect(calls).toEqual([["spell", "creature:60", "Frost Bolt"]]);
-      expect(player.pvp).toBe(true);
-      player.pvp = false;
+      expect(player.combat).toBe(true);
+      player.combat = false;
       delete player.last_attack;
       // A daze names its creature like the rest, and is not a blow that puts the player in combat.
       expect(await call({ kind: "daze" })).toEqual({ ok: true, answer: { outcome: "applied" } });
       expect(calls).toEqual([["spell", "creature:60", "Frost Bolt"], ["daze"]]);
-      expect(player.pvp).toBe(false);
+      expect(player.combat).toBe(false);
     } finally {
       owner.mockRestore();
     }
@@ -377,7 +377,7 @@ test("creature_on_player reports a kill, and spares a player who is dead, a ghos
         player[flag] = false;
       }
       expect(calls).toEqual([]);
-      expect(player.pvp).toBeUndefined();
+      expect(player.combat).toBeUndefined();
       expect(await call({ kind: "damage", amount: 1000 })).toEqual({ ok: true, answer: { outcome: "killed" } });
     } finally {
       owner.mockRestore();

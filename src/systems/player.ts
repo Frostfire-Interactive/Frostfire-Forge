@@ -15,6 +15,8 @@ import { rowCache, tableCache, dropRows, dropAllRows, reloadTable, type RowCache
 import type { Batch } from "../services/batch";
 import { Events, listener } from "./events";
 import { isSick, applySicknessToStats } from "./resurrection";
+import { formula } from "./gamesettings/store";
+import { levelLimit as xpLevelLimit } from "./xpshown";
 import permissions from "./permissions";
 import { characterIdOf, needCharacterId, siblingNamesOf } from "./characterids";
 const defaultMap = settings.default_map?.replace(".json", "") || "main";
@@ -272,6 +274,7 @@ async function wrote<T>(rows: RowCache<T>, username: string, columns: Partial<T>
   if (asGiven) await rows.patch(username, columns);
   else await rows.drop(username);
 }
+
 
 const usernameOfSession = (session_id: string): string | undefined => playerCache.get(session_id)?.username;
 
@@ -1307,7 +1310,7 @@ const player = {
 
     const pending = batch && await batch.pending(statRows, username, async () => {
       const start = { stats: (await player.getStats(username)) as StatsData, saved: {} as Partial<StatsData>, leveledUp: false };
-      batch.kept(() => wrote(statRows, username, start.saved, whole(...Object.values(start.saved))));
+      batch.kept(() => Object.keys(start.saved).length ? wrote(statRows, username, start.saved, whole(...Object.values(start.saved))) : undefined);
       batch.after(async () => { if (start.leveledUp) await player.synchronizeStats(username); });
       batch.undone(() => statRows.drop(username));
       return start;
@@ -1317,6 +1320,14 @@ const player = {
 
     const stats = pending ? pending.stats : (await player.getStats(username)) as StatsData;
     let leveledUp = false;
+
+    // The level cap, or with none the last level whose XP target still fits max_xp. At it nothing is gained.
+    const levelLimit = xpLevelLimit();
+    if (levelLimit > 0 && stats.level >= levelLimit) return { xp: stats.xp, level: stats.level, max_xp: stats.max_xp };
+
+    // A character stored at an older cap with a full bar (xp = max_xp, before the bar was filled only when sent) starts
+    // the level afresh once the cap is raised, so they earn the curve's target rather than levelling on 1 XP.
+    if (stats.xp >= stats.max_xp) stats.xp = 0;
 
     while (xp > 0) {
       const xpToLevel = stats.max_xp - stats.xp;
@@ -1333,6 +1344,9 @@ const player = {
 
         stats.health = stats.max_health;
         stats.stamina = stats.max_stamina;
+        // At the limit the XP left over is dropped and the stored XP stays below max_xp (0); the bar shows full only
+        // in what is sent (xpshown.ts), so a raised cap asks for this level's target.
+        if (levelLimit > 0 && stats.level >= levelLimit) break;
       } else {
         stats.xp += xp;
         xp = 0;
@@ -1365,17 +1379,13 @@ const player = {
     };
   },
   getNewMaxXp: (level: number) => {
-    return Math.floor(100 * Math.pow(1.1, level - 1));
+    return formula("xpToNextLevel")(level);
   },
   getMaxHealthForLevel: (level: number) => {
-
-    const baseHealth = 100;
-    return Math.floor(baseHealth + Math.pow(level, 1.5) * 5);
+    return formula("maxHealth")(level);
   },
   getMaxStaminaForLevel: (level: number) => {
-
-    const baseStamina = 100;
-    return Math.floor(baseStamina + Math.pow(level, 1.5) * 3);
+    return formula("maxStamina")(level);
   },
   increaseLevel: async (username: string) => {
     if (!username) return;
@@ -2012,7 +2022,7 @@ const player = {
     }
 
     if (isSick(pcache)) {
-      applySicknessToStats(currentStats);
+      applySicknessToStats(currentStats, pcache);
     }
 
     return currentStats;

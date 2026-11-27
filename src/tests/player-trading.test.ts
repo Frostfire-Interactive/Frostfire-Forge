@@ -138,18 +138,18 @@ const { default: inventory } = await import("../systems/inventory");
 const { default: currency, coinsWorth } = await import("../systems/currency");
 const { atomically } = await import("../services/batch");
 const { default: tradeLog, TRADES_KEPT } = await import("../systems/tradelog");
-const { default: trades, cannotTrade, TRADE_RANGE, TRADE_ITEMS_MAX, ACCEPT_DELAY_MS } = await import("../systems/trades");
+const { default: trades, cannotTrade, tradeRange, tradeItemsMax, acceptDelayMs } = await import("../systems/trades");
 
 // ------------------------------------------------------------------ fixtures
 
 const NOW = 1_800_000_000_000;
 /** Late enough after an offer changed for it to be accepted. */
-const LATER = NOW + ACCEPT_DELAY_MS;
+const LATER = NOW + acceptDelayMs();
 
 let online: Map<string, any>;
 const find = (username: string) => online.get(fold(username));
 const person = (username: string, over: Row = {}) => {
-  const made = { id: `id-${username}`, username, isGuest: false, isDead: false, isGhost: false, pvp: false, location: { map: "overworld", position: { x: 100, y: 100 } }, ...over };
+  const made = { id: `id-${username}`, username, isGuest: false, isDead: false, isGhost: false, combat: false, location: { map: "overworld", position: { x: 100, y: 100 } }, ...over };
   online.set(username, made);
   return made;
 };
@@ -233,14 +233,14 @@ describe("who may trade", () => {
   });
 
   test("nobody trades in combat", () => {
-    expect(cannotTrade(person("hero", { pvp: true }), ally)).toBe("You cannot trade while in combat.");
-    expect(cannotTrade(person("hero"), person("ally", { pvp: true }))).toBe("Ally is in combat.");
+    expect(cannotTrade(person("hero", { combat: true }), ally)).toBe("You cannot trade while in combat.");
+    expect(cannotTrade(person("hero"), person("ally", { combat: true }))).toBe("Ally is in combat.");
   });
 
   test("they must be on the same map and within reach", () => {
     const at = (x: number, y: number, map = "overworld") => ({ location: { map, position: { x, y } } });
-    expect(cannotTrade(hero, person("ally", at(100 + TRADE_RANGE, 100)))).toBeNull();
-    expect(cannotTrade(hero, person("ally", at(101 + TRADE_RANGE, 100)))).toBe("Ally is too far away to trade.");
+    expect(cannotTrade(hero, person("ally", at(100 + tradeRange(), 100)))).toBeNull();
+    expect(cannotTrade(hero, person("ally", at(101 + tradeRange(), 100)))).toBe("Ally is too far away to trade.");
     expect(cannotTrade(hero, person("ally", at(100, 100, "cave")))).toBe("Ally is too far away to trade.");
   });
 
@@ -271,7 +271,7 @@ describe("opening a trade", () => {
   });
 
   test("is refused for players who may not trade", () => {
-    ally.pvp = true;
+    ally.combat = true;
     expect(trades.open(hero, ally, NOW)).toBe("Ally is in combat.");
     expect(trades.of("hero")).toBeNull();
   });
@@ -341,7 +341,7 @@ describe("offering", () => {
   }
 
   test(`holds ${8} different items and no more`, async () => {
-    expect(TRADE_ITEMS_MAX).toBe(8);
+    expect(tradeItemsMax()).toBe(8);
     opened();
     const gems = (count: number) => offering(Array.from({ length: count }, (_, index) => [`Gem ${index + 1}`, 1] as [string, number]));
     expect((await trades.offer("hero", gems(8), NOW)).ok).toBe(true);
@@ -424,10 +424,10 @@ describe("accepting", () => {
     const trade = opened();
     await trades.offer("hero", offering([["Iron Ore", 1]]), NOW + 100);
     for (const who of ["hero", "ally"]) {
-      expect(await trades.accept(who, find, NOW + 100 + ACCEPT_DELAY_MS - 1)).toEqual({ state: "wait", message: "The offer just changed. Look it over, then accept." });
+      expect(await trades.accept(who, find, NOW + 100 + acceptDelayMs() - 1)).toEqual({ state: "wait", message: "The offer just changed. Look it over, then accept." });
     }
     expect(trade.accepted).toEqual({ hero: false, ally: false });
-    expect(await trades.accept("ally", find, NOW + 100 + ACCEPT_DELAY_MS)).toMatchObject({ state: "accepted" });
+    expect(await trades.accept("ally", find, NOW + 100 + acceptDelayMs())).toMatchObject({ state: "accepted" });
   });
 
   test("a just opened trade waits the same", async () => {
@@ -676,7 +676,7 @@ describe("ending a trade", () => {
   const ENDS: Array<[string, () => void, string, string]> = [
     ["one walks away", () => { ally.location.position = { x: 900, y: 100 }; }, "Ally is too far away to trade.", "Hero is too far away to trade."],
     ["one changes map", () => { hero.location = { map: "cave", position: { x: 100, y: 100 } }; }, "Ally is too far away to trade.", "Hero is too far away to trade."],
-    ["one enters combat", () => { hero.pvp = true; }, "You cannot trade while in combat.", "Hero is in combat."],
+    ["one enters combat", () => { hero.combat = true; }, "You cannot trade while in combat.", "Hero is in combat."],
     ["one dies", () => { ally.isDead = true; }, "Ally is dead.", "You cannot trade while dead."],
     ["one logs out", () => { online.delete("ally"); }, "Ally is no longer online.", "Ally is no longer online."],
   ];
@@ -695,7 +695,7 @@ describe("ending a trade", () => {
     const third = person("third");
     const fourth = person("fourth");
     trades.open(third, fourth, NOW);
-    fourth.pvp = true;
+    fourth.combat = true;
     expect(trades.sweep(find).map((ended) => ended.trade.players)).toEqual([["third", "fourth"]]);
     expect(trades.count).toBe(1);
   });
@@ -723,7 +723,7 @@ describe("what a player is shown", () => {
 
   test("says how long until the offer can be accepted", async () => {
     const trade = opened();
-    expect((await trades.view(trade, "hero", NOW + 500)).acceptIn).toBe(ACCEPT_DELAY_MS - 500);
+    expect((await trades.view(trade, "hero", NOW + 500)).acceptIn).toBe(acceptDelayMs() - 500);
   });
 });
 

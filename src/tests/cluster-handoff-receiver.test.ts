@@ -19,7 +19,7 @@ const {
   ARRIVAL_CLOCK_SLACK_MS, MAX_ARRIVAL_EFFECTS,
 } = await import("../socket/arrival");
 
-const { SICKNESS_DURATION_MS } = resurrection;
+const { sicknessDurationMs } = resurrection;
 const consumables = await import("../systems/consumables");
 const warpCooldown = await import("../systems/warpcooldown");
 
@@ -35,7 +35,7 @@ const known = { maps: KNOWN_MAPS, caster: () => true };
 
 const state = (over: any = {}) => handoffStateOf({
   dots: [], barriers: [], stuns: [], slows: [], cooldowns: {}, lockoutMs: 0, sickUntil: 0, deadState: 0,
-  corpse: null, pvp: false, lastAttackAgoMs: null, mounted: false, mount_type: null, ...over,
+  corpse: null, combat: false, lastAttackAgoMs: null, mounted: false, mount_type: null, ...over,
 }, limits(), "an arriving player", known);
 const dot = (over: any = {}) => ({
   id: "Poison", spell: "Poison", damagePerTick: 5, interval: 2, duration: 120, stackable: true, maxStacks: 8, stacks: 2,
@@ -65,14 +65,14 @@ function quietLog(): { warned: string[]; errored: string[] } {
 
 test("handoffStateOf makes a malformed record harmless", () => {
   const logged = quietLog();
-  const s = handoffStateOf({ deadState: 7, cooldowns: { x: 5, 3: -1, 4: 100 }, lockoutMs: "nope", dots: "x", corpse: 5, pvp: "yes" }, limits());
+  const s = handoffStateOf({ deadState: 7, cooldowns: { x: 5, 3: -1, 4: 100 }, lockoutMs: "nope", dots: "x", corpse: 5, combat: "yes" }, limits());
   expect(s.deadState).toBe(0);
   expect(s.cooldowns).toEqual({ 4: 100 });
   expect(s.lockoutMs).toBe(0);
   expect(s.dots).toEqual([]);
   expect(logged.warned).toContain("The effects over time an arriving player brought by handoff were dropped: not a list");
   expect(s.corpse).toBeNull();
-  expect(s.pvp).toBe(false);
+  expect(s.combat).toBe(false);
   expect(s.consumableReadyIn).toBe(0);
   expect(handoffStateOf(null, limits()).deadState).toBe(0);
   expect(handoffStateOf({ deadState: 2 }, limits()).deadState).toBe(2);
@@ -152,7 +152,7 @@ test("the probe's arrival record is cut down to what this node's spells could ha
   expect(s.stuns).toEqual([{ expiresAt: now + 3_000 }]);
   expect(s.dots.map((d: any) => d.damagePerTick)).toEqual([-7]);
   // Clamped: the sickness to a full one, the consumable cooldown to a full one.
-  expect(s.sickUntil).toBe(now + SICKNESS_DURATION_MS);
+  expect(s.sickUntil).toBe(now + sicknessDurationMs());
   expect(s.consumableReadyIn).toBe(consumables.CONSUMABLE_COOLDOWN_MS);
   expect(s.corpse).toBeNull();
   // Each one dropped or clamped is a warning that names the player.
@@ -168,7 +168,7 @@ test("an arrival's sound record passes unchanged, and a corpse keeps only its ma
     slows: [{ slowPercent: 99, expiresAt: now }, { slowPercent: 1, expiresAt: now + 1 }],
     stuns: [{ expiresAt: now + 120_000 }],
     dots: [dot(), dot({ stacks: 8 })],
-    sickUntil: now + SICKNESS_DURATION_MS + ARRIVAL_CLOCK_SLACK_MS,
+    sickUntil: now + sicknessDurationMs() + ARRIVAL_CLOCK_SLACK_MS,
     corpse: { map: "main", x: 10, y: 20.5, extra: "dropped" },
     consumableReadyIn: 12_000,
     deadState: 1,
@@ -278,10 +278,10 @@ test("seedArrival replaces what this node kept of the player from an earlier vis
 });
 
 test("arrivalFields turns the elapsed time since the last attack into this node's clock", () => {
-  expect(arrivalFields(state({ pvp: true, lastAttackAgoMs: 400, mounted: true, mount_type: "horse" }), 10_000))
-    .toEqual({ pvp: true, last_attack: 9_600, mounted: true, mount_type: "horse" });
+  expect(arrivalFields(state({ combat: true, lastAttackAgoMs: 400, mounted: true, mount_type: "horse" }), 10_000))
+    .toEqual({ combat: true, last_attack: 9_600, mounted: true, mount_type: "horse" });
   expect(arrivalFields(state({ mount_type: "horse" }), 10_000))
-    .toEqual({ pvp: false, last_attack: null, mounted: false, mount_type: null });
+    .toEqual({ combat: false, last_attack: null, mounted: false, mount_type: null });
 });
 
 test("an arrival keeps its mount only when it owns it, is alive and stands outside", () => {
@@ -448,7 +448,7 @@ test("the login takes the arrival before the login switch, seeds it before the c
   expect(login).toContain("packetManager.handoffDone(");
   expect(login).toContain("creatures.sync.adopt(");
   expect(login).toContain("playersToDespawn(arrival.snapshot.playerIds");
-  expect(login).toContain("pvp: fields.pvp");
+  expect(login).toContain("combat: fields.combat");
   expect(login).toContain("if (!arrival && loginDeadState === 1 && playerData.corpse?.map)");
   // Guard: the arrival's mount is checked against the collectables and the map (N-3).
   expect(login).toContain("arrivalMount(fields, limitedCollectables, loginDeadState, isInteriorMap(spawnLocation.map))");

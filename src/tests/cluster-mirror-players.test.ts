@@ -342,9 +342,9 @@ test("the owner's record is JSON-safe and has no socket", async () => {
   local.stats = { health: 10 };
   const snapshot = playerGhostRecord(local);
   expect(snapshot.wt).toBeUndefined();
-  expect(snapshot.pvp).toBe(false);
-  local.pvp = true;
-  expect(playerGhostRecord(local).pvp).toBe(true);
+  expect(snapshot.combat).toBe(false);
+  local.combat = true;
+  expect(playerGhostRecord(local).combat).toBe(true);
   expect(JSON.parse(JSON.stringify(snapshot)).username).toBe("viewer7");
   const { deps: d } = deps();
   const kind = playerGhostKind(d);

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { WEATHER_CYCLE_MS, settledPick } from "../systems/weathercycle";
+import { weatherCycleMs, settledPick } from "../systems/weathercycle";
 import { receiverSource } from "./receiver-source";
 
 const receiver = receiverSource();
@@ -157,6 +157,6 @@ describe("what tells the other nodes", () => {
 
   test("the cycle is no longer a fixed half hour from when the node started", () => {
     expect(fn("function scheduleWeatherCycle(")).not.toContain("30 * 60 * 1000");
-    expect(WEATHER_CYCLE_MS).toBe(30 * 60 * 1000);
+    expect(weatherCycleMs()).toBe(30 * 60 * 1000);
   });
 });

@@ -8,6 +8,7 @@ import creatureRepository from "../systems/creatures/repository";
 import particle from "../systems/particles";
 import worlds from "../systems/worlds";
 import questDefinitions from "../systems/quests/definitions";
+import { loadGameSettings } from "../systems/gamesettings/store";
 
 import assetCache from "../services/assetCache";
 import zlib from "zlib";
@@ -102,6 +103,8 @@ log.success(`Loaded ${particles.length} particle(s) from the database in ${(perf
 const questNow = performance.now();
 const quests = await questDefinitions.list();
 log.success(`Loaded ${quests.length} quest(s) from the database in ${(performance.now() - questNow).toFixed(2)}ms`);
+
+await loadGameSettings();
 
 const mapProperties: MapProperties[] = [];
 /** The NPCs the maps place themselves (extractAndCompressLayers): particle emitters from their "Particles" layers, and whole NPCs from "npc" objects. */

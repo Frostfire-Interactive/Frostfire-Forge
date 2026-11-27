@@ -424,7 +424,7 @@ const makeTraderNamed: (given: Record<string, any>) => (username: string) => any
 )}\nreturn make;`)();
 
 const person = (id: string, username: string, over: Record<string, any> = {}) => ({
-  id, username, invitations: [], isGuest: false, isDead: false, isGhost: false, pvp: false,
+  id, username, invitations: [], isGuest: false, isDead: false, isGhost: false, combat: false,
   location: { map: "forest.json", position: { x: 100, y: 100 } }, ...over,
 });
 

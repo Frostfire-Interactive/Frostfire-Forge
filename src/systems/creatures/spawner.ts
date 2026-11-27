@@ -1,7 +1,7 @@
 import { logNoIds, nextEntityId } from "../../cluster/entityids";
 import { isBaseLayer } from "../../services/layermanager";
 import log from "../../modules/logger";
-import { POOL_RETRY_MS, RESPAWN_MULTIPLIER, randInt, rng, type Rng } from "./constants";
+import { POOL_RETRY_MS, respawnMultiplier, randInt, rng, type Rng } from "./constants";
 import { CreatureRegistry } from "./registry";
 import { createAuras } from "./auras";
 import { createCombatState } from "./threat";
@@ -69,7 +69,7 @@ export function rollLevel(template: CreatureTemplate, r: Rng = rng): number {
   return randInt(template.level_min, template.level_max, r);
 }
 
-export function rollRespawnMs(spawn: CreatureSpawn, multiplier: number = RESPAWN_MULTIPLIER, r: Rng = rng): number {
+export function rollRespawnMs(spawn: CreatureSpawn, multiplier: number = respawnMultiplier(), r: Rng = rng): number {
   const seconds = spawn.respawn_min_s + r() * (spawn.respawn_max_s - spawn.respawn_min_s);
   return Math.max(0, Math.round(seconds * 1000 * multiplier));
 }
@@ -140,7 +140,7 @@ export class CreatureSpawner {
     private readonly registry: CreatureRegistry,
     private readonly hooks: SpawnerHooks = {},
     private readonly r: Rng = rng,
-    private readonly respawnMultiplier: number = RESPAWN_MULTIPLIER
+    private readonly respawnMultiplierOverride?: number
   ) {}
 
   /** Replace all data and (re)spawn every slot immediately. */
@@ -411,7 +411,7 @@ export class CreatureSpawner {
     if (opts.respawn === false) return;
     const spawn = this.data.spawns.get(instance.spawnId);
     if (!spawn || !this.slotShouldExist(spawn, instance.layerId)) return;
-    this.schedule(spawn.id, instance.layerId, now + (opts.delayMs ?? rollRespawnMs(spawn, this.respawnMultiplier, this.r)));
+    this.schedule(spawn.id, instance.layerId, now + (opts.delayMs ?? rollRespawnMs(spawn, this.respawnMultiplierOverride ?? respawnMultiplier(), this.r)));
   }
 
   died(instanceId: number, now: number): void {
@@ -431,7 +431,7 @@ export class CreatureSpawner {
     this.emptySince.delete(key);
     if (instance.layerId !== null) this.liveByLayer.get(instance.layerId)?.delete(key);
     const spawn = this.data.spawns.get(instance.spawnId);
-    const dueAt = now + (spawn ? rollRespawnMs(spawn, this.respawnMultiplier, this.r) : 0);
+    const dueAt = now + (spawn ? rollRespawnMs(spawn, this.respawnMultiplierOverride ?? respawnMultiplier(), this.r) : 0);
     this.corpses.set(instanceId, dueAt);
     if (spawn && this.slotShouldExist(spawn, instance.layerId)) this.schedule(spawn.id, instance.layerId, dueAt);
   }
@@ -485,7 +485,7 @@ export class CreatureSpawner {
     if (opts.respawn === false) return true;
     const spawn = this.data.spawns.get(slot.spawnId);
     if (!spawn || !this.slotShouldExist(spawn, slot.layerId)) return true;
-    this.schedule(spawn.id, slot.layerId, now + (opts.delayMs ?? rollRespawnMs(spawn, this.respawnMultiplier, this.r)));
+    this.schedule(spawn.id, slot.layerId, now + (opts.delayMs ?? rollRespawnMs(spawn, this.respawnMultiplierOverride ?? respawnMultiplier(), this.r)));
     return true;
   }
 
@@ -663,7 +663,7 @@ export class CreatureSpawner {
         this.joinPool(slot.poolId, slot.layerId, slot.instanceId);
       } else {
         // It died or was handed on while the block moved: the slot respawns on its own roll.
-        this.schedule(slot.spawnId, slot.layerId, now + rollRespawnMs(spawn, this.respawnMultiplier, this.r));
+        this.schedule(slot.spawnId, slot.layerId, now + rollRespawnMs(spawn, this.respawnMultiplierOverride ?? respawnMultiplier(), this.r));
       }
     }
     return taken;

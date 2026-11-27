@@ -1,7 +1,7 @@
 import { listener } from "../modules/event_bus";
 import log from "../modules/logger";
 import playerCache from "../services/playermanager";
-import { Events, setPlayerPvp } from "../systems/events";
+import { Events, setPlayerCombat } from "../systems/events";
 import type { DotInstance, RemoteDotCaster } from "../systems/dots";
 import { registerPlayerAction, runOnPlayer } from "./deliver";
 import { mirrorPlayers } from "./mirrors";
@@ -77,7 +77,7 @@ export function checkedCredit(body: unknown): DotCreditBody | null {
 }
 
 export interface ApplyCreditDeps {
-  setPvp(player: any): void;
+  setCombat(player: any): void;
   mirror(id: string): any | null;
   emitDeath(victim: any, killer: any): void;
   local?(id: string): boolean;
@@ -87,7 +87,7 @@ export function applyDotCredit(caster: any, body: unknown, deps: ApplyCreditDeps
   const credit = checkedCredit(body);
   if (!credit || !caster || caster.remote || String(caster.id) === credit.victimId) return false;
   if (credit.killed && deps.local?.(credit.victimId)) return false;
-  deps.setPvp(caster);
+  deps.setCombat(caster);
   caster.last_attack = performance.now();
   if (credit.killed) {
     const victim = deps.mirror(credit.victimId) ?? { id: credit.victimId, username: credit.victimName, remote: true };
@@ -105,7 +105,7 @@ export const dotCredit = new DotCredit({
 
 registerPlayerAction("cells-dot-credit", (caster, body) => {
   applyDotCredit(caster, body, {
-    setPvp: (player) => setPlayerPvp(player, true),
+    setCombat: (player) => setPlayerCombat(player, true),
     mirror: (id) => mirrorPlayers.get(String(id)) ?? null,
     emitDeath: (victim, killer) => listener.emit(Events.PLAYER_DEATH, { player: victim, killer } as any),
     local: (id) => playerCache.get(id) !== undefined,

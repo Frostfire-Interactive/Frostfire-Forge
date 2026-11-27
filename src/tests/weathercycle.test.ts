@@ -1,14 +1,14 @@
 import { expect, test } from "bun:test";
-import { WEATHER_CYCLE_MS, nextCycleIn, settledPick } from "../systems/weathercycle";
+import { weatherCycleMs, nextCycleIn, settledPick } from "../systems/weathercycle";
 
 const row = (name: string) => ({ name }) as any;
 const table = ["rain", "snow", "fog", "clear", "thunderstorm"].map(row);
-const stretch = (n: number) => n * WEATHER_CYCLE_MS + 1234;
+const stretch = (n: number) => n * weatherCycleMs() + 1234;
 
 test("the same world in the same stretch settles on the same weather, whatever order the table is read in", () => {
   const first = settledPick(table, "overworld", stretch(100));
   expect(first).not.toBeNull();
-  expect(settledPick([...table].reverse(), "overworld", stretch(100) + WEATHER_CYCLE_MS - 2000)?.name).toBe(first!.name);
+  expect(settledPick([...table].reverse(), "overworld", stretch(100) + weatherCycleMs() - 2000)?.name).toBe(first!.name);
 });
 
 test("the weather changes from stretch to stretch, and worlds settle on their own", () => {
@@ -27,7 +27,7 @@ test("never a tornado, and nothing from a table without another weather", () => 
 });
 
 test("the next change is at the turn of the stretch", () => {
-  expect(nextCycleIn(5 * WEATHER_CYCLE_MS)).toBe(WEATHER_CYCLE_MS);
-  expect(nextCycleIn(5 * WEATHER_CYCLE_MS + 1)).toBe(WEATHER_CYCLE_MS - 1);
-  expect(nextCycleIn(6 * WEATHER_CYCLE_MS - 1)).toBe(1);
+  expect(nextCycleIn(5 * weatherCycleMs())).toBe(weatherCycleMs());
+  expect(nextCycleIn(5 * weatherCycleMs() + 1)).toBe(weatherCycleMs() - 1);
+  expect(nextCycleIn(6 * weatherCycleMs() - 1)).toBe(1);
 });

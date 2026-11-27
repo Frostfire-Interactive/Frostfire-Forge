@@ -21,7 +21,7 @@ import lootTable from "../lootTable";
 import playerSystem from "../player";
 import { credit } from "../quests/objectives";
 import { markersFor } from "../quests/markers";
-import { CORPSE_EMPTY_MS, CORPSE_WITH_LOOT_MS, CreatureFlags, randInt, yards } from "./constants";
+import { corpseEmptyMs, corpseWithLootMs, CreatureFlags, randInt, yards } from "./constants";
 import { CorpseLootStore, splitCopper, type CorpseItem } from "./loot";
 import { isCopyKey } from "../dungeons/copykey";
 import { baseKillXp, distributeKillXp, groupBonus, rankMultiplier, REWARD_RANGE_YD } from "./rewards";
@@ -216,7 +216,7 @@ async function createCorpseLoot(creature: CreatureInstance, template: CreatureTe
       corpseLoot.remove(creature.id);
       return;
     }
-    creature.combat.corpseUntil = Math.max(creature.combat.corpseUntil, Date.now() + CORPSE_WITH_LOOT_MS);
+    creature.combat.corpseUntil = Math.max(creature.combat.corpseUntil, Date.now() + corpseWithLootMs());
     // A member whose own roll is empty has nothing to loot here.
     for (const name of names) tellLootable(name, corpseLoot.canLoot(creature.id, name), creature.id);
     return;
@@ -232,7 +232,7 @@ async function createCorpseLoot(creature: CreatureInstance, template: CreatureTe
     corpseLoot.remove(creature.id);
     return;
   }
-  creature.combat.corpseUntil = Math.max(creature.combat.corpseUntil, Date.now() + CORPSE_WITH_LOOT_MS);
+  creature.combat.corpseUntil = Math.max(creature.combat.corpseUntil, Date.now() + corpseWithLootMs());
   tellLootable(owner, true, creature.id);
 }
 
@@ -454,7 +454,7 @@ export async function takeCorpseLoot(
   if (result.empty || (loot.personal && !corpseLoot.canLoot(creature!.id, player.username))) {
     send(player.wt, packetManager.creatureLootable({ id: creature!.id, lootable: false }));
   }
-  if (result.empty) creature!.combat.corpseUntil = Math.min(creature!.combat.corpseUntil, Date.now() + CORPSE_EMPTY_MS);
+  if (result.empty) creature!.combat.corpseUntil = Math.min(creature!.combat.corpseUntil, Date.now() + corpseEmptyMs());
   return {
     taken: result.taken,
     empty: result.empty,

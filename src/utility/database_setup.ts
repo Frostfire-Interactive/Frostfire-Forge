@@ -1614,6 +1614,16 @@ const createDungeonTables = async () => {
   await addColumnIfMissing("parties", "raid", "TINYINT NOT NULL DEFAULT 0");
 };
 
+const createGameSettingsTable = async () => {
+  log.info("Creating game_settings table...");
+  await query(`CREATE TABLE IF NOT EXISTS game_settings (
+    setting_key VARCHAR(64) NOT NULL PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_by VARCHAR(255) NULL,
+    updated_at BIGINT NOT NULL
+  )`);
+};
+
 const addCharacterKeys = async () => {
   log.info("Adding characters table and character_id keys...");
   // accounts.id is INT here, and a foreign key must match its column's type.
@@ -1684,6 +1694,7 @@ const addCharacterKeys = async () => {
   await addIndexIfMissing("mail", "idx_mail_recipient_id", "CREATE INDEX idx_mail_recipient_id ON mail (recipient_id)");
   await addIndexIfMissing("parties", "idx_parties_leader_id", "CREATE INDEX idx_parties_leader_id ON parties (leader_id)");
   await createDungeonTables();
+  await createGameSettingsTable();
 };
 
 const setupDatabase = async () => {

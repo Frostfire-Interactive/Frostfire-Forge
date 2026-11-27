@@ -131,7 +131,7 @@ const NOW = 5_000_000;
 /** What a player holds in the database: item to quantity. */
 const holds = (username: string) => Object.fromEntries(tables.inventory.filter(mine(username)).map((row) => [row.item, row.quantity]));
 const person = (username = "hero", over: Row = {}): any => ({
-  username, isDead: false, isGhost: false, pvp: false, stunnedUntil: 0,
+  username, isDead: false, isGhost: false, combat: false, stunnedUntil: 0,
   location: { map: "harbor", position: { x: 430, y: 340 } },
   ...over,
   stats: { health: 40, max_health: 100, total_max_health: 100, stamina: 10, max_stamina: 50, total_max_stamina: 50, level: 5, ...(over.stats ?? {}) },
@@ -246,8 +246,8 @@ describe("a use is refused, and nothing is taken", () => {
   });
 
   test("in combat, for an item that cannot be used there", async () => {
-    await refused(person("hero", { pvp: true }), "Hearty Stew", "Hearty Stew cannot be used in combat.");
-    expect(await use(person("hero", { pvp: true }), "Health Potion")).toMatchObject({ ok: true });
+    await refused(person("hero", { combat: true }), "Hearty Stew", "Hearty Stew cannot be used in combat.");
+    expect(await use(person("hero", { combat: true }), "Health Potion")).toMatchObject({ ok: true });
     expect(await consumables.use(person(), "Hearty Stew", { now: NOW + CONSUMABLE_COOLDOWN_MS })).toMatchObject({ ok: true });
   });
 

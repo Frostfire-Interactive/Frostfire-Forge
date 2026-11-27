@@ -4,6 +4,8 @@ import type { NodeTicket } from "./ticket";
 import type { MapZone } from "../modules/zones";
 import type { PortalPreviewData } from "../systems/dungeons/types";
 import { TICK_RATE } from "../services/tickrate";
+import { clientSettings } from "../systems/gamesettings/store";
+import { shownStats, withShownStats } from "../systems/xpshown";
 import { joinCreatureMoves } from "./creature_move_codec";
 import { clientMapName } from "../systems/dungeons/copykey";
 
@@ -59,8 +61,15 @@ export const packetManager = {
           chatDecryptionKey: wt.data.chatDecryptionKey,
           // The movement loop's ticks a second, which the client's movement smoothing is timed by.
           tickRate: TICK_RATE,
+          // The live game settings the client mirrors (movement speeds, chat length).
+          settings: clientSettings(),
         })
       )
+    ] as any[];
+  },
+  gameSettings: (data: any) => {
+    return [
+      packet.encode(JSON.stringify({ type: "GAME_SETTINGS", data })),
     ] as any[];
   },
   loginFailed: () => {
@@ -299,7 +308,7 @@ export const packetManager = {
       packet.encode(
         JSON.stringify({
           type: "STATS",
-          data,
+          data: shownStats(data),
         })
       )
     ] as any[];
@@ -417,7 +426,7 @@ export const packetManager = {
             ghostTeleportPending: data.ghostTeleportPending || false,
             ...(data.arrived ? { arrived: true } : {}),
             corpse: corpseForClient(data.corpse || null),
-            stats: data.stats,
+            stats: shownStats(data.stats),
             sprite: data.sprite,
             mounted: data.mounted,
             spriteData: data.spriteData || null,
@@ -438,7 +447,7 @@ export const packetManager = {
       packet.encode(
         JSON.stringify({
           type: "LOAD_PLAYERS",
-          data,
+          data: Array.isArray(data?.players) ? { ...data, players: data.players.map(withShownStats) } : data,
         })
       )
     ] as any[];
@@ -609,12 +618,12 @@ export const packetManager = {
   },
   revive: (data: any) => {
     return [
-      packet.encode(JSON.stringify({ type: "REVIVE", data })),
+      packet.encode(JSON.stringify({ type: "REVIVE", data: withShownStats(data) })),
     ] as any[];
   },
   updateStats: (data: any) => {
     return [
-      packet.encode(JSON.stringify({ type: "UPDATESTATS", data })),
+      packet.encode(JSON.stringify({ type: "UPDATESTATS", data: withShownStats(data) })),
     ] as any[];
   },
   toggleQuestEditor: () => {
@@ -699,7 +708,7 @@ export const packetManager = {
   },
   updateXp: (data: any) => {
     return [
-      packet.encode(JSON.stringify({ type: "UPDATE_XP", data })),
+      packet.encode(JSON.stringify({ type: "UPDATE_XP", data: shownStats(data) })),
     ] as any[];
   },
   animation: (data: any) => {
@@ -1318,6 +1327,27 @@ export const packetManager = {
   mountEditorUpdated: (data: { by: string }) => {
     return [
       packet.encode(JSON.stringify({ type: "MOUNT_EDITOR_UPDATED", data })),
+    ] as any[];
+  },
+  /** Opens the game settings editor (/gamesettings), or closes it. */
+  toggleGameSettingsEditor: () => {
+    return [
+      packet.encode(JSON.stringify({ type: "TOGGLE_GAME_SETTINGS_EDITOR", data: null })),
+    ] as any[];
+  },
+  gameSettingsEditorData: (data: any) => {
+    return [
+      packet.encode(JSON.stringify({ type: "GAME_SETTINGS_EDITOR_DATA", data })),
+    ] as any[];
+  },
+  gameSettingsEditorResult: (data: { ok: boolean; errors: string[]; fields?: Record<string, string>; name: string | null; action?: string; data: any }) => {
+    return [
+      packet.encode(JSON.stringify({ type: "GAME_SETTINGS_EDITOR_RESULT", data })),
+    ] as any[];
+  },
+  gameSettingsEditorUpdated: (data: { by: string }) => {
+    return [
+      packet.encode(JSON.stringify({ type: "GAME_SETTINGS_EDITOR_UPDATED", data })),
     ] as any[];
   },
   /** Opens the cutscene editor (/cutsceneeditor, /cse), or closes it. */

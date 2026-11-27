@@ -7,7 +7,7 @@ import player, { hasLineOfSight } from "../../systems/player.ts";
 import playerCache from "../../services/playermanager.ts";
 import spellEffects, { spellHasHostileEffects, cancelEffect } from "../../systems/spelleffects";
 import spells from "../../systems/spells";
-import { Events, setPlayerPvp } from "../../systems/events";
+import { Events, setPlayerCombat } from "../../systems/events";
 import { areaCastRefusal, areaSpellHarms, PVP_BODY, type PvpAllowed } from "../../systems/pvpzone";
 import { isHeld } from "../../systems/cutsceneheld";
 import { entityById } from "../../cluster/mirrors";
@@ -409,8 +409,8 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
                 }
               }
 
-              setPlayerPvp(currentPlayer, true);
-              setPlayerPvp(st, true);
+              setPlayerCombat(currentPlayer, true);
+              setPlayerCombat(st, true);
               st.last_attack = performance.now();
 
               if (spell_damage > 0 && st.isVanished) {
@@ -701,8 +701,8 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
                   }
                 }
 
-                setPlayerPvp(currentPlayer, true);
-                setPlayerPvp(st, true);
+                setPlayerCombat(currentPlayer, true);
+                setPlayerCombat(st, true);
                 st.last_attack = performance.now();
 
                 if (splashDmg > 0 && st.isVanished) {
@@ -889,8 +889,8 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
               );
             }
 
-            setPlayerPvp(currentPlayer, true);
-            setPlayerPvp(target, true);
+            setPlayerCombat(currentPlayer, true);
+            setPlayerCombat(target, true);
             target.last_attack = performance.now();
           }
           break;
@@ -971,8 +971,8 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
               );
             }
 
-            setPlayerPvp(currentPlayer, true);
-            setPlayerPvp(target, true);
+            setPlayerCombat(currentPlayer, true);
+            setPlayerCombat(target, true);
             target.last_attack = performance.now();
           }
           break;
@@ -1343,13 +1343,13 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
         // Update attacker stats regardless of target type
         playerCache.set(currentPlayer.id, currentPlayer);
 
-        // The owner of a mirrored target refused the hit or did not answer: no PvP flag, cast event or splash.
+        // The owner of a mirrored target refused the hit or did not answer: no combat flag, cast event or splash.
         if (!remoteLanded) break;
 
-        // Is not in the targets party and is not self, then set PvP flag on both
+        // Is not in the targets party and is not self, then set combat flag on both
         if (!isInParty && !isSelf) {
-          setPlayerPvp(currentPlayer, true);
-          setPlayerPvp(target, true);
+          setPlayerCombat(currentPlayer, true);
+          setPlayerCombat(target, true);
         }
 
         currentPlayer.last_attack = performance.now();
@@ -1447,8 +1447,8 @@ export async function handle(ctx: PacketContext): Promise<unknown> {
               }
 
               if (!isInParty) {
-                setPlayerPvp(currentPlayer, true);
-                setPlayerPvp(splashTarget, true);
+                setPlayerCombat(currentPlayer, true);
+                setPlayerCombat(splashTarget, true);
                 splashTarget.last_attack = performance.now();
               }
             }

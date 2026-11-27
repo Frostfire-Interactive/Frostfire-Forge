@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { afterLeaving, canInvite, capital, joinOutcome, newLeaderNotice, NON_RAID_CAP, PARTY_CAP, RAID_CONVERT_MS } from "../systems/partyrules";
+import { afterLeaving, canInvite, capital, joinOutcome, newLeaderNotice, nonRaidCap, partyCap, RAID_CONVERT_MS } from "../systems/partyrules";
 
 describe("party rules", () => {
   test("constants", () => {
-    expect([NON_RAID_CAP, PARTY_CAP, RAID_CONVERT_MS]).toEqual([5, 20, 60_000]);
+    expect([nonRaidCap(), partyCap(), RAID_CONVERT_MS]).toEqual([5, 20, 60_000]);
   });
   test("joinOutcome", () => {
     expect(joinOutcome(4, false)).toBe("join");
